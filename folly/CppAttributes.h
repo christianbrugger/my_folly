@@ -128,6 +128,12 @@
 #define FOLLY_ATTR_CLANG_NO_DESTROY
 #endif
 
+#if FOLLY_HAS_CPP_ATTRIBUTE(clang::uninitialized)
+#define FOLLY_ATTR_CLANG_UNINITIALIZED clang::uninitialized
+#else
+#define FOLLY_ATTR_CLANG_UNINITIALIZED
+#endif
+
 /**
  * Accesses to objects with types with this attribute are not subjected to
  * type-based alias analysis, but are instead assumed to be able to alias any
@@ -161,4 +167,17 @@
 #define FOLLY_ATTR_GNU_USED gnu::used
 #else
 #define FOLLY_ATTR_GNU_USED
+#endif
+
+#if FOLLY_HAS_CPP_ATTRIBUTE(clang::coro_await_elidable)
+#define FOLLY_ATTR_CLANG_CORO_AWAIT_ELIDABLE clang::coro_await_elidable
+#else
+#define FOLLY_ATTR_CLANG_CORO_AWAIT_ELIDABLE
+#endif
+
+#if FOLLY_HAS_CPP_ATTRIBUTE(clang::coro_await_elidable_argument)
+#define FOLLY_ATTR_CLANG_CORO_AWAIT_ELIDABLE_ARGUMENT \
+  clang::coro_await_elidable_argument
+#else
+#define FOLLY_ATTR_CLANG_CORO_AWAIT_ELIDABLE_ARGUMENT
 #endif

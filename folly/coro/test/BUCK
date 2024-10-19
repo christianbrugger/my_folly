@@ -300,6 +300,23 @@ cpp_unittest(
 )
 
 cpp_unittest(
+    name = "sleep_test",
+    srcs = [
+        "SleepTest.cpp",
+    ],
+    deps = [
+        "//folly:portability",
+        "//folly/executors:manual_executor",
+        "//folly/experimental/coro:async_scope",
+        "//folly/experimental/coro:gtest_helpers",
+        "//folly/experimental/coro:sleep",
+        "//folly/experimental/coro:task",
+        "//folly/futures:manual_timekeeper",
+        "//folly/portability:gtest",
+    ],
+)
+
+cpp_unittest(
     name = "suspended_stack_test",
     srcs = [
         "SuspendedStackTest.cpp",

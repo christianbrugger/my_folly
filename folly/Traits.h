@@ -1173,6 +1173,59 @@ template <typename List>
 using type_list_size_t =
     decltype(traits_detail::type_list_size_(static_cast<List const*>(nullptr)));
 
+namespace detail {
+
+// The arguments to this "error" type help the user debug bad invocations.
+// It is purposely undefined to cause a compile error.
+template <typename...>
+struct error_list_concat_params_should_be_non_cvref;
+
+// The primary template is only invoked for invalid parameters.
+template <template <typename...> class Out, typename... T>
+inline constexpr auto type_list_concat_ =
+    error_list_concat_params_should_be_non_cvref<T...>{};
+
+template <template <typename...> class Out>
+inline constexpr type_identity<Out<>> type_list_concat_<Out>;
+
+template <
+    template <typename...>
+    class Out,
+    template <typename...>
+    class In,
+    typename... T>
+inline constexpr auto type_list_concat_<Out, In<T...>> =
+    type_identity<Out<T...>>{};
+
+template <
+    template <typename...>
+    class Out,
+    // Allow input lists to come from heterogeneous templates.
+    template <typename...>
+    class InA,
+    typename... A,
+    template <typename...>
+    class InB,
+    typename... B,
+    typename... Tail>
+inline constexpr auto type_list_concat_<Out, InA<A...>, InB<B...>, Tail...> =
+    // Avoid instantiating the `In*` or `Out` types for the intermediate
+    // lists, since those types may be invalid, or expensive.  Per my tests
+    // on clang using `tag_t` for the intermediate list is no more expensive
+    // than using a dedicated incomplete list type.
+    type_list_concat_<Out, tag_t<A..., B...>, Tail...>;
+
+} // namespace detail
+
+/// type_list_concat_t
+///
+/// Each `List` is a type list of the form `InK<TypeK...>`, where the
+/// templates `InK` are potentially heterogeneous.  Concatenates these
+/// `List`s into a single type list `Out<Type1..., Type2..., ...>`.
+template <template <typename...> class Out, typename... List>
+using type_list_concat_t =
+    typename decltype(detail::type_list_concat_<Out, List...>)::type;
+
 namespace traits_detail {
 
 template <decltype(auto) V>
@@ -1260,6 +1313,46 @@ inline constexpr value_list_element_type_t<I, List> value_list_element_v =
 
 namespace detail {
 
+// The primary template is only invoked for invalid parameters.
+template <template <auto...> class Out, typename... T>
+inline constexpr auto value_list_concat_ =
+    error_list_concat_params_should_be_non_cvref<T...>{};
+
+template <template <auto...> class Out>
+inline constexpr type_identity<Out<>> value_list_concat_<Out>;
+
+template <template <auto...> class Out, template <auto...> class In, auto... V>
+inline constexpr auto value_list_concat_<Out, In<V...>> =
+    type_identity<Out<V...>>{};
+
+template <
+    template <auto...>
+    class Out,
+    // Allow input lists to come from heterogeneous templates.
+    template <auto...>
+    class InA,
+    auto... A,
+    template <auto...>
+    class InB,
+    auto... B,
+    typename... Tail>
+inline constexpr auto value_list_concat_<Out, InA<A...>, InB<B...>, Tail...> =
+    // The use of `vtag_t` is explained in the analogous `type_list_concat_.
+    value_list_concat_<Out, vtag_t<A..., B...>, Tail...>;
+
+} // namespace detail
+
+/// value_list_concat_t
+///
+/// Each `List` is a value list of the form `InK<ValK...>`, where the
+/// templates `InK` are potentially heterogeneous.  Concatenates these
+/// `List`s into a single value list `Out<Val1..., Val2..., ...>`.
+template <template <auto...> class Out, typename... List>
+using value_list_concat_t =
+    typename decltype(detail::value_list_concat_<Out, List...>)::type;
+
+namespace detail {
+
 template <typename V, typename... T>
 constexpr std::size_t type_pack_find_() {
   bool eq[] = {std::is_same_v<V, T>..., true};
@@ -1310,94 +1403,5 @@ inline constexpr std::size_t type_list_find_v =
 /// type, or the size of the list if there is no such element.
 template <typename V, typename List>
 using type_list_find_t = index_constant<type_list_find_v<V, List>>;
-
-/**
- * Checks the requirements that the Hasher class must satisfy
- * in order to be used with the standard library containers,
- * for example `std::unordered_set<T, Hasher>`.
- */
-template <typename T, typename Hasher>
-using is_hasher_usable = std::integral_constant<
-    bool,
-    std::is_default_constructible_v<Hasher> &&
-        std::is_copy_constructible_v<Hasher> &&
-        std::is_move_constructible_v<Hasher> &&
-        std::is_invocable_r_v<size_t, Hasher, const T&>>;
-
-/**
- * Checks the requirements that the Hasher class must satisfy
- * in order to be used with the standard library containers,
- * for example `std::unordered_set<T, Hasher>`.
- */
-template <typename T, typename Hasher>
-inline constexpr bool is_hasher_usable_v = is_hasher_usable<T, Hasher>::value;
-
-/**
- * Checks that the given hasher template's specialization for the given type
- * is usable with the standard library containters,
- * for example `std::unordered_set<T, Hasher<T>>`.
- */
-template <typename T, template <typename U> typename Hasher = std::hash>
-using is_hashable =
-    std::integral_constant<bool, is_hasher_usable_v<T, Hasher<T>>>;
-
-/**
- * Checks that the given hasher template's specialization for the given type
- * is usable with the standard library containters,
- * for example `std::unordered_set<T, Hasher<T>>`.
- */
-template <typename T, template <typename U> typename Hasher = std::hash>
-inline constexpr bool is_hashable_v = is_hashable<T, Hasher>::value;
-
-namespace detail {
-
-template <typename T, typename>
-using enable_hasher_helper_impl = T;
-
-} // namespace detail
-
-/**
- * A helper for defining partial specializations of a hasher class that rely
- * on other partial specializations of that hasher class being usable.
- *
- * Example:
- * ```
- * template <typename T>
- * struct hash<
- *     folly::enable_std_hash_helper<folly::Optional<T>, remove_const_t<T>>> {
- *   size_t operator()(folly::Optional<T> const& obj) const {
- *     return static_cast<bool>(obj) ? hash<remove_const_t<T>>()(*obj) : 0;
- *   }
- * };
- * ```
- */
-template <
-    typename T,
-    template <typename U>
-    typename Hasher,
-    typename... Dependencies>
-using enable_hasher_helper = detail::enable_hasher_helper_impl<
-    T,
-    std::enable_if_t<
-        StrictConjunction<is_hashable<Dependencies, Hasher>...>::value>>;
-
-/**
- * A helper for defining partial specializations of a hasher class that rely
- * on other partial specializations of that hasher class being usable.
- *
- * Example:
- * ```
- * template <typename T>
- * struct hash<
- *     folly::enable_std_hash_helper<folly::Optional<T>, remove_const_t<T>>> {
- *   size_t operator()(folly::Optional<T> const& obj) const {
- *     return static_cast<bool>(obj) ? hash<remove_const_t<T>>()(*obj) : 0;
- *   }
- * };
- * ```
- */
-template <typename T, typename... Dependencies>
-using enable_std_hash_helper =
-    enable_hasher_helper<T, std::hash, Dependencies...>;
 
 } // namespace folly

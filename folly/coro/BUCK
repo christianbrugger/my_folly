@@ -96,6 +96,7 @@ cpp_library(
         "//folly/synchronization:atomic_util",
     ],
     exported_deps = [
+        "//folly:try",
         "//folly/experimental/coro:coroutine",
     ],
 )
@@ -198,7 +199,7 @@ cpp_library(
     headers = ["detail/Barrier.h"],
     exported_deps = [
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:detail_traits",
+        "//folly/experimental/coro:traits",
         "//folly/experimental/coro:with_async_stack",
         "//folly/tracing:async_stack",
     ],
@@ -283,10 +284,13 @@ cpp_library(
     name = "future_util",
     headers = ["FutureUtil.h"],
     exported_deps = [
+        "//folly:cancellation_token",
+        "//folly/experimental/coro:baton",
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:detail_traits",
+        "//folly/experimental/coro:current_executor",
         "//folly/experimental/coro:invoke",
         "//folly/experimental/coro:task",
+        "//folly/experimental/coro:traits",
         "//folly/futures:core",
     ],
 )
@@ -417,10 +421,10 @@ cpp_library(
         "//folly:random",
         "//folly:try",
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:detail_traits",
         "//folly/experimental/coro:result",
         "//folly/experimental/coro:sleep",
         "//folly/experimental/coro:task",
+        "//folly/experimental/coro:traits",
     ],
 )
 
@@ -446,7 +450,7 @@ cpp_library(
         "//folly:executor",
         "//folly:scope_guard",
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:detail_traits",
+        "//folly/experimental/coro:traits",
         "//folly/experimental/coro:via_if_async",
         "//folly/functional:invoke",
         "//folly/lang:assume",
@@ -486,10 +490,8 @@ cpp_library(
         "Sleep-inl.h",
     ],
     exported_deps = [
-        "//folly:cancellation_token",
-        "//folly/experimental/coro:baton",
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:current_executor",
+        "//folly/experimental/coro:future_util",
         "//folly/experimental/coro:task",
         "//folly/futures:core",
     ],
@@ -566,8 +568,8 @@ cpp_library(
         "//folly:cancellation_token",
         "//folly/experimental/coro:baton",
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:detail_traits",
         "//folly/experimental/coro:task",
+        "//folly/experimental/coro:traits",
         "//folly/experimental/coro:with_cancellation",
         "//folly/futures:core",
     ],
@@ -633,7 +635,7 @@ cpp_library(
     headers = ["WithAsyncStack.h"],
     exported_deps = [
         "//folly/experimental/coro:coroutine",
-        "//folly/experimental/coro:detail_traits",
+        "//folly/experimental/coro:traits",
         "//folly/functional:invoke",
         "//folly/lang:assume",
         "//folly/lang:customization_point",

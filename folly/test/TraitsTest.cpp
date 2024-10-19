@@ -64,51 +64,7 @@ template <class>
 struct A {};
 struct B {};
 
-struct HashableStruct1 {};
-struct HashableStruct2 {};
-struct UnhashableStruct {};
-
-template <typename X, typename Y>
-struct CompositeStruct {
-  X x;
-  Y y;
-};
-
 } // namespace
-
-namespace std {
-
-template <>
-struct hash<HashableStruct1> {
-  [[maybe_unused]] size_t operator()(const HashableStruct1&) const noexcept {
-    return 0;
-  }
-};
-
-template <>
-struct hash<HashableStruct2> {
-  [[maybe_unused]] size_t operator()(const HashableStruct2&) const noexcept {
-    return 0;
-  }
-};
-
-template <typename X, typename Y>
-struct hash<enable_std_hash_helper<CompositeStruct<X, Y>, X, Y>> {
-  [[maybe_unused]] size_t operator()(
-      const CompositeStruct<X, Y>& value) const noexcept {
-    return std::hash<X>{}(value.x) + std::hash<Y>{}(value.y);
-  }
-};
-
-static_assert(is_hashable_v<HashableStruct1>);
-static_assert(is_hashable_v<HashableStruct2>);
-static_assert(!is_hashable_v<UnhashableStruct>);
-static_assert(is_hashable_v<CompositeStruct<HashableStruct1, HashableStruct1>>);
-static_assert(is_hashable_v<CompositeStruct<HashableStruct1, HashableStruct2>>);
-static_assert(
-    !is_hashable_v<CompositeStruct<HashableStruct1, UnhashableStruct>>);
-
-} // namespace std
 
 namespace folly {
 template <>
@@ -769,6 +725,26 @@ TEST(Traits, type_list_size) {
       5, (type_list_size_t<tag_t<long long, long, int, short, char>>::value));
 }
 
+TEST(Traits, type_list_concat) {
+  static_assert(std::is_same_v<tag_t<>, type_list_concat_t<tag_t>>);
+  static_assert(std::is_same_v<tag_t<>, type_list_concat_t<tag_t, tag_t<>>>);
+  static_assert(
+      std::is_same_v<tag_t<>, type_list_concat_t<tag_t, tag_t<>, tag_t<>>>);
+  static_assert(
+      std::is_same_v<tag_t<int>, type_list_concat_t<tag_t, tag_t<int>>>);
+  static_assert(std::is_same_v<
+                tag_t<int, double>,
+                type_list_concat_t<tag_t, tag_t<int>, tag_t<double>>>);
+  static_assert( //
+      std::is_same_v<
+          tag_t<int, void, double, inspects_tag>,
+          type_list_concat_t<
+              tag_t,
+              std::tuple<int, void, double>,
+              tag_t<>,
+              tag_t<inspects_tag>>>);
+}
+
 TEST(Traits, value_pack) {
   EXPECT_EQ(3, (folly::value_pack_size_v<7u, 8, '9'>));
   EXPECT_EQ(3, (folly::value_pack_size_t<7u, 8, '9'>::value));
@@ -785,6 +761,29 @@ TEST(Traits, value_list) {
           int,
           folly::value_list_element_type_t<1, vtag_t<7u, 8, '9'>>>));
   EXPECT_EQ(8, (folly::value_list_element_v<1, vtag_t<7u, 8, '9'>>));
+}
+
+template <auto...>
+struct also_vtag_t {};
+
+TEST(Traits, value_list_concat) {
+  static_assert(std::is_same_v<vtag_t<>, value_list_concat_t<vtag_t>>);
+  static_assert(
+      std::is_same_v<vtag_t<>, value_list_concat_t<vtag_t, vtag_t<>>>);
+  static_assert(
+      std::
+          is_same_v<vtag_t<>, value_list_concat_t<vtag_t, vtag_t<>, vtag_t<>>>);
+  static_assert(
+      std::is_same_v<vtag_t<7>, value_list_concat_t<vtag_t, vtag_t<7>>>);
+  static_assert( //
+      std::is_same_v<
+          vtag_t<3, 1, 4, 1, 5, 9>,
+          value_list_concat_t<
+              vtag_t,
+              also_vtag_t<3, 1>,
+              vtag_t<>,
+              vtag_t<4>,
+              vtag_t<1, 5, 9>>>);
 }
 
 TEST(Traits, type_pack_find) {
