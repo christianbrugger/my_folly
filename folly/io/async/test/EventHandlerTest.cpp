@@ -69,16 +69,16 @@ class EventHandlerTest : public Test {
 
   void TearDown() override {
     if (efd > 0) {
-      close(efd);
+      fileops::close(efd);
     }
     efd = 0;
   }
 
-  void efd_write(uint64_t val) { write(efd, &val, sizeof(val)); }
+  void efd_write(uint64_t val) { fileops::write(efd, &val, sizeof(val)); }
 
   uint64_t efd_read() {
     uint64_t val = 0;
-    read(efd, &val, sizeof(val));
+    fileops::read(efd, &val, sizeof(val));
     return val;
   }
 };
@@ -199,32 +199,33 @@ class EventHandlerOobTest : public ::testing::Test {
   // clientOps(fd) where fd is the connection file descriptor
   //
   void runClient(std::function<void(int fd)> clientOps) {
-    clientThread = std::thread([serverPortFuture = serverReady.get_future(),
-                                clientOps]() mutable {
-      int clientFd = socket(AF_INET, SOCK_STREAM, 0);
-      SCOPE_EXIT {
-        close(clientFd);
-      };
-      struct hostent* he{nullptr};
-      struct sockaddr_in server;
+    clientThread = std::thread(
+        [serverPortFuture = serverReady.get_future(), clientOps]() mutable {
+          int clientFd = socket(AF_INET, SOCK_STREAM, 0);
+          SCOPE_EXIT {
+            fileops::close(clientFd);
+          };
+          struct hostent* he{nullptr};
+          struct sockaddr_in server;
 
-      std::array<const char, 10> hostname = {"localhost"};
-      he = gethostbyname(hostname.data());
-      PCHECK(he);
+          std::array<const char, 10> hostname = {"localhost"};
+          he = gethostbyname(hostname.data());
+          PCHECK(he);
 
-      memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
-      server.sin_family = AF_INET;
+          memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
+          server.sin_family = AF_INET;
 
-      // block here until port is known
-      server.sin_port = serverPortFuture.get();
-      LOG(INFO) << "Server is ready";
+          // block here until port is known
+          server.sin_port = serverPortFuture.get();
+          LOG(INFO) << "Server is ready";
 
-      PCHECK(
-          ::connect(clientFd, (struct sockaddr*)&server, sizeof(server)) == 0);
-      LOG(INFO) << "Server connection available";
+          PCHECK(
+              ::connect(clientFd, (struct sockaddr*)&server, sizeof(server)) ==
+              0);
+          LOG(INFO) << "Server connection available";
 
-      clientOps(clientFd);
-    });
+          clientOps(clientFd);
+        });
   }
 
   //
@@ -235,7 +236,7 @@ class EventHandlerOobTest : public ::testing::Test {
     // make the server.
     int listenfd = socket(AF_INET, SOCK_STREAM, 0);
     SCOPE_EXIT {
-      close(listenfd);
+      fileops::close(listenfd);
     };
     PCHECK(listenfd != -1) << "unable to open socket";
 
@@ -263,7 +264,7 @@ class EventHandlerOobTest : public ::testing::Test {
 
   void TearDown() override {
     clientThread.join();
-    close(serverFd);
+    fileops::close(serverFd);
   }
 
   EventBase eb;
@@ -293,7 +294,7 @@ TEST_F(EventHandlerOobTest, EPOLLPRI) {
     void handlerReady(uint16_t events) noexcept override {
       EXPECT_TRUE(EventHandler::EventFlags::PRI & events);
       std::array<char, 255> buffer;
-      auto n = read(fd_, buffer.data(), buffer.size());
+      auto n = fileops::read(fd_, buffer.data(), buffer.size());
       //
       // NB: we sent 7 bytes, but only received 6. The last byte
       // has been stored in the OOB buffer.

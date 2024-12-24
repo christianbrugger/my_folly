@@ -255,7 +255,9 @@ cpp_library(
 cpp_library(
     name = "async_transport_certificate",
     headers = ["AsyncTransportCertificate.h"],
-    exported_deps = [],
+    exported_deps = [
+        "//folly:optional",
+    ],
 )
 
 cpp_library(
@@ -592,6 +594,7 @@ cpp_library(
         "linux",
         select({
             "DEFAULT": ["fbsource//third-party/liburing:uring"],
+            # @fb-only: "ovr_config//distro/constraints:conda": [], 
             # @fb-only: "ovr_config//os:linux-sgx": [], 
         }),
     )],
@@ -609,7 +612,7 @@ cpp_library(
     deps = [
         "//folly:conv",
         "//folly/detail:socket_fast_open",
-        "//folly/experimental/io:io_uring_event_base_local",
+        "//folly/io/async:io_uring_event_base_local",
         "//folly/memory:malloc",
         "//folly/portability:sys_uio",
     ],
@@ -617,8 +620,6 @@ cpp_library(
         "//folly:network_address",
         "//folly:optional",
         "//folly:small_vector",
-        "//folly/experimental/io:io_uring_backend",
-        "//folly/experimental/io:liburing",
         "//folly/futures:core",
         "//folly/io:iobuf",
         "//folly/io:socket_option_map",
@@ -627,6 +628,8 @@ cpp_library(
         "//folly/io/async:async_socket_exception",
         "//folly/io/async:async_transport",
         "//folly/io/async:delayed_destruction",
+        "//folly/io/async:io_uring_backend",
+        "//folly/io/async:liburing",
         "//folly/net:net_ops_dispatcher",
         "//folly/portability:sockets",
     ],
@@ -643,8 +646,8 @@ cpp_library(
         "//folly:string",
         "//folly/coro:baton",
         "//folly/experimental/io:async_io",
-        "//folly/experimental/io:io_uring",
-        "//folly/experimental/io:liburing",
+        "//folly/io/async:io_uring",
+        "//folly/io/async:liburing",
         "//folly/portability:sockets",
     ],
     exported_deps = [
@@ -697,7 +700,7 @@ cpp_library(
         "//folly:file_util",
         "//folly:string",
         "//folly/experimental/io:epoll",
-        "//folly/experimental/io:liburing",
+        "//folly/io/async:liburing",
         "//folly/lang:align",
         "//folly/portability:gflags",
         "//folly/synchronization:baton",
@@ -752,9 +755,9 @@ cpp_library(
         "//folly/portability:unistd",
     ],
     exported_deps = [
+        ":async_base_class",
+        ":liburing",
         "//folly:shared_mutex",
-        "//folly/experimental/io:async_base",
-        "//folly/experimental/io:liburing",
     ],
     external_deps = [
         "boost",
@@ -780,7 +783,7 @@ cpp_library(
         "//folly:spin_lock",
         "//folly:string",
         "//folly/container:f14_hash",
-        "//folly/experimental/io:io_uring_provided_buffer_ring",
+        "//folly/io/async:io_uring_provided_buffer_ring",
         "//folly/lang:bits",
         "//folly/portability:gflags",
         "//folly/portability:sockets",
@@ -798,10 +801,10 @@ cpp_library(
         "//folly:optional",
         "//folly:range",
         "//folly:small_vector",
-        "//folly/experimental/io:liburing",
         "//folly/io:iobuf",
         "//folly/io/async:async_base",
         "//folly/io/async:delayed_destruction",
+        "//folly/io/async:liburing",
         "//folly/portability:asm",
     ],
     exported_external_deps = [
@@ -826,9 +829,9 @@ cpp_library(
         "//folly:string",
     ],
     exported_deps = [
-        "//folly/experimental/io:liburing",
         "//folly/io:iobuf",
         "//folly/io/async:delayed_destruction",
+        "//folly/io/async:liburing",
         "//folly/portability:sys_mman",
     ],
     exported_external_deps = [
@@ -847,9 +850,9 @@ cpp_library(
     modular_headers = False,
     exported_deps = [
         "//folly:file",
-        "//folly/experimental/io:io_uring_backend",
-        "//folly/experimental/io:liburing",
         "//folly/io/async:async_base",
+        "//folly/io/async:io_uring_backend",
+        "//folly/io/async:liburing",
     ],
 )
 
@@ -864,12 +867,12 @@ cpp_library(
     modular_headers = False,
     deps = [
         "//folly:singleton",
-        "//folly/experimental/io:io_uring_event",
+        "//folly/io/async:io_uring_event",
     ],
     exported_deps = [
-        "//folly/experimental/io:io_uring_backend",
-        "//folly/experimental/io:liburing",
         "//folly/io/async:async_base",
+        "//folly/io/async:io_uring_backend",
+        "//folly/io/async:liburing",
     ],
     exported_external_deps = [
     ],

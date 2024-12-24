@@ -54,6 +54,11 @@
 #include <execinfo.h>
 #endif
 
+#ifdef __roar__
+extern "C" char* _roar_upcall_symbolizeAddress(
+    void* Address, unsigned* NumFrames, bool WithSrcLine, bool WithInline);
+#endif
+
 namespace folly {
 namespace symbolizer {
 
@@ -98,6 +103,52 @@ ElfCache* defaultElfCache() {
   return cache;
 }
 
+#ifdef __roar__
+bool setROARSymbolizedFrame(
+    SymbolizedFrame& frame,
+    uintptr_t address,
+    LocationInfoMode mode,
+    folly::Range<SymbolizedFrame*> extraInlineFrames = {}) {
+  const bool withSrcLine = mode != LocationInfoMode::DISABLED;
+  const bool withInline = mode == LocationInfoMode::FULL_WITH_INLINE;
+  unsigned numFrames = 0;
+  char* jitNames = _roar_upcall_symbolizeAddress(
+      reinterpret_cast<void*>(address), &numFrames, withSrcLine, withInline);
+  if (numFrames == 0)
+    return false;
+  unsigned firstFrame =
+      numFrames - std::min<unsigned>(numFrames, extraInlineFrames.size() + 1);
+  unsigned i = 0;
+  for (unsigned curFrame = 0; curFrame < numFrames; ++curFrame) {
+    std::string_view name = std::string_view(jitNames);
+    jitNames += name.size() + 1;
+    std::string_view fileName = std::string_view(jitNames);
+    jitNames += fileName.size() + 1;
+    std::string_view lineNo = std::string_view(jitNames);
+    jitNames += lineNo.size() + 1;
+    if (curFrame < firstFrame) {
+      continue;
+    }
+    if (curFrame == numFrames - 1) {
+      frame.name = name.data();
+      frame.location.hasFileAndLine = withSrcLine && !fileName.empty();
+      frame.location.file = Path({}, {}, fileName);
+      frame.location.line = atoi(lineNo.data());
+      break;
+    }
+    extraInlineFrames[i].found = true;
+    extraInlineFrames[i].addr = address;
+    extraInlineFrames[i].name = name.data();
+    extraInlineFrames[i].location.hasFileAndLine =
+        withSrcLine && !fileName.empty();
+    extraInlineFrames[i].location.file = Path({}, {}, fileName);
+    extraInlineFrames[i].location.line = atoi(lineNo.data());
+    ++i;
+  }
+  return true;
+}
+#endif
+
 void setSymbolizedFrame(
     ElfCacheBase* const elfCache,
     SymbolizedFrame& frame,
@@ -110,6 +161,12 @@ void setSymbolizedFrame(
   frame.addr = address;
   frame.file = file;
   frame.name = file->getSymbolName(file->getDefinitionByAddress(address));
+#ifdef __roar__
+  if (!frame.name &&
+      setROARSymbolizedFrame(frame, address, mode, extraInlineFrames)) {
+    return;
+  }
+#endif
 
   Dwarf(elfCache, file.get())
       .findAddress(address, mode, frame, extraInlineFrames);

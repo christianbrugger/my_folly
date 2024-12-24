@@ -20,7 +20,7 @@
 
 #include <folly/Range.h>
 #include <folly/SocketAddress.h>
-#include <folly/experimental/coro/Task.h>
+#include <folly/coro/Task.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/AsyncSocketException.h>
@@ -35,8 +35,9 @@ namespace coro {
 // Handle connect for AsyncSocket
 //
 
-class ConnectCallback : public TransportCallbackBase,
-                        public folly::AsyncSocket::ConnectCallback {
+class ConnectCallback
+    : public TransportCallbackBase,
+      public folly::AsyncSocket::ConnectCallback {
  public:
   explicit ConnectCallback(folly::AsyncSocket& socket)
       : TransportCallbackBase(socket), socket_(socket) {}
@@ -57,9 +58,10 @@ class ConnectCallback : public TransportCallbackBase,
 // Handle data read for AsyncTransport
 //
 
-class ReadCallback : public TransportCallbackBase,
-                     public folly::AsyncTransport::ReadCallback,
-                     public folly::HHWheelTimer::Callback {
+class ReadCallback
+    : public TransportCallbackBase,
+      public folly::AsyncTransport::ReadCallback,
+      public folly::HHWheelTimer::Callback {
  public:
   // we need to pass the socket into ReadCallback so we can clear the callback
   // pointer in the socket, thus preventing multiple callbacks from happening
@@ -197,8 +199,9 @@ class ReadCallback : public TransportCallbackBase,
 // Handle data write for AsyncTransport
 //
 
-class WriteCallback : public TransportCallbackBase,
-                      public folly::AsyncTransport::WriteCallback {
+class WriteCallback
+    : public TransportCallbackBase,
+      public folly::AsyncTransport::WriteCallback {
  public:
   explicit WriteCallback(folly::AsyncTransport& transport)
       : TransportCallbackBase(transport) {}

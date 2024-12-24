@@ -333,6 +333,12 @@ class FetchCmd(ProjectCmdBase):
 
         cache = cache_module.create_cache()
         for m in projects:
+            fetcher = loader.create_fetcher(m)
+            if isinstance(fetcher, SystemPackageFetcher):
+                # We are guaranteed that if the fetcher is set to
+                # SystemPackageFetcher then this item is completely
+                # satisfied by the appropriate system packages
+                continue
             cached_project = CachedProject(cache, loader, m)
             if cached_project.download():
                 continue
@@ -348,7 +354,6 @@ class FetchCmd(ProjectCmdBase):
                     continue
 
             # We need to fetch the sources
-            fetcher = loader.create_fetcher(m)
             fetcher.update()
 
 
@@ -923,6 +928,27 @@ class DebugCmd(ProjectCmdBase):
         self.create_builder(loader, manifest).debug(reconfigure=False)
 
 
+@cmd(
+    "env",
+    "print the environment in a shell sourceable format",
+)
+class EnvCmd(ProjectCmdBase):
+    def setup_project_cmd_parser(self, parser):
+        parser.add_argument(
+            "--os-type",
+            help="Filter to just this OS type to run",
+            choices=["linux", "darwin", "windows"],
+            action="store",
+            dest="ostype",
+            default=None,
+        )
+
+    def run_project_cmd(self, args, loader, manifest):
+        if args.ostype:
+            loader.build_opts.host_type.ostype = args.ostype
+        self.create_builder(loader, manifest).printenv(reconfigure=False)
+
+
 @cmd("generate-github-actions", "generate a GitHub actions configuration")
 class GenerateGitHubActionsCmd(ProjectCmdBase):
     RUN_ON_ALL = """ [push, pull_request]"""
@@ -995,6 +1021,8 @@ class GenerateGitHubActionsCmd(ProjectCmdBase):
         if build_opts.is_linux():
             artifacts = "linux"
             runs_on = f"ubuntu-{args.ubuntu_version}"
+            if args.cpu_cores:
+                runs_on = f"{args.cpu_cores}-core-ubuntu-{args.ubuntu_version}"
         elif build_opts.is_windows():
             artifacts = "windows"
             runs_on = "windows-2019"
@@ -1245,6 +1273,10 @@ jobs:
         )
         parser.add_argument(
             "--ubuntu-version", default="22.04", help="Version of Ubuntu to use"
+        )
+        parser.add_argument(
+            "--cpu-cores",
+            help="Number of CPU cores to use (applicable for Linux OS)",
         )
         parser.add_argument(
             "--cron",

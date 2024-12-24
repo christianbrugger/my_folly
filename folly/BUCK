@@ -154,6 +154,9 @@ cpp_library(
     compiler_flags = roar_no_jit(),
     deps = [
         ":optional",
+        "//folly:scope_guard",
+        "//folly/lang:new",
+        "//folly/portability:memory",
         "//folly/synchronization/detail:sleeper",
     ],
     exported_deps = [
@@ -259,19 +262,6 @@ cpp_library(
     srcs = ["Conv.cpp"],
     headers = ["Conv.h"],
     compiler_flags = roar_no_jit(),
-    propagated_pp_flags = select({
-        "//folly/buck_config:folly-conv-dtoa-to-chars": [
-            # Use std::to_chars instead of libdouble-conversion for Double-To-ASCII conversions
-            "-DFOLLY_CONV_DTOA_TO_CHARS=1",
-        ],
-        "DEFAULT": [],
-    }) + select({
-        "//folly/buck_config:folly-conv-atod-mode-fastfloat": [
-            # Use fast_float::from_chars for ASCII-to-Double conversions
-            "-DFOLLY_CONV_ATOD_MODE=1",
-        ],
-        "DEFAULT": [],
-    }),
     undefined_symbols = True,  # TODO(T23121628): fix deps and remove
     deps = [
         "fbsource//third-party/fast_float:fast_float",
@@ -573,6 +563,25 @@ cpp_library(
         "//folly/lang:exception",
         "//folly/lang:ordering",
         "//folly/portability:constexpr",
+    ],
+)
+
+cpp_library(
+    name = "fmt_utility",
+    srcs = [
+        "FmtUtility.cpp",
+    ],
+    headers = [
+        "FmtUtility.h",
+    ],
+    deps = [
+        ":range",
+        ":string",
+        "//folly/ssl:openssl_hash",
+    ],
+    exported_deps = [
+        "fbsource//third-party/fmt:fmt",
+        ":cpp_attributes",
     ],
 )
 
@@ -1209,7 +1218,7 @@ cpp_library(
         ":portability",
         ":traits",
         "//folly/detail:range_common",
-        "//folly/detail:range_sse42",
+        "//folly/detail:range_simd",
         "//folly/hash:spooky_hash_v2",
         "//folly/lang:c_string",
         "//folly/lang:exception",
