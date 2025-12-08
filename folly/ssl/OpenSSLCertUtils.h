@@ -35,6 +35,8 @@ class OpenSSLCertUtils {
   // Note: non-const until OpenSSL 1.1.0
   static Optional<std::string> getCommonName(X509& x509);
 
+  static Optional<std::string> getIssuerCommonName(X509& x509);
+
   static std::vector<std::string> getSubjectAltNames(X509& x509);
 
   /*
@@ -99,6 +101,20 @@ class OpenSSLCertUtils {
    * Throws on error.
    */
   static std::unique_ptr<IOBuf> derEncode(X509&);
+
+  /**
+   * Decode the PEM representation of an X509 certificate.
+   *
+   * Throws on error (if a valid certificate can't be decoded).
+   */
+  static X509UniquePtr pemDecode(ByteRange);
+
+  /**
+   * Encode an X509 certificate in PEM format.
+   *
+   * Throws on error.
+   */
+  static std::string pemEncode(X509&);
 
   /**
    * Read certificates from memory and returns them as a vector of X509

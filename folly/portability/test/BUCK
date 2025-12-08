@@ -1,9 +1,11 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
 load("@fbcode_macros//build_defs:cpp_unittest.bzl", "cpp_unittest")
 load("@fbsource//tools/target_determinator/macros:ci.bzl", "ci")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "constexpr_test",
     srcs = ["ConstexprTest.cpp"],
     deps = [
@@ -12,19 +14,22 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "fcntl_test",
     srcs = ["FcntlTest.cpp"],
     labels = ci.labels(
         ci.windows(ci.mode("fbcode//mode/win")),
     ),
     deps = [
+        "fbsource//third-party/googletest:gtest",
         "//folly/portability:fcntl",
         "//folly/portability:unistd",
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "filesystem_test",
     srcs = ["FilesystemTest.cpp"],
     deps = [
@@ -34,7 +39,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "libgen_test",
     srcs = ["LibgenTest.cpp"],
     deps = [
@@ -43,7 +49,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "openssl_portability_test",
     srcs = ["OpenSSLPortabilityTest.cpp"],
     deps = [
@@ -52,7 +59,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "pthread_test",
     srcs = ["PThreadTest.cpp"],
     deps = [
@@ -61,7 +69,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "time_test",
     srcs = ["TimeTest.cpp"],
     deps = [
@@ -71,13 +80,15 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "unistd_test",
     srcs = ["UnistdTest.cpp"],
     labels = ci.labels(
         ci.windows(ci.mode("fbcode//mode/win")),
     ),
     deps = [
+        "fbsource//third-party/googletest:gtest",
         "//folly/portability:unistd",
     ],
 )

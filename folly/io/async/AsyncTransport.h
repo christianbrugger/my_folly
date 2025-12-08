@@ -44,6 +44,7 @@ class AsyncReader {
     enum class ReadMode : uint8_t {
       ReadBuffer = 0,
       ReadVec = 1,
+      ReadZC = 2,
     };
 
     virtual ~ReadCallback() = default;
@@ -391,11 +392,11 @@ class AsyncWriter {
     size_t mapSize{0};
   };
 
-  FOLLY_NODISCARD virtual bool setRXZeroCopy(RXZerocopyParams /*params*/) {
+  [[nodiscard]] virtual bool setRXZeroCopy(RXZerocopyParams /*params*/) {
     return false;
   }
 
-  FOLLY_NODISCARD virtual bool getRXZeroCopy() const { return false; }
+  [[nodiscard]] virtual bool getRXZeroCopy() const { return false; }
 
   using ZeroCopyEnableFunc =
       std::function<bool(const std::unique_ptr<folly::IOBuf>& buf)>;
@@ -439,7 +440,7 @@ class AsyncTransport
       public AsyncReader,
       public AsyncWriter {
  public:
-  typedef std::unique_ptr<AsyncTransport, Destructor> UniquePtr;
+  using UniquePtr = std::unique_ptr<AsyncTransport, Destructor>;
 
   /**
    * Close the transport.
@@ -796,6 +797,16 @@ class AsyncTransport
     }
   }
 
+  /**
+   * Return SO_INCOMING_NAPI_ID for this transport. For socket transports, this
+   * is associated with the NAPI instance/receive queue. For other transports,
+   * it is not defined.
+   *
+   * Returns -1 for error or invalid NAPI ID, or a positive integer for a valid
+   * NAPI ID.
+   */
+  virtual int getNapiId() const { return -1; }
+
  public:
   /**
    * AsyncTransports may wrap other AsyncTransport. This returns the
@@ -843,7 +854,7 @@ class AsyncTransport
         AsyncTransport::UniquePtr ret =
             const_cast<AsyncTransport*>(last)->tryExchangeWrappedTransport(p);
         ret->setReadCB(nullptr);
-        DCHECK_NOTNULL(dynamic_cast<T*>(ret.get()));
+        DCHECK_NE(dynamic_cast<T*>(ret.get()), nullptr);
         return typename T::UniquePtr(static_cast<T*>(ret.release()));
       }
       last = current;

@@ -137,10 +137,8 @@ template <
         typename,
         typename,
         typename,
-        template <typename>
-        class,
-        class>
-    class Impl = detail::concurrenthashmap::bucket::BucketTable>
+        template <typename> class,
+        class> class Impl = detail::concurrenthashmap::bucket::BucketTable>
 class ConcurrentHashMap {
   using SegmentT = detail::ConcurrentHashMapSegment<
       KeyType,
@@ -166,13 +164,13 @@ class ConcurrentHashMap {
  public:
   class ConstIterator;
 
-  typedef KeyType key_type;
-  typedef ValueType mapped_type;
-  typedef std::pair<const KeyType, ValueType> value_type;
-  typedef std::size_t size_type;
-  typedef HashFn hasher;
-  typedef KeyEqual key_equal;
-  typedef ConstIterator const_iterator;
+  using key_type = KeyType;
+  using mapped_type = ValueType;
+  using value_type = std::pair<const KeyType, ValueType>;
+  using size_type = std::size_t;
+  using hasher = HashFn;
+  using key_equal = KeyEqual;
+  using const_iterator = ConstIterator;
 
  private:
   template <typename K, typename T>
@@ -342,19 +340,18 @@ class ConcurrentHashMap {
   template <typename... Args>
   std::pair<ConstIterator, bool> emplace(Args&&... args) {
     using Node = typename SegmentT::Node;
-    auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node) Node(ensureCohort(), std::forward<Args>(args)...);
-    auto h = HashFn{}(node->getItem().first);
+    detail::concurrenthashmap::AllocNodeGuard<Node, Allocator> g(
+        Allocator(), ensureCohort(), std::forward<Args>(args)...);
+    auto h = HashFn{}(g.node->getItem().first);
     auto segment = pickSegment(h);
     std::pair<ConstIterator, bool> res(
         std::piecewise_construct,
         std::forward_as_tuple(this, segment),
         std::forward_as_tuple(false));
     res.second = ensureSegment(segment)->emplace(
-        res.first.it_, h, node->getItem().first, node);
-    if (!res.second) {
-      node->~Node();
-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
+        res.first.it_, h, g.node->getItem().first, g.node);
+    if (res.second) {
+      g.dismiss();
     }
     return res;
   }
@@ -374,6 +371,31 @@ class ConcurrentHashMap {
         std::forward_as_tuple(false));
     res.second = ensureSegment(segment)->insert_or_assign(
         res.first.it_, h, std::forward<Key>(k), std::forward<Value>(v));
+    return res;
+  }
+
+  /*
+   * Insert desired if the key doesn't exist, or assign to desired if the
+   * predicate returns true for the current value. The bool component will
+   * always be true if the map has been updated via either insertion or
+   * assignment. Note that this is different from the std::map::insert_or_assign
+   * interface.
+   */
+  template <typename Key, typename Value, typename Predicate>
+  std::pair<ConstIterator, bool> insert_or_assign_if(
+      Key&& k, Value&& desired, Predicate&& predicate) {
+    auto h = HashFn{}(k);
+    auto segment = pickSegment(h);
+    std::pair<ConstIterator, bool> res(
+        std::piecewise_construct,
+        std::forward_as_tuple(this, segment),
+        std::forward_as_tuple(false));
+    res.second = ensureSegment(segment)->insert_or_assign_if(
+        res.first.it_,
+        h,
+        std::forward<Key>(k),
+        std::forward<Value>(desired),
+        std::forward<Predicate>(predicate));
     return res;
   }
 
@@ -529,8 +551,9 @@ class ConcurrentHashMap {
 
   void reserve(size_t count) {
     count = count >> ShardBits;
-    if (!count)
+    if (!count) {
       return;
+    }
     uint64_t begin = beginSeg_.load(std::memory_order_acquire);
     uint64_t end = endSeg_.load(std::memory_order_acquire);
     for (uint64_t i = begin; i < end; ++i) {
@@ -813,7 +836,10 @@ using ConcurrentHashMapSIMD = ConcurrentHashMap<
     ShardBits,
     Atom,
     Mutex,
-#if FOLLY_SSE_PREREQ(4, 2) && FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
+#if (                                                        \
+    FOLLY_SSE_PREREQ(4, 2) ||                                \
+    (FOLLY_AARCH64 && FOLLY_F14_CRC_INTRINSIC_AVAILABLE)) && \
+    FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
     detail::concurrenthashmap::simd::SIMDTable
 #else
     // fallback to regular impl

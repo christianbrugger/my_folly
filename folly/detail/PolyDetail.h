@@ -619,8 +619,9 @@ void* execInSitu(Op op, Data* from, void* to) {
 }
 
 inline void* noopExec(Op op, Data*, void*) {
-  if (op == Op::eAddr)
+  if (op == Op::eAddr) {
     throw_exception<BadPolyAccess>();
+  }
   return const_cast<void*>(static_cast<void const*>(&typeid(void)));
 }
 
@@ -803,11 +804,12 @@ using PolyImpl = TypeFold<
 template <class Fun> // Fun = R(As...) const
 struct Sig {
   template <class T>
-  constexpr Fun T::*operator()(Fun T::*t) const /* nolint */ volatile noexcept {
+  constexpr Fun T::* operator()(Fun T::* t) const
+      /* nolint */ volatile noexcept {
     return t;
   }
   template <class F, class T>
-  constexpr F T::*operator()(F T::*t) const /* nolint */ volatile noexcept {
+  constexpr F T::* operator()(F T::* t) const /* nolint */ volatile noexcept {
     return t;
   }
 };
@@ -820,7 +822,7 @@ struct Sig<R()> : Sig<R() const> {
   using Sig<R() const>::operator();
 
   template <class T>
-  constexpr Fun T::*operator()(Fun T::*t) const noexcept {
+  constexpr Fun T::* operator()(Fun T::* t) const noexcept {
     return t;
   }
 };
@@ -831,7 +833,7 @@ struct SigImpl : Sig<R(As...) const> {
   using Sig<R(As...) const>::operator();
 
   template <class T>
-  constexpr Fun T::*operator()(Fun T::*t) const noexcept {
+  constexpr Fun T::* operator()(Fun T::* t) const noexcept {
     return t;
   }
   constexpr Fun* operator()(Fun* t) const noexcept { return t; }

@@ -63,7 +63,7 @@ struct invoke_fn {
     return static_cast<F&&>(f)(static_cast<A&&>(a)...);
   }
   template <typename M, typename C, typename... A>
-  FOLLY_ERASE constexpr auto operator()(M C::*f, A&&... a) const
+  FOLLY_ERASE constexpr auto operator()(M C::* f, A&&... a) const
       noexcept(noexcept(std::mem_fn(f)(static_cast<A&&>(a)...)))
           -> decltype(std::mem_fn(f)(static_cast<A&&>(a)...)) {
     return std::mem_fn(f)(static_cast<A&&>(a)...);
@@ -85,12 +85,13 @@ namespace invoke_detail {
 //  Substitutes as void if that holds; otherwise fails a static-assert.
 struct ok_one_ {
   template <typename T>
-  static constexpr bool pass_v = ( //
-      std::is_void_v<T> || //
-      std::is_reference_v<T> || //
-      std::is_function_v<T> || //
-      is_unbounded_array_v<T> || //
-      false);
+  static constexpr bool pass_v =
+      ( //
+          std::is_void_v<T> || //
+          std::is_reference_v<T> || //
+          std::is_function_v<T> || //
+          is_unbounded_array_v<T> || //
+          false);
 
   // note: void return type with no function body to enforce that, in the
   // typical case of complete non-function types, to minimize the quantity of
@@ -161,15 +162,15 @@ struct traits_member_ptr {
 template <typename M, typename C>
 struct traits<M C::*> : traits_member_ptr<M C::*> {};
 template <typename M, typename C>
-struct traits<M C::*const> : traits_member_ptr<M C::*> {};
+struct traits<M C::* const> : traits_member_ptr<M C::*> {};
 template <typename M, typename C>
 struct traits<M C::*&> : traits_member_ptr<M C::*> {};
 template <typename M, typename C>
-struct traits<M C::*const&> : traits_member_ptr<M C::*> {};
+struct traits<M C::* const&> : traits_member_ptr<M C::*> {};
 template <typename M, typename C>
 struct traits<M C::*&&> : traits_member_ptr<M C::*> {};
 template <typename M, typename C>
-struct traits<M C::*const&&> : traits_member_ptr<M C::*> {};
+struct traits<M C::* const&&> : traits_member_ptr<M C::*> {};
 
 #if defined(_MSC_VER) && defined(__NVCC__)
 template <typename P, typename... A>
@@ -646,6 +647,23 @@ struct invoke_first_match : private Invoker... {
   FOLLY_CREATE_MEMBER_INVOKER(membername##_fn, membername); \
   [[maybe_unused]] inline constexpr membername##_fn membername {}
 
+namespace folly {
+// Power users can call `is_instantiation_of<invoke_member_wrapper_fn, T>`
+// to ascertain that a callable was made via `FOLLY_INVOKE_MEMBER`.  This
+// can be important e.g. when you want to be sure that the first argument
+// of the callable becomes the implicit object parameter of the class.
+template <typename F>
+struct invoke_member_wrapper_fn : private F {
+  template <typename G, typename = decltype(F(FOLLY_DECLVAL(G&&)))>
+  constexpr explicit invoke_member_wrapper_fn(G&& f) noexcept(
+      noexcept(F(static_cast<G&&>(f))))
+      : F(static_cast<G&&>(f)) {}
+  using F::operator();
+};
+template <typename F>
+invoke_member_wrapper_fn(F) -> invoke_member_wrapper_fn<F>;
+} // namespace folly
+
 /***
  *  FOLLY_INVOKE_MEMBER
  *
@@ -664,16 +682,17 @@ struct invoke_first_match : private Invoker... {
  *
  *    std::invoke(FOLLY_INVOKE_MEMBER(find), map, key)
  *
- *  As an implementation detail, the resulting callable is a lambda. This has
- *  two observable consequences.
+ *  As an implementation detail, the resulting callable uses a lambda.  This
+ *  has two observable consequences.
  *  * Since C++17 only, lambda invocations may be marked constexpr.
  *  * Since C++20 only, lambda definitions may appear in an unevaluated context,
  *    namely, in an operand to decltype, noexcept, sizeof, or typeid.
  */
-#define FOLLY_INVOKE_MEMBER(membername)                                                      \
-  [](auto&& __folly_param_o, auto&&... __folly_param_a) constexpr FOLLY_DETAIL_FORWARD_BODY( \
-      FOLLY_DETAIL_FORWARD_REF(__folly_param_o)                                              \
-          .membername(FOLLY_DETAIL_FORWARD_REF(__folly_param_a)...))
+#define FOLLY_INVOKE_MEMBER(membername)                                                          \
+  ::folly::invoke_member_wrapper_fn(                                                             \
+      [](auto&& __folly_param_o, auto&&... __folly_param_a) constexpr FOLLY_DETAIL_FORWARD_BODY( \
+          FOLLY_DETAIL_FORWARD_REF(__folly_param_o)                                              \
+              .membername(FOLLY_DETAIL_FORWARD_REF(__folly_param_a)...)))
 
 /***
  *  FOLLY_CREATE_STATIC_MEMBER_INVOKER
@@ -742,6 +761,33 @@ struct invoke_first_match : private Invoker... {
   FOLLY_CREATE_STATIC_MEMBER_INVOKER(membername##_fn, membername); \
   template <typename T>                                            \
   [[maybe_unused]] inline constexpr membername##_fn<T> membername {}
+
+/***
+ *  FOLLY_CREATE_MEMBER_ACCESSOR
+ *
+ *  Used to create an accessor type bound to a specific data-member name,
+ *  providing access to that data-member.
+ */
+#define FOLLY_CREATE_MEMBER_ACCESSOR(classname, membername)            \
+  struct classname {                                                   \
+    template <typename T>                                              \
+    [[maybe_unused]] FOLLY_ERASE_HACK_GCC constexpr auto&& operator()( \
+        T&& val) const noexcept {                                      \
+      return static_cast<T&&>(val).membername;                         \
+    }                                                                  \
+  }
+
+/***
+ *  FOLLY_CREATE_MEMBER_ACCESSOR_SUITE
+ *
+ *  Used to create an accessor type and associated variable bound to a specific
+ *  data-member name, providing access to that data-member. The accessor
+ *  variable is named like the member name and the accessor type is named with a
+ *  suffix of _fn.
+ */
+#define FOLLY_CREATE_MEMBER_ACCESSOR_SUITE(membername)       \
+  FOLLY_CREATE_MEMBER_ACCESSOR(membername##_fn, membername); \
+  [[maybe_unused]] inline constexpr membername##_fn membername {}
 
 namespace folly {
 
@@ -875,5 +921,68 @@ struct tag_invoke_result
           is_tag_invocable_v<Tag, Args...>,
           detail_tag_invoke_fn::defer<tag_invoke_result_t, Tag, Args...>,
           detail_tag_invoke_fn::empty> {};
+
+#if defined(__cpp_concepts)
+
+/// passable_to
+///
+/// Useful for enabling n^k overloads all at once. Example below shows cases of
+/// n=5 with k=1 and k=2.
+///
+/// Useful for transparent hash and key-equal functions for a set which needs
+/// heterogeneous lookup.
+///
+/// Law:
+///   passable_to<Arg, Fun> = invocable<Fun, Arg>
+///
+/// Discussion:
+/// Q:  Why require a one-param function type and not support a multi-param
+///     function type?
+/// A:  Too much arbitrary choice. Interface would be confusing.
+///     To provide an interface like:
+///         passable_to<Slog, Fun, Arg...>
+///     Then `Arg...` would need exactly one "hole", which would be represented
+///     by perhaps `void` or perhaps `std::placeholder::_1` or another sentinel.
+///     Alternatively:
+///         passable_to<Slog, Fun, tag_t<ArgFront...>, tag_t<ArgBack...>>
+///     Now the usage gets convoluted.
+///     But, in the end, this can be worked around by passing a function type
+///     that is the result of std::bind_front (C++20) or std::bind_back (C++23).
+///
+/// Example:
+///
+///     struct to_key_fn {
+///       string_view operator()(string_view val) const noexcept { return val; }
+///       string_view operator()(object const&) const noexcept;
+///       string_view operator()(object const*) const noexcept;
+///       string_view operator()(unique_ptr<object> const&) const noexcept;
+///       string_view operator()(shared_ptr<object> const&) const noexcept;
+///     };
+///     static constexpr to_key_fn to_key{};
+///
+///     struct obj_hash : hash<string_view> {
+///       using is_transparent = void;
+///       size_t operator()(passable_to<to_key_fn> auto const& val) noexcept {
+///         return hash<string_view>::operator()(to_key(val));
+///       }
+///     };
+///     struct obj_key_equal : equal_to<string_view> {
+///       using is_transparent = void;
+///       bool operator()(
+///           passable_to<to_key_fn> auto const& lhs,
+///           passable_to<to_key_fn> auto const& rhs) noexcept {
+///         return equal_to<string_view>::operator()(to_key(lhs), to_key(rhs));
+///       }
+///     };
+///
+///     using object_set = std::unordered_set<
+///         std::shared_ptr<object>,
+///         obj_hash,
+///         obj_key_equal>;
+///     object_set objs;
+template <typename Arg, typename Fun>
+concept passable_to = is_invocable_v<Fun, Arg>;
+
+#endif
 
 } // namespace folly

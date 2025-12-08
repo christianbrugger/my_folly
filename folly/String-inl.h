@@ -219,7 +219,7 @@ bool tryUriUnescape(StringPiece str, String& out, UriEscapeMode mode) {
           return false;
         }
         out.append(&*last, size_t(p - last));
-        out.push_back((h1 << 4) | h2);
+        out.push_back(decltype(h1)(h1 << 4) | h2);
         p += 3;
         last = p;
         break;
@@ -288,6 +288,14 @@ inline char delimFront(StringPiece s) {
 template <class OutStringT, class DelimT, class OutputIterator>
 void internalSplit(
     DelimT delim, StringPiece sp, OutputIterator out, bool ignoreEmpty);
+
+/*
+ * Count the number of tokens that would be produced by splitting
+ * the given StringPiece with the given delimiter.
+ * This is used for pre-allocation optimization in split().
+ */
+size_t delimCountTokens(char delim, StringPiece sp, bool ignoreEmpty);
+size_t delimCountTokens(StringPiece delim, StringPiece sp, bool ignoreEmpty);
 
 template <class OutStringT, class Container>
 std::enable_if_t<
@@ -407,6 +415,78 @@ bool splitFixed(
   return false;
 }
 
+// Overload for no remaining output fields; requires empty input.
+template <class Delim>
+Expected<Unit, SubstringConversionCode> trySplitTo(
+    StringPiece input, const Delim&) {
+  if (input.empty()) {
+    return unit;
+  }
+  return makeUnexpected(
+      SubstringConversionCode{input, ConversionCode::SPLIT_ERROR});
+}
+
+// Replace custom conversion codes with folly::ConversionCode::CUSTOM_OTHER.
+template <class CustomCode>
+inline ConversionCode convertError(CustomCode&&) {
+  return ConversionCode::CUSTOM;
+}
+
+inline ConversionCode convertError(ConversionCode code) {
+  return code;
+}
+
+// tryFieldTo helpers, wrapping tryTo<>, but adding support for std::ignore and
+// replacing custom error types with ConversionCode::CUSTOM.
+template <class Output>
+Expected<Output, ConversionCode> tryFieldTo(folly::StringPiece input) {
+  if (auto result = tryTo<Output>(input)) {
+    return std::move(result.value());
+  } else {
+    return makeUnexpected(convertError(result.error()));
+  }
+}
+
+template <>
+inline Expected<decltype(std::ignore), ConversionCode>
+tryFieldTo<decltype(std::ignore)>(folly::StringPiece /*input*/) {
+  return std::ignore;
+}
+
+template <class Delim, class Output, class... Outputs>
+Expected<Unit, SubstringConversionCode> trySplitTo(
+    StringPiece input,
+    const Delim& delim,
+    Output& output,
+    Outputs&... outputs) {
+  auto pos = input.find(delim);
+  if ((pos == std::string::npos) != (sizeof...(outputs) == 0)) {
+    return makeUnexpected(
+        SubstringConversionCode{input, ConversionCode::SPLIT_ERROR});
+  }
+  StringPiece head, tail;
+  if (pos == std::string::npos) {
+    head = input;
+  } else {
+    head = input.subpiece(0, pos);
+    tail = input.subpiece(pos + delimSize(delim));
+  }
+  // Eagerly attempt parsing the head value, but only assign on the way back
+  // from the recursive calls to ensure all outputs are untouched on failure.
+  if (auto headResult = tryFieldTo<Output>(head)) {
+    if (auto tailResult = trySplitTo(tail, delim, outputs...)) {
+      output = *headResult;
+      return unit;
+
+    } else {
+      return makeUnexpected(tailResult.error());
+    }
+  } else {
+    // First failure (left-to-right) is returned.
+    return makeUnexpected(SubstringConversionCode{head, headResult.error()});
+  }
+}
+
 } // namespace detail
 
 //////////////////////////////////////////////////////////////////////
@@ -428,6 +508,35 @@ split(
       ignoreEmpty);
 }
 
+template <class Delim, class String, class OutputType>
+std::enable_if_t<detail::IsSplitSupportedContainer<OutputType>::value> split(
+    const Delim& delimiter,
+    const String& input,
+    OutputType& out,
+    const SplitOptions& options) {
+  size_t predicted_count = 0;
+  if (options.preallocate()) {
+    // First pass: count the expected number of tokens
+    StringPiece sp(input);
+    auto delim_prepared = detail::prepareDelim(delimiter);
+    predicted_count =
+        detail::delimCountTokens(delim_prepared, sp, options.ignore_empty());
+    grow_capacity_by(out, predicted_count);
+  }
+
+  size_t initial_size = out.size();
+  detail::internalSplit<typename OutputType::value_type>(
+      detail::prepareDelim(delimiter),
+      StringPiece(input),
+      std::back_inserter(out),
+      options.ignore_empty());
+
+  if (options.preallocate()) {
+    [[maybe_unused]] size_t actual_count = out.size() - initial_size;
+    assert(predicted_count == actual_count);
+  }
+}
+
 template <
     class OutputValueType,
     class Delim,
@@ -440,6 +549,14 @@ void splitTo(
     bool ignoreEmpty) {
   detail::internalSplit<OutputValueType>(
       detail::prepareDelim(delimiter), StringPiece(input), out, ignoreEmpty);
+}
+
+template <class Delim, class... OutputTypes>
+typename std::enable_if<
+    StrictConjunction<IsConvertible<OutputTypes>...>::value,
+    Expected<Unit, SubstringConversionCode>>::type
+trySplitTo(StringPiece input, const Delim& delim, OutputTypes&... outputs) {
+  return detail::trySplitTo(input, detail::prepareDelim(delim), outputs...);
 }
 
 template <bool exact, class Delim, class... OutputTypes>

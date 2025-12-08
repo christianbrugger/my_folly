@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <folly/ssl/OpenSSLCertUtils.h>
 
 #include <folly/Format.h>
@@ -193,7 +194,7 @@ static void validateTestCertBundle(
   for (auto i : folly::enumerate(certs)) {
     auto cn = folly::ssl::OpenSSLCertUtils::getCommonName(**i);
     EXPECT_TRUE(cn);
-    EXPECT_EQ(*cn, folly::sformat("test cert {}", i.index + 1));
+    EXPECT_EQ(*cn, fmt::format("test cert {}", i.index + 1));
   }
 }
 
@@ -233,6 +234,8 @@ TEST_P(OpenSSLCertUtilsTest, TestX509CN) {
   EXPECT_NE(x509, nullptr);
   auto cn = folly::ssl::OpenSSLCertUtils::getCommonName(*x509);
   EXPECT_EQ(cn.value(), "Asox Company");
+  auto issuerCn = folly::ssl::OpenSSLCertUtils::getIssuerCommonName(*x509);
+  EXPECT_EQ(issuerCn.value(), "Thrift Certificate Authority");
   auto sans = folly::ssl::OpenSSLCertUtils::getSubjectAltNames(*x509);
   EXPECT_EQ(sans.size(), 0);
 }
@@ -317,6 +320,20 @@ TEST_P(OpenSSLCertUtilsTest, TestDerEncodeDecode) {
   EXPECT_EQ(
       folly::ssl::OpenSSLCertUtils::toString(*x509),
       folly::ssl::OpenSSLCertUtils::toString(*decoded));
+}
+
+TEST_P(OpenSSLCertUtilsTest, TestPemEncodeDecode) {
+  auto x509 = readCertFromData(kTestCertWithSan);
+  EXPECT_NE(x509, nullptr);
+
+  auto pem = folly::ssl::OpenSSLCertUtils::pemEncode(*x509);
+  auto decoded =
+      folly::ssl::OpenSSLCertUtils::pemDecode(folly::StringPiece(pem));
+
+  EXPECT_EQ(
+      folly::ssl::OpenSSLCertUtils::toString(*x509),
+      folly::ssl::OpenSSLCertUtils::toString(*decoded));
+  EXPECT_EQ(pem, kTestCertWithSan);
 }
 
 TEST_P(OpenSSLCertUtilsTest, TestDerDecodeJunkData) {

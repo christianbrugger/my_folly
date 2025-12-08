@@ -18,11 +18,7 @@
 
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/types.h>
 
-#include <openssl/async.h>
-
-#include <fstream>
 #include <iostream>
 #include <list>
 #include <set>
@@ -68,7 +64,7 @@ namespace {
 
 #if defined __linux__
 // to store libc's original setsockopt()
-typedef int (*setsockopt_ptr)(int, int, int, const void*, socklen_t);
+using setsockopt_ptr = int (*)(int, int, int, const void*, socklen_t);
 setsockopt_ptr real_setsockopt_ = nullptr;
 
 // global struct to initialize before main runs. we can init within a test,
@@ -87,13 +83,24 @@ GlobalStatic globalStatic;
 
 } // namespace
 
-// we intercept setsoctopt to test setting NO_TRANSPARENT_TLS opt
+// Intercepting setsockopt to test system behavior with disabled TTLS.
 // this name has to be global
 int setsockopt(
     int sockfd, int level, int optname, const void* optval, socklen_t optlen) {
-  if (optname == SO_NO_TRANSPARENT_TLS) {
+  /**
+   *This is a @deprecated approach to disabling TTLS and should be
+   *removed after completing the migration to FOLLY_SO_TTLS_TRUSTED.
+   */
+  if (optname == FOLLY_SO_NO_TRANSPARENT_TLS) {
     globalStatic.ttlsDisabledSet.insert(folly::NetworkSocket::fromFd(sockfd));
     return 0;
+  }
+  if (optname == FOLLY_SO_TTLS_TRUSTED && optval != nullptr) {
+    __u8 optValue = *(__u8*)optval;
+    if (optValue == FOLLY_SO_TTLS_TRUSTED_VAL_ENCRYPTED) {
+      globalStatic.ttlsDisabledSet.insert(folly::NetworkSocket::fromFd(sockfd));
+      return 0;
+    }
   }
   return real_setsockopt_(sockfd, level, optname, optval, optlen);
 }
@@ -832,7 +839,7 @@ TEST(AsyncSSLSocketTest, SetSupportedApplicationProtocols) {
       new AsyncSSLSocket(dfServerCtx, &eventBase, fds[1], true));
 
   std::vector<std::string> protocols;
-  protocols.push_back("rs");
+  protocols.emplace_back("rs");
 
   clientSock->setSupportedApplicationProtocols(protocols);
   serverSock->setSupportedApplicationProtocols(protocols);
@@ -1478,14 +1485,20 @@ TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierReturns) {
   std::shared_ptr<MockCertificateIdentityVerifier> verifier =
       std::make_shared<MockCertificateIdentityVerifier>();
 
+  // expecting context verification to be called first
+  auto&& verifyContext =
+      EXPECT_CALL(*verifier, verifyContext(true, _))
+          .Times(AtLeast(1))
+          .WillRepeatedly(Return(true));
   // expecting to only verify once, with the leaf certificate
   // (kTestCert)
   EXPECT_CALL(
       *verifier,
       verifyLeaf(Property(
           &AsyncTransportCertificate::getIdentity, StrEq("Asox Company"))))
-      .WillOnce(
-          Return(ByMove(std::make_unique<folly::ssl::BasicTransportCertificate>(
+      .After(verifyContext)
+      .WillOnce(Return(ByMove(
+          std::make_unique<folly::ssl::BasicTransportCertificate>(
               "Asox Company", readCertFromFile(kTestCert)))));
 
   AsyncSSLSocket::Options opts;
@@ -1535,11 +1548,18 @@ TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierFailsToConnect) {
   // Throw an exception on verification failure
   CertificateIdentityVerifierException failed{"a failed test reason"};
 
+  // expecting context verification to be called first
+  auto&& verifyContext =
+      EXPECT_CALL(*verifier, verifyContext(true, _))
+          .Times(AtLeast(1))
+          .WillRepeatedly(Return(true));
+
   // expecting to only verify once, with the leaf certificate (kTestCert)
   EXPECT_CALL(
       *verifier,
       verifyLeaf(Property(
           &AsyncTransportCertificate::getIdentity, StrEq("Asox Company"))))
+      .After(verifyContext)
       .WillOnce(Throw(failed));
 
   AsyncSSLSocket::Options opts;
@@ -1549,6 +1569,119 @@ TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierFailsToConnect) {
   AsyncSSLSocket::UniquePtr socket(
       new AsyncSSLSocket(clientCtx, &eventBase, std::move(opts)));
   socket->connect(nullptr, server.getAddress(), 0);
+
+  eventBase.loop();
+
+  socket->close();
+}
+
+/**
+ * Verify that the client fails to connect during handshake when
+ * CertificateIdentityVerifier::verifyContext returns false,
+ * and that verifyLeaf is not invoked when verifyContext fails.
+ */
+TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierContextFailure) {
+  EventBase eventBase;
+  auto clientCtx = std::make_shared<folly::SSLContext>();
+  auto serverCtx = std::make_shared<folly::SSLContext>();
+  getctx(clientCtx, serverCtx);
+  // the client socket will default to USE_CTX, so set VERIFY here
+  clientCtx->setVerificationOption(SSLContext::SSLVerifyPeerEnum::VERIFY);
+  // load root certificate
+  clientCtx->loadTrustedCertificates(find_resource(kTestCA).c_str());
+
+  // prepare a basic server (callbacks have a few EXPECTS to fulfill)
+  ReadCallback readCallback(nullptr);
+  // expects a failed handshake
+  HandshakeCallback handshakeCallback(
+      &readCallback, HandshakeCallback::ExpectType::EXPECT_ERROR);
+  SSLServerAcceptCallback acceptCallback(&handshakeCallback);
+  TestSSLServer server(&acceptCallback, serverCtx);
+
+  std::shared_ptr<StrictMock<MockCertificateIdentityVerifier>> verifier =
+      std::make_shared<StrictMock<MockCertificateIdentityVerifier>>();
+
+  // verifyContext should be called and return false to fail verification
+  EXPECT_CALL(*verifier, verifyContext(true, _)).WillOnce(Return(false));
+
+  // verifyLeaf should NOT be called since verifyContext failed
+  EXPECT_CALL(*verifier, verifyLeaf).Times(0);
+
+  AsyncSSLSocket::Options opts;
+  opts.verifier = std::move(verifier);
+
+  // connect to server and handshake
+  AsyncSSLSocket::UniquePtr socket(
+      new AsyncSSLSocket(clientCtx, &eventBase, std::move(opts)));
+  socket->connect(nullptr, server.getAddress(), 0);
+
+  eventBase.loop();
+
+  socket->close();
+}
+
+/**
+ * Verify that verifyContext has access to the X509_STORE_CTX
+ * and can inspect the certificate chain.
+ */
+TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierContextInspectsChain) {
+  EventBase eventBase;
+  auto clientCtx = std::make_shared<folly::SSLContext>();
+  auto serverCtx = std::make_shared<folly::SSLContext>();
+  getctx(clientCtx, serverCtx);
+  // the client socket will default to USE_CTX, so set VERIFY here
+  clientCtx->setVerificationOption(SSLContext::SSLVerifyPeerEnum::VERIFY);
+  // load root certificate
+  clientCtx->loadTrustedCertificates(find_resource(kTestCA).c_str());
+
+  // prepare a basic server (callbacks have a few EXPECTS to fulfill)
+  ReadCallback readCallback(nullptr);
+  // expects successful handshake
+  HandshakeCallback handshakeCallback(&readCallback);
+  SSLServerAcceptCallback acceptCallback(&handshakeCallback);
+  TestSSLServer server(&acceptCallback, serverCtx);
+
+  std::shared_ptr<MockCertificateIdentityVerifier> verifier =
+      std::make_shared<MockCertificateIdentityVerifier>();
+
+  // verifyContext should be called and have access to X509_STORE_CTX
+  auto&& verifyContext =
+      EXPECT_CALL(*verifier, verifyContext(true, _))
+          .Times(AtLeast(1))
+          .WillRepeatedly(WithArg<1>([](X509_STORE_CTX* ctx) {
+            // Verify we can access the cert chain
+            X509* cert = X509_STORE_CTX_get_current_cert(ctx);
+            EXPECT_NE(cert, nullptr);
+
+            // Verify we can get the chain depth
+            int depth = X509_STORE_CTX_get_error_depth(ctx);
+            EXPECT_GE(depth, 0);
+
+            return true;
+          }));
+
+  // expecting to verify leaf certificate after context verification
+  EXPECT_CALL(
+      *verifier,
+      verifyLeaf(Property(
+          &AsyncTransportCertificate::getIdentity, StrEq("Asox Company"))))
+      .After(verifyContext)
+      .WillOnce(Return(ByMove(
+          std::make_unique<folly::ssl::BasicTransportCertificate>(
+              "Asox Company", readCertFromFile(kTestCert)))));
+
+  AsyncSSLSocket::Options opts;
+  opts.verifier = std::move(verifier);
+
+  // connect to server and handshake
+  AsyncSSLSocket::UniquePtr socket(
+      new AsyncSSLSocket(clientCtx, &eventBase, std::move(opts)));
+  socket->connect(nullptr, server.getAddress(), 0);
+
+  // write to satisfy server ReadCallback EXPECTs
+  std::array<uint8_t, 128> buf;
+  memset(buf.data(), 'a', buf.size());
+  socket->write(nullptr, buf.data(), buf.size());
 
   eventBase.loop();
 
@@ -1576,9 +1709,10 @@ TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierNotInvokedX509Failure) {
   SSLServerAcceptCallback acceptCallback(&handshakeCallback);
   TestSSLServer server(&acceptCallback, serverCtx);
 
-  // should not get called
+  // do not override verification result
   std::shared_ptr<StrictMock<MockCertificateIdentityVerifier>> verifier =
       std::make_shared<StrictMock<MockCertificateIdentityVerifier>>();
+  EXPECT_CALL(*verifier, verifyContext(false, _)).WillOnce(Return(false));
 
   AsyncSSLSocket::Options opts;
   opts.verifier = std::move(verifier);
@@ -1615,9 +1749,12 @@ TEST(
   AsyncSocket::UniquePtr rawClient(new AsyncSocket(&eventBase, fds[0]));
   AsyncSocket::UniquePtr rawServer(new AsyncSocket(&eventBase, fds[1]));
 
-  // should not be invoked
+  // should be invoked to only verify context
   std::shared_ptr<StrictMock<MockCertificateIdentityVerifier>> verifier =
       std::make_shared<StrictMock<MockCertificateIdentityVerifier>>();
+  EXPECT_CALL(*verifier, verifyContext)
+      .Times(AtLeast(1))
+      .WillRepeatedly(Return(true));
 
   AsyncSSLSocket::Options clientOpts;
   clientOpts.verifier = verifier;
@@ -1638,14 +1775,14 @@ TEST(
   // to be considered as unsuccessful
   EXPECT_CALL(clientHandshakeCB, handshakeVerImpl(clientSock.get(), true, _))
       .Times(AtLeast(1))
-      .WillRepeatedly(Invoke([&](auto&&, bool preverifyOk, auto&& ctx) {
+      .WillRepeatedly([&](auto&&, bool preverifyOk, auto&& ctx) {
         auto currentDepth = X509_STORE_CTX_get_error_depth(ctx);
         if (currentDepth == 0) {
           EXPECT_TRUE(preverifyOk);
           return false;
         }
         return preverifyOk;
-      }));
+      });
 
   // failure callback to verify handshake failed
   EXPECT_CALL(clientHandshakeCB, handshakeErrImpl(clientSock.get(), _));
@@ -1688,21 +1825,31 @@ TEST(AsyncSSLSocketTest, SSLCertificateIdentityVerifierSucceedsOnServer) {
   // client and server verifiers should verify only once each
   std::shared_ptr<MockCertificateIdentityVerifier> clientVerifier =
       std::make_shared<MockCertificateIdentityVerifier>();
+  auto&& clientVerifyContext =
+      EXPECT_CALL(*clientVerifier, verifyContext(true, _))
+          .Times(AtLeast(1))
+          .WillRepeatedly(Return(true));
   EXPECT_CALL(
       *clientVerifier,
       verifyLeaf(Property(
           &AsyncTransportCertificate::getIdentity, StrEq("Asox Company"))))
-      .WillOnce(
-          Return(ByMove(std::make_unique<folly::ssl::BasicTransportCertificate>(
+      .After(clientVerifyContext)
+      .WillOnce(Return(ByMove(
+          std::make_unique<folly::ssl::BasicTransportCertificate>(
               "Asox Company", readCertFromFile(kTestCert)))));
   std::shared_ptr<StrictMock<MockCertificateIdentityVerifier>> serverVerifier =
       std::make_shared<StrictMock<MockCertificateIdentityVerifier>>();
+  auto&& serverVerifyContext =
+      EXPECT_CALL(*serverVerifier, verifyContext(true, _))
+          .Times(AtLeast(1))
+          .WillRepeatedly(Return(true));
   EXPECT_CALL(
       *serverVerifier,
       verifyLeaf(Property(
           &AsyncTransportCertificate::getIdentity, StrEq("Asox Company"))))
-      .WillOnce(
-          Return(ByMove(std::make_unique<folly::ssl::BasicTransportCertificate>(
+      .After(serverVerifyContext)
+      .WillOnce(Return(ByMove(
+          std::make_unique<folly::ssl::BasicTransportCertificate>(
               "Asox Company", readCertFromFile(kTestCert)))));
 
   AsyncSSLSocket::Options clientOpts;
@@ -2796,7 +2943,8 @@ TEST(AsyncSSLSocketTest, TTLSDisabled) {
       std::make_shared<BlockingSocket>(server.getAddress(), sslContext);
   socket->open();
 
-  EXPECT_EQ(1, globalStatic.ttlsDisabledSet.count(socket->getNetworkSocket()));
+  EXPECT_TRUE(
+      globalStatic.ttlsDisabledSet.contains(socket->getNetworkSocket()));
 
   // write()
   std::array<uint8_t, 128> buf;
@@ -2853,7 +3001,8 @@ TEST(AsyncSSLSocketTest, TTLSDisabledWithTFO) {
   socket->enableTFO();
   socket->open();
 
-  EXPECT_EQ(1, globalStatic.ttlsDisabledSet.count(socket->getNetworkSocket()));
+  EXPECT_TRUE(
+      globalStatic.ttlsDisabledSet.contains(socket->getNetworkSocket()));
 
   // write()
   std::array<uint8_t, 128> buf;

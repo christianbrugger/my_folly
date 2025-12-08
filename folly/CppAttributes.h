@@ -171,6 +171,18 @@
 #define FOLLY_ATTR_GNU_USED
 #endif
 
+#if FOLLY_HAS_CPP_ATTRIBUTE(gnu::retain)
+#define FOLLY_ATTR_GNU_RETAIN gnu::retain
+#else
+#define FOLLY_ATTR_GNU_RETAIN
+#endif
+
+#if FOLLY_HAS_CPP_ATTRIBUTE(gnu::noclone)
+#define FOLLY_ATTR_GNU_NOCLONE gnu::noclone
+#else
+#define FOLLY_ATTR_GNU_NOCLONE
+#endif
+
 #if FOLLY_HAS_CPP_ATTRIBUTE(clang::lifetimebound)
 #define FOLLY_ATTR_CLANG_LIFETIMEBOUND clang::lifetimebound
 #else

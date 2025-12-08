@@ -143,7 +143,7 @@ class FutureBase {
   using Core = futures::detail::Core<T>;
 
  public:
-  typedef T value_type;
+  using value_type = T;
 
   /// Construct from a value (perfect forwarding)
   ///
@@ -365,8 +365,9 @@ class FutureBase {
   /// See `raise(exception_wrapper)` for details.
   template <class E>
   void raise(E&& exception) {
-    raise(make_exception_wrapper<typename std::remove_reference<E>::type>(
-        static_cast<E&&>(exception)));
+    raise(
+        make_exception_wrapper<typename std::remove_reference<E>::type>(
+            static_cast<E&&>(exception)));
   }
 
   /// Raises a FutureCancellation interrupt.
@@ -2233,9 +2234,19 @@ SemiFuture<T> makeSemiFuture(exception_wrapper ew);
 /** Make a SemiFuture from an exception type E that can be passed to
   std::make_exception_ptr(). */
 template <class T, class E>
-typename std::
-    enable_if<std::is_base_of<std::exception, E>::value, SemiFuture<T>>::type
-    makeSemiFuture(E const& e);
+std::enable_if_t<std::is_base_of_v<std::exception, decay_t<E>>, SemiFuture<T>>
+makeSemiFuture(E&& e);
+
+/** Make a SemiFuture from an exception type E that can be passed to
+  std::make_exception_ptr().
+  NOTE: This is a deprecated const-ref overload for users who explicitly specify
+  both template parameters. Please leave exception type deduction to the
+  compiler.
+ */
+template <class T, class E>
+[[deprecated("do not specify exception type template parameter explicitly")]]
+std::enable_if_t<std::is_base_of_v<std::exception, E>, SemiFuture<T>>
+makeSemiFuture(const folly::type_identity_t<E>& e);
 
 /** Make a Future out of a Try */
 template <class T>
@@ -2325,9 +2336,19 @@ Future<T> makeFuture(exception_wrapper ew);
        valid Future where necessary.
  */
 template <class T, class E>
-typename std::enable_if<std::is_base_of<std::exception, E>::value, Future<T>>::
-    type
-    makeFuture(E const& e);
+std::enable_if_t<std::is_base_of_v<std::exception, decay_t<E>>, Future<T>>
+makeFuture(E&& e);
+
+/** Make a Future from an exception type E that can be passed to
+  std::make_exception_ptr().
+  NOTE: This is a deprecated const-ref overload for users who explicitly specify
+  both template parameters. Please leave exception type deduction to the
+  compiler.
+ */
+template <class T, class E>
+[[deprecated("do not specify exception type template parameter explicitly")]]
+std::enable_if_t<std::is_base_of_v<std::exception, E>, Future<T>> makeFuture(
+    const folly::type_identity_t<E>& e);
 
 /**
   Make a Future out of a Try
@@ -2551,12 +2572,8 @@ Future<T> reduce(It first, It last, T&& initial, F&& func);
 
 /// Sugar for the most common case
 template <class Collection, class T, class F>
-auto reduce(Collection&& c, T&& initial, F&& func)
-    -> decltype(folly::reduce(
-        c.begin(),
-        c.end(),
-        static_cast<T&&>(initial),
-        static_cast<F&&>(func))) {
+auto reduce(Collection&& c, T&& initial, F&& func) -> decltype(folly::reduce(
+    c.begin(), c.end(), static_cast<T&&>(initial), static_cast<F&&>(func))) {
   return folly::reduce(
       c.begin(), c.end(), static_cast<T&&>(initial), static_cast<F&&>(func));
 }

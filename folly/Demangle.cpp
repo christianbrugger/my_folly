@@ -20,13 +20,12 @@
 #include <cstring>
 
 #include <folly/CPortability.h>
-#include <folly/CppAttributes.h>
 #include <folly/Utility.h>
 #include <folly/functional/Invoke.h>
 #include <folly/lang/CString.h>
 
 #if __has_include(<cxxabi.h>)
-#include <cxxabi.h>
+#include <cxxabi.h> // @donotremove
 #endif
 
 //  The headers <libiberty.h> (binutils) and <string.h> (glibc) both declare the
@@ -69,7 +68,10 @@ static constexpr auto cxxabi_demangle = static_cast<char* (*)(...)>(nullptr);
 namespace {
 struct poison {};
 
-[[maybe_unused]] FOLLY_ERASE void rust_demangle_callback(poison);
+FOLLY_PUSH_WARNING
+FOLLY_GCC_DISABLE_WARNING("-Wunused-function")
+[[maybe_unused]] void rust_demangle_callback(poison);
+FOLLY_POP_WARNING
 
 [[maybe_unused]] FOLLY_ERASE int rust_demangle_callback_fallback(
     const char*, int, demangle_callbackref, void*) {
@@ -125,10 +127,16 @@ static constexpr auto liberty_demangle_options = 0;
 
 namespace folly {
 
-bool const demangle_build_has_cxxabi = cxxabi_demangle;
-bool const demangle_build_has_liberty = //
-    to_bool(liberty_cplus_demangle) && //
-    to_bool(liberty_rust_demangle);
+bool demangle_build_has_cxxabi() noexcept {
+  return to_bool(cxxabi_demangle);
+}
+bool demangle_build_has_liberty() noexcept {
+  bool vals[] = {
+      to_bool(liberty_cplus_demangle),
+      to_bool(liberty_rust_demangle),
+  };
+  return std::all_of(std::begin(vals), std::end(vals), folly::identity);
+}
 
 namespace {
 void demangleStringCallback(const char* str, size_t size, void* p) {
@@ -155,7 +163,7 @@ fbstring demangle(const char* name) {
     }
   }
 
-  if (folly::demangle_build_has_liberty) {
+  if (folly::demangle_build_has_liberty()) {
     liberty_demangle_t* funcs[] = {
         liberty_rust_demangle,
         liberty_cplus_demangle,
@@ -223,7 +231,7 @@ size_t demangle(const char* name, char* out, size_t outSize) {
     }
   }
 
-  if (folly::demangle_build_has_liberty) {
+  if (folly::demangle_build_has_liberty()) {
     liberty_demangle_t* funcs[] = {
         liberty_rust_demangle,
         liberty_cplus_demangle,

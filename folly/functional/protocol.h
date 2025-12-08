@@ -95,10 +95,11 @@ inline constexpr match_empty_function_protocol_fn
 //  * std::hash
 //  * std::default_delete
 template <typename F>
-static constexpr bool match_static_lambda_protocol_v = ( //
-    std::is_empty<F>::value && //
-    std::is_trivially_copyable_v<F> && //
-    true);
+static constexpr bool match_static_lambda_protocol_v =
+    ( //
+        std::is_empty<F>::value && //
+        std::is_trivially_copyable_v<F> && //
+        true);
 
 //  ----
 
@@ -108,7 +109,7 @@ template <typename S>
 struct match_safely_invocable_as_protocol_impl_ {
   using traits = function_traits<S>;
 
-  using sig_r = typename traits::result_type;
+  using sig_r = typename traits::result;
   static constexpr bool sig_nx = traits::is_nothrow;
 
   template <typename F>

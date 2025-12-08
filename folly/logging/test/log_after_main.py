@@ -13,12 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pyre-unsafe
+
 import os
 import subprocess
 import unittest
 
 
-class LogAfterMain(unittest.TestCase):
+class LogAfterMainTest(unittest.TestCase):
     def find_helper(self, name, env_var):
         path = os.environ.get(env_var)
         if path:

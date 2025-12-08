@@ -214,14 +214,14 @@ TEST(ThreadLocalPtr, CustomDeleter2) {
 
       // Notify main thread that we're done
       {
-        std::unique_lock<std::mutex> lock(mutex);
+        std::unique_lock lock(mutex);
         state = State::DONE;
         cv.notify_all();
       }
 
       // Wait for main thread to allow us to exit
       {
-        std::unique_lock<std::mutex> lock(mutex);
+        std::unique_lock lock(mutex);
         while (state != State::EXIT) {
           cv.wait(lock);
         }
@@ -230,7 +230,7 @@ TEST(ThreadLocalPtr, CustomDeleter2) {
 
     // Wait for main thread to start (and set w.get()->val_)
     {
-      std::unique_lock<std::mutex> lock(mutex);
+      std::unique_lock lock(mutex);
       while (state != State::DONE) {
         cv.wait(lock);
       }
@@ -246,7 +246,7 @@ TEST(ThreadLocalPtr, CustomDeleter2) {
 
   // Allow thread to exit
   {
-    std::unique_lock<std::mutex> lock(mutex);
+    std::unique_lock lock(mutex);
     state = State::EXIT;
     cv.notify_all();
   }
@@ -366,7 +366,7 @@ TEST(ThreadLocal, InterleavedDestructors) {
     int wVersionPrev = 0;
     while (true) {
       while (true) {
-        std::lock_guard<std::mutex> g(lock);
+        std::lock_guard g(lock);
         if (wVersion > wVersionMax) {
           return;
         }
@@ -376,7 +376,7 @@ TEST(ThreadLocal, InterleavedDestructors) {
           break;
         }
       }
-      std::lock_guard<std::mutex> g(lock);
+      std::lock_guard g(lock);
       wVersionPrev = wVersion;
       (*w)->val_ += 10;
       ++thIter;
@@ -385,20 +385,20 @@ TEST(ThreadLocal, InterleavedDestructors) {
   FOR_EACH_RANGE (i, 0, wVersionMax) {
     int thIterPrev = 0;
     {
-      std::lock_guard<std::mutex> g(lock);
+      std::lock_guard g(lock);
       thIterPrev = thIter;
       w = std::make_unique<ThreadLocal<Widget>>();
       ++wVersion;
     }
     while (true) {
-      std::lock_guard<std::mutex> g(lock);
+      std::lock_guard g(lock);
       if (thIter > thIterPrev) {
         break;
       }
     }
   }
   {
-    std::lock_guard<std::mutex> g(lock);
+    std::lock_guard g(lock);
     wVersion = wVersionMax + 1;
   }
   th.join();
@@ -430,20 +430,21 @@ TEST(ThreadLocalPtr, AccessAllThreadsCounter) {
   // thread i will increment all the thread locals
   // in the range 0..i
   for (int i = 0; i < kNumThreads; ++i) {
-    threads.push_back(std::thread(
-        [i, // i needs to be captured by value
-         &stci,
-         &run,
-         &totalAtomic]() {
-          for (int j = 0; j <= i; j++) {
-            stci[j].add(1);
-          }
+    threads.push_back(
+        std::thread(
+            [i, // i needs to be captured by value
+             &stci,
+             &run,
+             &totalAtomic]() {
+              for (int j = 0; j <= i; j++) {
+                stci[j].add(1);
+              }
 
-          totalAtomic.fetch_add(1);
-          while (run.load()) {
-            usleep(100);
-          }
-        }));
+              totalAtomic.fetch_add(1);
+              while (run.load()) {
+                usleep(100);
+              }
+            }));
   }
   while (totalAtomic.load() != kNumThreads) {
     usleep(100);
@@ -580,7 +581,7 @@ static void tlpIntCustomDeleter(int* p, TLPDestructionMode /*unused*/) {
 }
 
 template <typename Op, typename Check>
-void StresAccessTest(Op op, Check check) {
+void StressAccessTest(Op op, Check check) {
   static constexpr size_t kNumThreads = 16;
   static constexpr size_t kNumLoops = 10000;
 
@@ -624,19 +625,19 @@ void StresAccessTest(Op op, Check check) {
 }
 
 TEST(ThreadLocal, StressAccessReset) {
-  StresAccessTest(
+  StressAccessTest(
       [](TLPInt& ptr) { ptr.reset(new int(1)); },
       [](size_t sum, size_t numThreads) { EXPECT_EQ(sum, numThreads); });
 }
 
 TEST(ThreadLocal, StressAccessResetDeleter) {
-  StresAccessTest(
+  StressAccessTest(
       [](TLPInt& ptr) { ptr.reset(new int(1), tlpIntCustomDeleter); },
       [](size_t sum, size_t numThreads) { EXPECT_EQ(sum, numThreads); });
 }
 
 TEST(ThreadLocal, StressAccessRelease) {
-  StresAccessTest(
+  StressAccessTest(
       [](TLPInt& ptr) {
         auto* p = ptr.release();
         delete p;
@@ -687,7 +688,7 @@ TEST(ThreadLocal, Fork) {
   std::thread t([&]() {
     EXPECT_EQ(1, ptr->value()); // ensure created
     {
-      std::unique_lock<std::mutex> lock(mutex);
+      std::unique_lock lock(mutex);
       started = true;
       startedCond.notify_all();
     }
@@ -703,7 +704,7 @@ TEST(ThreadLocal, Fork) {
   });
 
   {
-    std::unique_lock<std::mutex> lock(mutex);
+    std::unique_lock lock(mutex);
     while (!started) {
       startedCond.wait(lock);
     }
@@ -794,7 +795,7 @@ TEST(ThreadLocal, SHARED_LIBRARY_TEST_NAME) {
   ASSERT_NE(nullptr, handle)
       << "unable to load " << lib.string() << ": " << dlerror();
 
-  typedef void (*useA_t)();
+  using useA_t = void (*)();
   dlerror();
   useA_t useA = (useA_t)dlsym(handle, "useA");
 

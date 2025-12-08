@@ -47,10 +47,6 @@ using SynchronizedTestTypes = testing::Types<
     std::timed_mutex,
     std::recursive_timed_mutex,
 #endif
-#ifdef RW_SPINLOCK_USE_X86_INTRINSIC_
-    folly::RWTicketSpinLock32,
-    folly::RWTicketSpinLock64,
-#endif
     folly::SpinLock>;
 TYPED_TEST_SUITE(SynchronizedTest, SynchronizedTestTypes);
 
@@ -110,10 +106,6 @@ using SynchronizedTimedTestTypes = testing::Types<
     std::timed_mutex,
     std::recursive_timed_mutex,
 #endif
-#ifdef RW_SPINLOCK_USE_X86_INTRINSIC_
-    folly::RWTicketSpinLock32,
-    folly::RWTicketSpinLock64,
-#endif
     folly::SharedMutexReadPriority,
     folly::SharedMutexWritePriority>;
 TYPED_TEST_SUITE(SynchronizedTimedTest, SynchronizedTimedTestTypes);
@@ -125,13 +117,8 @@ TYPED_TEST(SynchronizedTimedTest, Timed) {
 template <class Mutex>
 class SynchronizedTimedWithConstTest : public testing::Test {};
 
-using SynchronizedTimedWithConstTestTypes = testing::Types<
-#ifdef RW_SPINLOCK_USE_X86_INTRINSIC_
-    folly::RWTicketSpinLock32,
-    folly::RWTicketSpinLock64,
-#endif
-    folly::SharedMutexReadPriority,
-    folly::SharedMutexWritePriority>;
+using SynchronizedTimedWithConstTestTypes = testing::
+    Types<folly::SharedMutexReadPriority, folly::SharedMutexWritePriority>;
 TYPED_TEST_SUITE(
     SynchronizedTimedWithConstTest, SynchronizedTimedWithConstTestTypes);
 
@@ -326,12 +313,15 @@ TEST_F(SynchronizedLockTest, TestCopyConstructibleValues) {
     NonCopyConstructible& operator=(const NonCopyConstructible&) = delete;
   };
   struct CopyConstructible {};
-  EXPECT_FALSE(std::is_copy_constructible<
-               folly::Synchronized<NonCopyConstructible>>::value);
-  EXPECT_FALSE(std::is_copy_assignable<
-               folly::Synchronized<NonCopyConstructible>>::value);
-  EXPECT_TRUE(std::is_copy_constructible<
-              folly::Synchronized<CopyConstructible>>::value);
+  EXPECT_FALSE(
+      std::is_copy_constructible<
+          folly::Synchronized<NonCopyConstructible>>::value);
+  EXPECT_FALSE(
+      std::is_copy_assignable<
+          folly::Synchronized<NonCopyConstructible>>::value);
+  EXPECT_TRUE(
+      std::is_copy_constructible<
+          folly::Synchronized<CopyConstructible>>::value);
   EXPECT_TRUE(
       std::is_copy_assignable<folly::Synchronized<CopyConstructible>>::value);
 }
@@ -878,8 +868,8 @@ TEST(FollyLockTest, TestVariadicLockWithArbitraryLockables) {
   auto&& one = std::mutex{};
   auto&& two = std::mutex{};
 
-  auto lckOne = std::unique_lock<std::mutex>{one, std::defer_lock};
-  auto lckTwo = std::unique_lock<std::mutex>{two, std::defer_lock};
+  auto lckOne = std::unique_lock{one, std::defer_lock};
+  auto lckTwo = std::unique_lock{two, std::defer_lock};
   folly::lock(lckOne, lckTwo);
   EXPECT_TRUE(lckOne);
   EXPECT_TRUE(lckTwo);
@@ -1015,16 +1005,16 @@ class TestStruct {
   TestStruct(int a, int b) : a_{a}, b_{b} {}
 
  private:
-  int a_{0};
-  int b_{0};
+  [[maybe_unused]] int a_{0};
+  [[maybe_unused]] int b_{0};
 };
 } // namespace
 
 TEST(Synchronized, ConstexprConstructor) {
   // Make sure the folly::Synchronized constructor can be constexpr
-  static FOLLY_CONSTINIT folly::Synchronized<int> i{std::in_place, 5};
-  static FOLLY_CONSTINIT folly::Synchronized<TestStruct> ts1;
-  static FOLLY_CONSTINIT folly::Synchronized<TestStruct> ts2{std::in_place, 1};
+  static constinit folly::Synchronized<int> i{std::in_place, 5};
+  static constinit folly::Synchronized<TestStruct> ts1;
+  static constinit folly::Synchronized<TestStruct> ts2{std::in_place, 1};
 
   // Not constinit, since the int value will be uninitialized
   static folly::Synchronized<int> i2;

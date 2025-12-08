@@ -30,6 +30,8 @@
 #include <folly/lang/Keep.h>
 #include <folly/portability/GTest.h>
 
+FOLLY_GNU_DISABLE_WARNING("-Wself-move")
+
 using std::shared_ptr;
 using std::unique_ptr;
 
@@ -70,8 +72,7 @@ struct NoDefault {
 };
 
 TEST(Expected, NoDefault) {
-  static_assert(
-      std::is_default_constructible<Expected<NoDefault, int>>::value, "");
+  static_assert(std::is_default_constructible<Expected<NoDefault, int>>::value);
   Expected<NoDefault, int> x{std::in_place, 42, 42};
   EXPECT_TRUE(bool(x));
   x.emplace(4, 5);
@@ -908,9 +909,9 @@ constexpr bool constructibleNotConvertible() {
       !expected_detail::IsConvertible<Source, Target>();
 }
 
-static_assert(constructibleNotConvertible<SmallPODConstructTo>(), "");
-static_assert(constructibleNotConvertible<LargePODConstructTo>(), "");
-static_assert(constructibleNotConvertible<NonPODConstructTo>(), "");
+static_assert(constructibleNotConvertible<SmallPODConstructTo>());
+static_assert(constructibleNotConvertible<LargePODConstructTo>());
+static_assert(constructibleNotConvertible<NonPODConstructTo>());
 
 static_assert(
     expected_detail::IsConvertible<Source, ConvertTo>(), "convertible");

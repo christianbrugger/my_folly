@@ -25,11 +25,11 @@
 #include <folly/Optional.h>
 #include <folly/Range.h>
 #include <folly/String.h>
-#include <folly/experimental/symbolizer/Dwarf.h>
-#include <folly/experimental/symbolizer/ElfCache.h>
-#include <folly/experimental/symbolizer/StackTrace.h>
-#include <folly/experimental/symbolizer/SymbolizePrinter.h>
-#include <folly/experimental/symbolizer/SymbolizedFrame.h>
+#include <folly/debugging/symbolizer/Dwarf.h>
+#include <folly/debugging/symbolizer/ElfCache.h>
+#include <folly/debugging/symbolizer/StackTrace.h>
+#include <folly/debugging/symbolizer/SymbolizePrinter.h>
+#include <folly/debugging/symbolizer/SymbolizedFrame.h>
 #include <folly/io/IOBuf.h>
 #include <folly/portability/Config.h>
 #include <folly/portability/Unistd.h>
@@ -56,6 +56,13 @@ bool fixFrameArray(FrameArray<N>& fa, ssize_t n) {
     return false;
   }
 }
+
+std::string getStackTraceStr(
+    const uintptr_t* addresses,
+    SymbolizedFrame* frames,
+    size_t frameCount,
+    bool showFullInfo,
+    size_t skip = 0);
 } // namespace detail
 
 // Always inline these functions; they don't do much, and unittests rely
@@ -163,8 +170,8 @@ class Symbolizer {
  * Use this class to print a stack trace from normal code.  It will malloc and
  * won't flush or sync.
  *
- * These methods are thread safe, through locking.  However, they are not signal
- * safe.
+ * These methods are thread safe, through locking.  However, they are not
+ * signal safe.
  */
 class FastStackTracePrinter {
  public:
@@ -177,8 +184,8 @@ class FastStackTracePrinter {
   ~FastStackTracePrinter();
 
   /**
-   * This is NOINLINE to make sure it shows up in the stack we grab, which makes
-   * it easy to skip printing it.
+   * This is NOINLINE to make sure it shows up in the stack we grab, which
+   * makes it easy to skip printing it.
    */
   FOLLY_NOINLINE void printStackTrace(bool symbolize);
 
@@ -191,6 +198,31 @@ class FastStackTracePrinter {
   Symbolizer symbolizer_;
 };
 
+/**
+ * This is a copy of FastStackTracePrinter, but it uses a two-step approach to
+ * symbolize the stack trace. This is useful for cases where symbolization is
+ * slow and we want to avoid blocking the main thread.
+ */
+class TwoStepFastStackTracePrinter {
+ public:
+  static constexpr size_t kDefaultSymbolCacheSize = 10000;
+
+  explicit TwoStepFastStackTracePrinter(
+      std::unique_ptr<SymbolizePrinter> printer,
+      size_t symbolCacheSize = kDefaultSymbolCacheSize);
+
+  FOLLY_NOINLINE void printStackTrace(bool symbolize);
+
+ private:
+  static constexpr size_t kMaxStackTraceDepth = 100;
+
+  const std::unique_ptr<SymbolizePrinter> printer_;
+  Symbolizer symbolizer_;
+  FrameArray<kMaxStackTraceDepth> syncAddresses_;
+  FrameArray<kMaxStackTraceDepth> asyncAddresses_;
+  std::mutex mutex_;
+};
+
 #endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 /**
@@ -199,13 +231,14 @@ class FastStackTracePrinter {
  * descriptor is more important than performance.
  *
  * Make sure to create one of these on startup, not in the signal handler, as
- * the constructor allocates on the heap, whereas the other methods don't.  Best
- * practice is to just leak this object, rather than worry about destruction
- * order.
+ * the constructor allocates on the heap, whereas the other methods don't.
+ * Best practice is to just leak this object, rather than worry about
+ * destruction order.
  *
  * These methods aren't thread safe, so if you could have signals on multiple
- * threads at the same time, you need to do your own locking to ensure you don't
- * call these methods from multiple threads.  They are signal safe, however.
+ * threads at the same time, you need to do your own locking to ensure you
+ * don't call these methods from multiple threads.  They are signal safe,
+ * however.
  */
 class SafeStackTracePrinter {
  public:
@@ -214,12 +247,12 @@ class SafeStackTracePrinter {
   virtual ~SafeStackTracePrinter() {}
 
   /**
-   * Only allocates on the stack and is signal-safe but not thread-safe.  Don't
+   * Only allocates on the stack and is signal-safe but not thread-safe. Don't
    * call printStackTrace() on the same StackTracePrinter object from multiple
    * threads at the same time.
    *
-   * This is NOINLINE to make sure it shows up in the stack we grab, which makes
-   * it easy to skip printing it.
+   * This is NOINLINE to make sure it shows up in the stack we grab, which
+   * makes it easy to skip printing it.
    */
   FOLLY_NOINLINE void printStackTrace(bool symbolize);
 
@@ -243,27 +276,32 @@ class SafeStackTracePrinter {
 #if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 /**
- * Gets the stack trace for the current thread and returns a string
- * representation. Convenience function meant for debugging and logging.
- * Empty string indicates stack trace functionality is not available.
+ * Gets the stack trace for the current thread, skipping the top `skip` frames,
+ * and returns a string representation. Convenience function meant for
+ * debugging and logging. Empty string indicates stack trace functionality
+ * is not available.
+ *
+ * NOT async-signal-safe.
+ * @param showFullInfo If true, include file names and line numbers (when
+ * available).
+ * @param skip Skip the top `skip` frames.
+ */
+std::string getStackTraceStr(bool showFullInfo = false, size_t skip = 0);
+
+/**
+ * Gets the async stack trace for the current thread, skipping the top `skip`
+ * frames, and returns a string representation. Convenience function meant for
+ * debugging and logging. Empty string indicates stack trace functionality
+ * is not available.
  *
  * NOT async-signal-safe.
  */
-std::string getStackTraceStr();
+std::string getAsyncStackTraceStr(size_t skip = 0);
 
 /**
- * Gets the async stack trace for the current thread and returns a string
- * representation. Convenience function meant for debugging and logging.
- * Empty string indicates stack trace functionality is not available.
- *
- * NOT async-signal-safe.
- */
-std::string getAsyncStackTraceStr();
-
-/**
- * Get the async stack traces (string representation) for suspended coroutines.
- * Convenience function meant for debugging and logging, works only in some
- * DEBUG builds
+ * Get the async stack traces (string representation) for suspended
+ * coroutines. Convenience function meant for debugging and logging, works
+ * only in some DEBUG builds
  *
  * Note: The returned traces will only have async frames (no normal frames).
  */
@@ -273,18 +311,45 @@ std::vector<std::string> getSuspendedStackTraces();
 // Define these in the header, as headers are always available, but not all
 // platforms can link against the symbolizer library cpp sources.
 
-inline std::string getStackTraceStr() {
+inline std::string getStackTraceStr(
+    bool /*showFullInfo*/ = false, size_t /*skip*/ = 0) {
   return "";
 }
 
-inline std::string getAsyncStackTraceStr() {
+inline std::string getAsyncStackTraceStr(size_t /*skip*/ = 0) {
   return "";
 }
 
 inline std::vector<std::string> getSuspendedStackTraces() {
   return {};
 }
+
+namespace detail {
+inline std::string getStackTraceStr(
+    const uintptr_t* /*addresses*/,
+    SymbolizedFrame* /*frames*/,
+    size_t /*frameCount*/,
+    bool /*showFullInfo*/,
+    size_t /*skip*/) {
+  return "";
+}
+} // namespace detail
 #endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
+/**
+ * Convert FrameArray to string representation.
+ * Convenience function for debugging and logging.
+ */
+template <size_t N>
+FOLLY_ALWAYS_INLINE std::string getStackTraceStr(
+    FrameArray<N>& fa, bool showFullInfo = false, size_t skip = 0);
+
+template <size_t N>
+inline std::string getStackTraceStr(
+    FrameArray<N>& fa, bool showFullInfo, size_t skip) {
+  return detail::getStackTraceStr(
+      fa.addresses, fa.frames, fa.frameCount, showFullInfo, skip);
+}
 
 #if FOLLY_HAVE_SWAPCONTEXT
 

@@ -1,3 +1,4 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
 load("@fbcode_macros//build_defs:cpp_benchmark.bzl", "cpp_benchmark")
 load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
 load("@fbcode_macros//build_defs:cpp_unittest.bzl", "cpp_unittest")
@@ -7,7 +8,8 @@ load(":validate_folly_symbolizer.bzl", "SPLIT_DWARF_FLAGS", "customized_unittest
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "crash",
     srcs = ["Crash.cpp"],
     compiler_specific_flags = {
@@ -16,11 +18,12 @@ cpp_binary(
         ],
     },
     deps = [
-        "//folly/experimental/symbolizer:signal_handler",
+        "//folly/debugging/symbolizer:signal_handler",
     ],
 )
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "dwarf_benchmark",
     srcs = ["DwarfBenchmark.cpp"],
     compiler_specific_flags = {
@@ -30,17 +33,19 @@ cpp_binary(
     },
     target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
     deps = [
-        ":symbolizer_test_utils_dwarf4_dwarf32_noaaranges",
+        ":symbolizer_test_utils_dwarf5_dwarf64_single_inlining_aaranges",
         "//folly:benchmark",
         "//folly:range",
-        "//folly/experimental/symbolizer:dwarf",
-        "//folly/experimental/symbolizer:symbolized_frame",
-        "//folly/experimental/symbolizer:symbolizer",
+        "//folly/debugging/symbolizer:dwarf",
+        "//folly/debugging/symbolizer:symbolized_frame",
+        "//folly/debugging/symbolizer:symbolizer",
+        "//folly/lang:cast",
         "//folly/portability:gflags",
     ],
 )
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "small_sigaltstack_crash",
     srcs = ["SmallSigAltStackCrash.cpp"],
     compiler_specific_flags = {
@@ -49,15 +54,16 @@ cpp_binary(
         ],
     },
     deps = [
-        "//folly/experimental/symbolizer:signal_handler",
+        "//folly/debugging/symbolizer:signal_handler",
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "symbolized_frame_test",
     srcs = ["SymbolizedFrameTest.cpp"],
     deps = [
-        "//folly/experimental/symbolizer:symbolized_frame",
+        "//folly/debugging/symbolizer:symbolized_frame",
         "//folly/portability:gtest",
     ],
     external_deps = [
@@ -65,24 +71,45 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_binary,
+    name = "simple_elf",
+    srcs = ["SimpleElf.cpp"],
+    linker_flags = [
+        "--build-id=0xdeadbeef",
+    ],
+)
+
+fbcode_target(
+    _kind = cpp_unittest,
     name = "elf_test",
     srcs = ["ElfTest.cpp"],
+    # Do NOT move segments to a seperate helper .so lib because
+    # this test expect to find its symbols in /proc/self/exe.
+    extract_helper_lib = False,
+    resources = [
+        ":simple_elf",
+    ],
     deps = [
+        "fbsource//third-party/googletest:gmock",
+        "//folly:cpp_attributes",
         "//folly:file_util",
-        "//folly/experimental/symbolizer:elf",
-        "//folly/experimental/symbolizer/detail:debug",
+        "//folly:string",
+        "//folly/debugging/symbolizer:elf",
+        "//folly/debugging/symbolizer/detail:debug",
         "//folly/portability:gtest",
         "//folly/testing:test_util",
     ],
 )
 
-buck_sh_binary(
+fbcode_target(
+    _kind = buck_sh_binary,
     name = "gnu_debuglink_test.sh",
     main = "gnu_debuglink_test.sh",
 )
 
-custom_unittest(
+fbcode_target(
+    _kind = custom_unittest,
     name = "gnu_debuglink_test",
     command = [
         "$(exe :gnu_debuglink_test.sh)",
@@ -108,12 +135,13 @@ custom_unittest(
 #     ],
 # )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "line_reader_test",
     srcs = ["LineReaderTest.cpp"],
     deps = [
         "//folly:file_util",
-        "//folly/experimental/symbolizer:line_reader",
+        "//folly/debugging/symbolizer:line_reader",
         "//folly/portability:gtest",
         "//folly/testing:test_util",
     ],
@@ -122,7 +150,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "signal_handler_test",
     srcs = ["SignalHandlerTest.cpp"],
     headers = ["SignalHandlerTest.h"],
@@ -133,8 +162,8 @@ cpp_unittest(
         "//folly:range",
         "//folly/coro:blocking_wait",
         "//folly/coro:task",
+        "//folly/debugging/symbolizer:signal_handler",
         "//folly/executors:io_thread_pool_executor",
-        "//folly/experimental/symbolizer:signal_handler",
         "//folly/portability:gtest",
     ],
     external_deps = [
@@ -142,23 +171,25 @@ cpp_unittest(
     ],
 )
 
-cpp_benchmark(
+fbcode_target(
+    _kind = cpp_benchmark,
     name = "stack_trace_benchmark",
     srcs = ["StackTraceBenchmark.cpp"],
     deps = [
         "//folly:benchmark",
-        "//folly/experimental/symbolizer:stack_trace",
+        "//folly/debugging/symbolizer:stack_trace",
         "//folly/init:init",
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "stack_trace_size_limit_test",
     srcs = ["StackTraceSizeLimitTest.cpp"],
     labels = ["oss-broken"],
     deps = [
-        "//folly/experimental/symbolizer:stack_trace",
-        "//folly/experimental/symbolizer:symbolizer",
+        "//folly/debugging/symbolizer:stack_trace",
+        "//folly/debugging/symbolizer:symbolizer",
         "//folly/fibers:core_manager",
         "//folly/fibers:simple_loop_controller",
         "//folly/init:init",
@@ -166,15 +197,16 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "stack_trace_test",
     srcs = ["StackTraceTest.cpp"],
     labels = ["oss-broken"],
     deps = [
         "//folly/coro:blocking_wait",
         "//folly/coro:task",
-        "//folly/experimental/symbolizer:stack_trace",
-        "//folly/experimental/symbolizer:symbolizer",
+        "//folly/debugging/symbolizer:stack_trace",
+        "//folly/debugging/symbolizer:symbolizer",
         "//folly/lang:hint",
         "//folly/portability:gtest",
         "//folly/test:test_utils",
@@ -186,7 +218,8 @@ cpp_unittest(
     ],
 )
 
-customized_unittest(
+fbcode_target(
+    _kind = customized_unittest,
     available_dwarf_sizes = [
         32,
         64,
@@ -200,7 +233,8 @@ customized_unittest(
     extra_compiler_flags = [],
 )
 
-customized_unittest(
+fbcode_target(
+    _kind = customized_unittest,
     available_dwarf_sizes = [
         32,
     ],
@@ -212,27 +246,32 @@ customized_unittest(
     extra_compiler_flags = ["-gdwarf-5"],
 )
 
-buck_sh_binary(
+fbcode_target(
+    _kind = buck_sh_binary,
     name = "compare-addr2line.sh",
     main = "compare-addr2line.sh",
 )
 
-validate_folly_symbolizer(
+fbcode_target(
+    _kind = validate_folly_symbolizer,
     name = "compare-addr2line-symbolizer_test_dwarf4",
     binary = ":symbolizer_test_dwarf4_dwarf32_aaranges",
 )
 
-buck_sh_binary(
+fbcode_target(
+    _kind = buck_sh_binary,
     name = "symbolizer_dwp_compability.sh",
     main = "symbolizer_dwp_compability.sh",
 )
 
-validate_symbolizer_dwp(
+fbcode_target(
+    _kind = validate_symbolizer_dwp,
     name = "validate_symbolizer_dwp_dwarf4_dwarf32_single_inlining_aaranges",
     binary = ":symbolizer_test_dwarf4_dwarf32_single_inlining_aaranges",
 )
 
-validate_symbolizer_dwp(
+fbcode_target(
+    _kind = validate_symbolizer_dwp,
     name = "validate_symbolizer_dwp_dwarf5_dwarf32_single_inlining_aaranges",
     # we cannot mix split-dwarf-4 with split-dwarf-5. fbcode enables split-dwarf4 by default
     # unless -c fbcode.split-dwarf5=True is enabled, so let's disable split-dwarf in the test

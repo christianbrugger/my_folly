@@ -162,10 +162,11 @@ TEST_F(MultiplexChannelFixture, ReceiveValues_MultiplexesValues) {
   EXPECT_CALL(*callback1a, onValue(120));
   EXPECT_CALL(*callback1b, onValue(120));
   EXPECT_CALL(*callback2, onValue(220));
-  inputSender.write(TestInputValue{toMap(
-      std::make_pair("one"s, 120),
-      std::make_pair("two"s, 220),
-      std::make_pair("three", 330))});
+  inputSender.write(
+      TestInputValue{toMap(
+          std::make_pair("one"s, 120),
+          std::make_pair("two"s, 220),
+          std::make_pair("three", 330))});
   executor_.drain();
 
   std::move(inputSender).close();
@@ -236,8 +237,7 @@ TEST_F(MultiplexChannelFixture, ClearUnusedSubscriptions) {
   executor_.drain();
 
   auto clearedSubscriptions1Task =
-      multiplexChannel.clearUnusedSubscriptions()
-          .scheduleOn(&executor_)
+      co_withExecutor(&executor_, multiplexChannel.clearUnusedSubscriptions())
           .start();
   executor_.drain();
   auto clearedSubscriptions1 =
@@ -252,8 +252,7 @@ TEST_F(MultiplexChannelFixture, ClearUnusedSubscriptions) {
   executor_.drain();
 
   auto clearedSubscriptions2Task =
-      multiplexChannel.clearUnusedSubscriptions()
-          .scheduleOn(&executor_)
+      co_withExecutor(&executor_, multiplexChannel.clearUnusedSubscriptions())
           .start();
   executor_.drain();
   auto clearedSubscriptions2 =
@@ -270,8 +269,7 @@ TEST_F(MultiplexChannelFixture, ClearUnusedSubscriptions) {
   EXPECT_TRUE(multiplexChannel.anySubscribers());
 
   auto clearedSubscriptions3Task =
-      multiplexChannel.clearUnusedSubscriptions()
-          .scheduleOn(&executor_)
+      co_withExecutor(&executor_, multiplexChannel.clearUnusedSubscriptions())
           .start();
   executor_.drain();
   auto clearedSubscriptions3 =
@@ -335,7 +333,9 @@ TEST_F(MultiplexChannelFixture, HandleDestroyed) {
   EXPECT_CALL(*callback1a, onValue(100));
   executor_.drain();
 
-  { auto toDestroy = std::move(multiplexChannel); }
+  {
+    auto toDestroy = std::move(multiplexChannel);
+  }
   EXPECT_CALL(*callback1a, onClosed());
   executor_.drain();
 }

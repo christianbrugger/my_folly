@@ -26,7 +26,6 @@
 #include <folly/ConstexprMath.h>
 #include <folly/String.h>
 #include <folly/lang/Keep.h>
-#include <folly/memory/Arena.h>
 #include <folly/portability/Asm.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
@@ -96,6 +95,14 @@ TEST(toSharedPtrAliasing, example) {
   auto sp = folly::copy_to_shared_ptr(std::tuple{3, 4});
   auto a = folly::to_shared_ptr_aliasing(sp, &std::get<1>(*sp));
   EXPECT_EQ(4, *a);
+}
+
+TEST(toSharedPtrNonOwning, example) {
+  int i = 3;
+  auto sp = folly::to_shared_ptr_non_owning(&i);
+  EXPECT_EQ(&i, sp.get());
+  EXPECT_EQ(3, *sp);
+  EXPECT_EQ(0, sp.use_count());
 }
 
 TEST(toWeakPtr, example) {
@@ -189,6 +196,21 @@ TEST(copyThroughUniquePtr, example) {
   p.reset();
   s = copy_through_unique_ptr(p);
   EXPECT_EQ(s, nullptr);
+}
+
+TEST(copyThroughSharedPtr, example) {
+  std::shared_ptr<int> p = std::make_shared<int>(17);
+  std::shared_ptr<int> s = copy_through_shared_ptr(p);
+  EXPECT_EQ(17, *s);
+  EXPECT_EQ(17, *p);
+  EXPECT_EQ(s.use_count(), 1);
+  EXPECT_EQ(p.use_count(), 1);
+  EXPECT_NE(s.get(), p.get());
+  p.reset();
+  s = copy_through_shared_ptr(p);
+  EXPECT_EQ(s, nullptr);
+  EXPECT_EQ(s.use_count(), 0);
+  EXPECT_EQ(p.use_count(), 0);
 }
 
 TEST(toErasedUniquePtr, example) {
@@ -474,66 +496,56 @@ TEST(AllocatorObjectLifecycleTraits, compiles) {
   using A = std::allocator<int>;
   using S = std::string;
 
-  static_assert(
-      folly::AllocatorHasDefaultObjectConstruct<A, int, int>::value, "");
-  static_assert(folly::AllocatorHasDefaultObjectConstruct<A, S, S>::value, "");
+  static_assert(folly::AllocatorHasDefaultObjectConstruct<A, int, int>::value);
+  static_assert(folly::AllocatorHasDefaultObjectConstruct<A, S, S>::value);
 
-  static_assert(folly::AllocatorHasDefaultObjectDestroy<A, int>::value, "");
-  static_assert(folly::AllocatorHasDefaultObjectDestroy<A, S>::value, "");
+  static_assert(folly::AllocatorHasDefaultObjectDestroy<A, int>::value);
+  static_assert(folly::AllocatorHasDefaultObjectDestroy<A, S>::value);
 
   static_assert(
       folly::AllocatorHasDefaultObjectConstruct<
           folly::AlignedSysAllocator<int>,
           int,
-          int>::value,
-      "");
+          int>::value);
   static_assert(
       folly::AllocatorHasDefaultObjectConstruct<
           folly::AlignedSysAllocator<int>,
           S,
-          S>::value,
-      "");
+          S>::value);
 
   static_assert(
       folly::AllocatorHasDefaultObjectDestroy<
           folly::AlignedSysAllocator<int>,
-          int>::value,
-      "");
+          int>::value);
   static_assert(
       folly::AllocatorHasDefaultObjectDestroy<
           folly::AlignedSysAllocator<int>,
-          S>::value,
-      "");
+          S>::value);
 
   static_assert(
-      !folly::AllocatorHasDefaultObjectConstruct<TestAlloc1<S>, S, S>::value,
-      "");
+      !folly::AllocatorHasDefaultObjectConstruct<TestAlloc1<S>, S, S>::value);
   static_assert(
-      folly::AllocatorHasDefaultObjectDestroy<TestAlloc1<S>, S>::value, "");
+      folly::AllocatorHasDefaultObjectDestroy<TestAlloc1<S>, S>::value);
 
   static_assert(
-      !folly::AllocatorHasDefaultObjectConstruct<TestAlloc2<S>, S, S>::value,
-      "");
+      !folly::AllocatorHasDefaultObjectConstruct<TestAlloc2<S>, S, S>::value);
   static_assert(
-      !folly::AllocatorHasDefaultObjectDestroy<TestAlloc2<S>, S>::value, "");
+      !folly::AllocatorHasDefaultObjectDestroy<TestAlloc2<S>, S>::value);
 
   static_assert(
-      folly::AllocatorHasDefaultObjectConstruct<TestAlloc3<S>, S, S>::value,
-      "");
+      folly::AllocatorHasDefaultObjectConstruct<TestAlloc3<S>, S, S>::value);
   static_assert(
-      !folly::AllocatorHasDefaultObjectDestroy<TestAlloc3<S>, S>::value, "");
+      !folly::AllocatorHasDefaultObjectDestroy<TestAlloc3<S>, S>::value);
 
   static_assert(
-      folly::AllocatorHasDefaultObjectConstruct<TestAlloc4<S>, S, S>::value,
-      "");
+      folly::AllocatorHasDefaultObjectConstruct<TestAlloc4<S>, S, S>::value);
   static_assert(
-      folly::AllocatorHasDefaultObjectDestroy<TestAlloc4<S>, S>::value, "");
+      folly::AllocatorHasDefaultObjectDestroy<TestAlloc4<S>, S>::value);
 
   static_assert(
-      folly::AllocatorHasDefaultObjectConstruct<TestAlloc5<S>, S, S>::value,
-      "");
+      folly::AllocatorHasDefaultObjectConstruct<TestAlloc5<S>, S, S>::value);
   static_assert(
-      !folly::AllocatorHasDefaultObjectDestroy<TestAlloc5<S>, S>::value, "");
+      !folly::AllocatorHasDefaultObjectDestroy<TestAlloc5<S>, S>::value);
 }
 
 template <typename T>
@@ -608,4 +620,32 @@ TEST(allocateOverAligned, defaultOverCustomAlloc) {
   EXPECT_EQ((reinterpret_cast<uintptr_t>(p) % 64), 0);
   folly::deallocateOverAligned(a, p, 1);
   EXPECT_EQ(folly::allocationBytesForOverAligned<decltype(a)>(1), 128);
+}
+
+TEST(sharedPointerMap, testMappingFunction) {
+  struct Foo {
+    int i;
+  };
+
+  auto owner = std::make_shared<Foo>();
+  owner->i = 42;
+
+  {
+    auto subfield = folly::fmap_shared_ptr_aliasing(owner, [](const auto* foo) {
+      return &foo->i;
+    });
+    EXPECT_EQ(subfield.use_count(), 2);
+    EXPECT_EQ(*subfield, 42);
+  }
+
+  EXPECT_EQ(owner.use_count(), 1);
+
+  {
+    auto subfield = folly::fmap_shared_ptr_aliasing(
+        owner, [](const auto* /* foo */) -> const int* { return nullptr; });
+    EXPECT_FALSE(subfield);
+    EXPECT_EQ(owner.use_count(), 1);
+  }
+
+  EXPECT_EQ(owner.use_count(), 1);
 }

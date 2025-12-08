@@ -182,9 +182,17 @@ struct atomic_fetch_modify_fn {
   atomic_value_type_t<Atomic> operator()(
       Atomic& atomic,
       Op op,
-      std::memory_order = std::memory_order_seq_cst) const;
+      std::memory_order mo = std::memory_order_seq_cst) const;
 };
 inline constexpr atomic_fetch_modify_fn atomic_fetch_modify{};
+
+template <template <typename> class Atom>
+struct atomic_thread_fence_traits;
+
+template <>
+struct atomic_thread_fence_traits<std::atomic> {
+  static inline constexpr auto fence = std::atomic_thread_fence;
+};
 
 } // namespace folly
 

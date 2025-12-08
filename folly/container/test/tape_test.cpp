@@ -23,6 +23,8 @@
 #include <folly/portability/GTest.h>
 #include <folly/small_vector.h>
 
+FOLLY_GNU_DISABLE_WARNING("-Wself-move")
+
 namespace {
 
 template <typename I>
@@ -86,24 +88,21 @@ auto asRange(const std::vector<T>& c, std::random_access_iterator_tag) {
 // tape types
 
 static_assert(
-    std::is_same_v<folly::StringPiece, folly::string_tape::reference>, "");
+    std::is_same_v<folly::StringPiece, folly::string_tape::reference>);
 static_assert(
-    std::is_same_v<folly::StringPiece, folly::string_tape::value_type>, "");
-static_assert(
+    std::is_same_v<folly::StringPiece, folly::string_tape::value_type>);
+static_assert( //
     std::is_same_v<
         folly::Range<const int*>,
-        folly::tape<std::vector<int>>::reference>,
-    "");
-static_assert(
+        folly::tape<std::vector<int>>::reference>);
+static_assert( //
     std::is_same_v<
         folly::Range<const int*>,
-        folly::tape<std::vector<int>>::value_type>,
-    "");
-static_assert(
+        folly::tape<std::vector<int>>::value_type>);
+static_assert( //
     std::is_same_v<
         folly::Range<const int*>,
-        folly::tape<folly::small_vector<int, 4>>::reference>,
-    "");
+        folly::tape<folly::small_vector<int, 4>>::reference>);
 
 #if defined(__cpp_lib_ranges)
 static_assert(std::ranges::random_access_range<folly::string_tape>);
@@ -569,6 +568,25 @@ TEST(Tape, Iteration) {
 
   folly::string_tape st2(st.rbegin(), st.rend());
   ASSERT_THAT(st2, testing::ElementsAre("1000", "100", "10", "0"));
+}
+
+TEST(Tape, ReserveShrink) {
+  // There is a limit to what we can test since reserve/shrink
+  // have very little guarantees.
+
+  folly::string_tape st;
+  st.reserve(2, 7);
+
+  st.push_back("abc");
+  const char* beforePushSecond = st[0].data();
+
+  st.push_back("defg");
+  const char* afterPushSecond = st[0].data();
+  ASSERT_EQ(beforePushSecond, afterPushSecond);
+
+  st.shrink_to_fit();
+  const char* afterShrink = st[0].data();
+  ASSERT_EQ(beforePushSecond, afterShrink);
 }
 
 TEST(Tape, TapeOfTapes) {

@@ -18,6 +18,7 @@
 
 #include <glog/logging.h>
 
+#include <folly/Random.h>
 #include <folly/container/Foreach.h>
 #include <folly/portability/GTest.h>
 #include <folly/stats/BucketedTimeSeries.h>
@@ -154,7 +155,10 @@ void testUpdate100x10(size_t offset) {
 
   // Update 2 buckets forwards.  This should throw away 2 data points.
   setup();
-  ts.update(seconds(110 + offset));
+  auto now = seconds(110 + offset);
+  EXPECT_EQ(8, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(48, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(8, ts.count());
   EXPECT_EQ(48, ts.sum());
   EXPECT_EQ(6, ts.avg());
@@ -162,16 +166,22 @@ void testUpdate100x10(size_t offset) {
   // The last time we added was 95.
   // Try updating to 189.  This should clear everything but the last bucket.
   setup();
-  ts.update(seconds(151 + offset));
+  now = seconds(151 + offset);
+  EXPECT_EQ(4, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(24, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(4, ts.count());
-  // EXPECT_EQ(6, ts.sum());
+  EXPECT_EQ(24, ts.sum());
   EXPECT_EQ(6, ts.avg());
 
   // The last time we added was 95.
   // Try updating to 193: This is nearly one full loop around,
   // back to the same bucket.  update() needs to clear everything
   setup();
-  ts.update(seconds(193 + offset));
+  now = seconds(193 + offset);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(0, ts.count());
   EXPECT_EQ(0, ts.sum());
   EXPECT_EQ(0, ts.avg());
@@ -180,7 +190,10 @@ void testUpdate100x10(size_t offset) {
   // Try updating to 197: This is slightly over one full loop around,
   // back to the same bucket.  update() needs to clear everything
   setup();
-  ts.update(seconds(197 + offset));
+  now = seconds(197 + offset);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(0, ts.count());
   EXPECT_EQ(0, ts.sum());
   EXPECT_EQ(0, ts.avg());
@@ -189,7 +202,10 @@ void testUpdate100x10(size_t offset) {
   // Try updating to 230: This is well over one full loop around,
   // and everything should be cleared.
   setup();
-  ts.update(seconds(230 + offset));
+  now = seconds(230 + offset);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(0, ts.count());
   EXPECT_EQ(0, ts.sum());
   EXPECT_EQ(0, ts.avg());
@@ -227,14 +243,20 @@ TEST(BucketedTimeSeries, update71x5) {
 
   // Update 2 buckets forwards.  This should throw away 2 data points.
   setup();
-  ts.update(seconds(99));
+  auto now = seconds(99);
+  EXPECT_EQ(3, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(18, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(3, ts.count());
   EXPECT_EQ(18, ts.sum());
   EXPECT_EQ(6, ts.avg());
 
   // Update 3 buckets forwards.  This should throw away 3 data points.
   setup();
-  ts.update(seconds(100));
+  now = seconds(100);
+  EXPECT_EQ(2, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(12, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(2, ts.count());
   EXPECT_EQ(12, ts.sum());
   EXPECT_EQ(6, ts.avg());
@@ -242,7 +264,10 @@ TEST(BucketedTimeSeries, update71x5) {
   // Update 4 buckets forwards, just under the wrap limit.
   // This should throw everything but the last bucket away.
   setup();
-  ts.update(seconds(127));
+  now = seconds(127);
+  EXPECT_EQ(1, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(6, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(1, ts.count());
   EXPECT_EQ(6, ts.sum());
   EXPECT_EQ(6, ts.avg());
@@ -250,7 +275,10 @@ TEST(BucketedTimeSeries, update71x5) {
   // Update 5 buckets forwards, exactly at the wrap limit.
   // This should throw everything away.
   setup();
-  ts.update(seconds(128));
+  now = seconds(128);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(0, ts.count());
   EXPECT_EQ(0, ts.sum());
   EXPECT_EQ(0, ts.avg());
@@ -258,7 +286,10 @@ TEST(BucketedTimeSeries, update71x5) {
   // Update very far forwards, wrapping multiple times.
   // This should throw everything away.
   setup();
-  ts.update(seconds(1234));
+  now = seconds(1234);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).count);
+  EXPECT_EQ(0, ts.totalBy(TimePoint(now)).sum);
+  ts.update(now);
   EXPECT_EQ(0, ts.count());
   EXPECT_EQ(0, ts.sum());
   EXPECT_EQ(0, ts.avg());
@@ -273,11 +304,47 @@ TEST(BucketedTimeSeries, elapsed) {
   // With exactly 1 data point, elapsed() should report 1 second of data
   seconds start(239218);
   ts.addValue(start + seconds(0), 200);
+  EXPECT_EQ(1, ts.count());
   EXPECT_EQ(1, ts.elapsed().count());
+
+  // Adding a data point 1 second in the past, should still be tracked.
+  ts.addValue(start - seconds(1), 200);
+  EXPECT_EQ(2, ts.count());
+  EXPECT_EQ(2, ts.elapsed().count());
+  EXPECT_EQ(TimePoint(start - seconds(1)), ts.firstTime());
+
+  // Calling update() with time in the past would also update firstTime_.
+  ts.update(start - seconds(2));
+  EXPECT_EQ(2, ts.count());
+  EXPECT_EQ(3, ts.elapsed().count());
+  EXPECT_EQ(TimePoint(start - seconds(2)), ts.firstTime());
+
   // Adding a data point 10 seconds later should result in an elapsed time of
-  // 11 seconds (the time range is [0, 10], inclusive).
+  // 13 seconds (the time range is [-1, 10], inclusive).
   ts.addValue(start + seconds(10), 200);
-  EXPECT_EQ(11, ts.elapsed().count());
+  EXPECT_EQ(13, ts.elapsed().count());
+  EXPECT_EQ(3, ts.count());
+
+  // If the valud added falls out of the tracked window, elapsed is capped by
+  // the earliest trackable time.
+  ts.addValue(start - seconds(600), 200);
+  EXPECT_EQ(3, ts.count());
+  EXPECT_EQ(599, ts.elapsed().count());
+  // firstTime_ should still be updated
+  EXPECT_EQ(TimePoint(start - seconds(600)), ts.firstTime());
+
+  ts.addValue(start - seconds(1200), 200);
+  EXPECT_EQ(3, ts.count());
+  EXPECT_EQ(599, ts.elapsed().count());
+  EXPECT_EQ(TimePoint(start - seconds(1200)), ts.firstTime());
+
+  // If the update() falls out of the tracked window, elapsed is capped by
+  // the earliest trackable time.
+  ts.update(start - seconds(1800));
+  EXPECT_EQ(3, ts.count());
+  EXPECT_EQ(599, ts.elapsed().count());
+  // firstTime_ should still be updated
+  EXPECT_EQ(TimePoint(start - seconds(1800)), ts.firstTime());
 
   // elapsed() returns to 0 after clear()
   ts.clear();
@@ -327,8 +394,20 @@ TEST(BucketedTimeSeries, elapsed) {
 TEST(BucketedTimeSeries, rate) {
   BucketedTimeSeries<int64_t> ts(60, seconds(600));
 
+  ts.addValue(seconds(0), 200, 3);
+  // At the beginning of a timeseries' lifecycle, we make any non-zero interval
+  // to be at least Interval{1} to smooth out the rate calculation. After adding
+  // value at time 0, the total elapsed time for the timeseries is Duration{1},
+  // which is one second. Since the elapsed time is much smaller than
+  // Interval{1}, which is one minute, without the smoothing, the rate
+  // calculation can be volatile at the beginning, especially for rare events.
+  EXPECT_EQ(600.0, (ts.rate<double, std::chrono::minutes>()));
+  EXPECT_EQ(600.0, (ts.rate<double>()));
+  EXPECT_EQ(3.0, (ts.countRate<double, std::chrono::minutes>()));
+  EXPECT_EQ(3.0, (ts.countRate<double>()));
+
   // Add 3 values every 2 seconds, until fill up the buckets
-  for (size_t n = 0; n < 600; n += 2) {
+  for (size_t n = 2; n < 600; n += 2) {
     ts.addValue(seconds(n), 200, 3);
   }
 
@@ -339,14 +418,18 @@ TEST(BucketedTimeSeries, rate) {
   // Really we only entered 599 seconds worth of data: [0, 598] (inclusive)
   EXPECT_EQ(599, ts.elapsed().count());
   EXPECT_NEAR(300.5, ts.rate(), 0.005);
+  EXPECT_NEAR(18030.05, (ts.rate<double, std::chrono::minutes>()), 0.005);
   EXPECT_NEAR(1.5, ts.countRate(), 0.005);
+  EXPECT_NEAR(90.15, (ts.countRate<double, std::chrono::minutes>()), 0.005);
 
   // If we add 1 more second, now we will have 600 seconds worth of data
   ts.update(seconds(599));
   EXPECT_EQ(600, ts.elapsed().count());
   EXPECT_NEAR(300, ts.rate(), 0.005);
   EXPECT_EQ(300, ts.rate<int>());
+  EXPECT_EQ(18000, (ts.rate<int, std::chrono::minutes>()));
   EXPECT_NEAR(1.5, ts.countRate(), 0.005);
+  EXPECT_EQ(90, (ts.countRate<int, std::chrono::minutes>()));
 
   // However, 1 more second after that and we will have filled up all the
   // buckets, and have to drop one.
@@ -497,7 +580,7 @@ TEST(BucketedTimeSeries, avgTypeConversion) {
 }
 
 TEST(BucketedTimeSeries, forEachBucket) {
-  typedef BucketedTimeSeries<int64_t>::Bucket BucketSeries;
+  using BucketSeries = BucketedTimeSeries<int64_t>::Bucket;
   struct BucketInfo {
     BucketInfo(const BucketSeries* b, TimePoint s, TimePoint ns)
         : bucket(b), start(s), nextStart(ns) {}
@@ -889,6 +972,66 @@ TEST(BucketedTimeSeries, reConstructWithCorruptedData) {
           Duration(10),
           std::vector<Bucket>(10)),
       std::invalid_argument);
+}
+
+TEST(BucketedTimeSeries, constReaders) {
+  auto checkInvariant = [](BucketedTimeSeries<int64_t>& ts, TimePoint now) {
+    auto latest = std::max(TimePoint(now), ts.getLatestTime());
+    auto expectedTotal = ts.totalBy(latest);
+
+    ts.update(now);
+
+    EXPECT_EQ(expectedTotal.sum, ts.sum());
+    EXPECT_EQ(expectedTotal.count, ts.count());
+  };
+  {
+    // Add random data points at random points in time, and read them at random
+    // points in time, and verify the invariant that const-qualified read
+    // methods return the same result as if `update()` is
+    // called first.
+    auto fuzzy = [&](BucketedTimeSeries<int64_t> ts) {
+      for (int iter = 0; iter < 10; ++iter) {
+        for (int i = 0; i < 100; ++i) {
+          ts.addValue(
+              seconds(folly::Random::rand32(200)), folly::Random::rand32());
+        }
+        auto now = TimePoint(seconds(folly::Random::rand32(200)));
+        checkInvariant(ts, now);
+      }
+    };
+    fuzzy(BucketedTimeSeries<int64_t>(10, seconds(100)));
+    fuzzy(BucketedTimeSeries<int64_t>(0, seconds(0) /* all time */));
+  }
+
+  {
+    // Test when time is monotonically increasing
+    auto monotonic = [&](BucketedTimeSeries<int64_t> ts) {
+      auto start = seconds(folly::Random::rand32(200));
+      for (int iter = 0; iter < 100; ++iter) {
+        auto now = TimePoint(start + seconds(iter));
+        ts.addValue(now, folly::Random::rand32());
+        checkInvariant(ts, now);
+      }
+    };
+    monotonic(BucketedTimeSeries<int64_t>(10, seconds(100)));
+    monotonic(BucketedTimeSeries<int64_t>(0, seconds(0) /* all time */));
+  }
+
+  {
+    // Test edge cases when timestamps are 0s, timeseries is empty
+    auto edge = [&](BucketedTimeSeries<int64_t> ts) {
+      EXPECT_TRUE(ts.empty());
+      auto now = TimePoint(seconds(0));
+      checkInvariant(ts, now);
+
+      for (int iter = 0; iter < 10; ++iter) {
+        now = TimePoint(seconds(folly::Random::rand32(200)));
+        checkInvariant(ts, now);
+      }
+    };
+    edge(BucketedTimeSeries<int64_t>(10, seconds(100)));
+    edge(BucketedTimeSeries<int64_t>(0, seconds(0) /* all time */));
+  }
 }
 
 namespace IntMHTS {
@@ -1316,5 +1459,70 @@ TEST(MultiLevelTimeSeries, QueryByInterval) {
     int expectedRate =
         expectedSums[i] / (interval.end - interval.start).count();
     EXPECT_EQ(expectedRate, r);
+  }
+}
+
+TEST(MinuteHourTimeSeries, constReaders) {
+  using MLTS = folly::MultiLevelTimeSeries<int64_t>;
+  MLTS mlts(60, {seconds(60), seconds(3600), seconds(0)});
+
+  auto checkInvariant = [](MLTS& mlts, TimePoint now) {
+    std::vector<typename MLTS::ValueType> expectedSum;
+    std::vector<typename MLTS::Duration> expectedElapsed;
+    std::vector<uint64_t> expectedCount;
+    std::vector<double> expectedAvg;
+    std::vector<double> expectedRate;
+    std::vector<double> expectedCountRate;
+    for (size_t i = 0; i < mlts.numLevels(); ++i) {
+      expectedSum.push_back(mlts.sumBy(i, now));
+      expectedCount.push_back(mlts.countBy(i, now));
+      expectedAvg.push_back(mlts.avgBy(i, now));
+      expectedRate.push_back(mlts.rateBy(i, now));
+      expectedCountRate.push_back(mlts.countRateBy(i, now));
+    }
+
+    mlts.update(now);
+
+    for (size_t i = 0; i < mlts.numLevels(); ++i) {
+      CHECK_EQ(expectedSum[i], mlts.sum(i));
+      CHECK_EQ(expectedCount[i], mlts.count(i));
+      CHECK_EQ(expectedAvg[i], mlts.avg<double>(i));
+      CHECK_EQ(expectedRate[i], mlts.rate<double>(i));
+      CHECK_EQ(expectedCountRate[i], mlts.countRate<double>(i));
+    }
+  };
+
+  // Add random data points at random points in time, and read them at random
+  // points in time, and verify the invariant that const-qualified read
+  // methods return the same result as if `update()` is
+  // called first.
+  for (int iter = 0; iter < 10; ++iter) {
+    for (int i = 0; i < 100; ++i) {
+      mlts.addValue(
+          seconds(folly::Random::rand32(200)), folly::Random::rand32());
+    }
+    auto now = TimePoint(seconds(folly::Random::rand32(200)));
+    checkInvariant(mlts, now);
+  }
+
+  mlts.clear();
+
+  // Test when time is monotonically increasing
+  auto start = seconds(folly::Random::rand32(200));
+  for (int iter = 0; iter < 100; ++iter) {
+    auto now = TimePoint(start + seconds(iter));
+    mlts.addValue(now, folly::Random::rand32());
+    checkInvariant(mlts, now);
+  }
+
+  mlts.clear();
+
+  // Test edge cases when timestamps are 0s, timeseries is empty
+  auto now = TimePoint(seconds(0));
+  checkInvariant(mlts, now);
+
+  for (int iter = 0; iter < 10; ++iter) {
+    now = TimePoint(seconds(folly::Random::rand32(200)));
+    checkInvariant(mlts, now);
   }
 }

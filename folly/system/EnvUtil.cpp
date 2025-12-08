@@ -37,7 +37,7 @@ EnvironmentState EnvironmentState::fromCurrentEnvironment() {
     }
     key = entry.subpiece(0, equalsPosition).toString();
     value = entry.subpiece(equalsPosition + 1).toString();
-    if (data.count(key)) {
+    if (data.contains(key)) {
       throw MalformedEnvironment{to<std::string>(
           "Environment contains duplicate value for \"", key, "\"")};
     }
@@ -48,8 +48,8 @@ EnvironmentState EnvironmentState::fromCurrentEnvironment() {
 
 void EnvironmentState::setAsCurrentEnvironment() {
   PCHECK(0 == clearenv());
-  for (const auto& kvp : env_) {
-    PCHECK(0 == setenv(kvp.first.c_str(), kvp.second.c_str(), (int)true));
+  for (const auto& [k, v] : env_) {
+    PCHECK(0 == setenv(k.c_str(), v.c_str(), /* overwrite = */ 1));
   }
 }
 

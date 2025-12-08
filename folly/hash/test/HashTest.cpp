@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include <random>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -27,6 +28,7 @@
 #include <folly/MapUtil.h>
 #include <folly/Random.h>
 #include <folly/Range.h>
+#include <folly/lang/cstring_view.h>
 #include <folly/portability/GTest.h>
 
 using namespace folly::hash;
@@ -38,90 +40,6 @@ TEST(Hash, Test128To64) {
   EXPECT_EQ(
       commutative_hash_128_to_64(upper, lower),
       commutative_hash_128_to_64(lower, upper));
-}
-
-TEST(Hash, Fnv32) {
-  const char* s1 = "hello, world!";
-  const uint32_t s1_res = 3605494790UL;
-  EXPECT_EQ(fnv32(s1), s1_res);
-  EXPECT_EQ(fnv32(s1), fnv32_buf(s1, strlen(s1)));
-
-  const char* s2 = "monkeys! m0nk3yz! ev3ry \\/\\/here~~~~";
-  const uint32_t s2_res = 1270448334UL;
-  EXPECT_EQ(fnv32(s2), s2_res);
-  EXPECT_EQ(fnv32(s2), fnv32_buf(s2, strlen(s2)));
-
-  const char* s3 = "";
-  const uint32_t s3_res = 2166136261UL;
-  EXPECT_EQ(fnv32(s3), s3_res);
-  EXPECT_EQ(fnv32(s3), fnv32_buf(s3, strlen(s3)));
-
-  const uint8_t s4_data[] = {0xFF, 0xFF, 0xFF, 0x00};
-  const char* s4 = reinterpret_cast<const char*>(s4_data);
-  const uint32_t s4_res = 2420936562UL;
-  EXPECT_EQ(fnv32(s4), s4_res);
-  EXPECT_EQ(fnv32(s4), fnv32_buf(s4, strlen(s4)));
-}
-
-TEST(Hash, Fnv64) {
-  const char* s1 = "hello, world!";
-  const uint64_t s1_res = 13991426986746681734ULL;
-  EXPECT_EQ(fnv64(s1), s1_res);
-  EXPECT_EQ(fnv64(s1), fnv64_buf(s1, strlen(s1)));
-
-  const char* s2 = "monkeys! m0nk3yz! ev3ry \\/\\/here~~~~";
-  const uint64_t s2_res = 6091394665637302478ULL;
-  EXPECT_EQ(fnv64(s2), s2_res);
-  EXPECT_EQ(fnv64(s2), fnv64_buf(s2, strlen(s2)));
-
-  const char* s3 = "";
-  const uint64_t s3_res = 14695981039346656037ULL;
-  EXPECT_EQ(fnv64(s3), s3_res);
-  EXPECT_EQ(fnv64(s3), fnv64_buf(s3, strlen(s3)));
-
-  const uint8_t s4_data[] = {0xFF, 0xFF, 0xFF, 0x00};
-  const char* s4 = reinterpret_cast<const char*>(s4_data);
-  const uint64_t s4_res = 2787597222566293202ULL;
-  EXPECT_EQ(fnv64(s4), s4_res);
-  EXPECT_EQ(fnv64(s4), fnv64_buf(s4, strlen(s4)));
-
-  // note: Use fnv64_buf to make a single hash value from multiple
-  // fields/datatypes.
-  const char* t4_a = "E Pluribus";
-  int64_t t4_b = 0xF1E2D3C4B5A69788;
-  int32_t t4_c = 0xAB12CD34;
-  const char* t4_d = "Unum";
-  uint64_t t4_res = 15571330457339273965ULL;
-  uint64_t t4_hash1 = fnv64_buf(t4_a, strlen(t4_a));
-  uint64_t t4_hash2 =
-      fnv64_buf(reinterpret_cast<void*>(&t4_b), sizeof(int64_t), t4_hash1);
-  uint64_t t4_hash3 =
-      fnv64_buf(reinterpret_cast<void*>(&t4_c), sizeof(int32_t), t4_hash2);
-  uint64_t t4_hash4 = fnv64_buf(t4_d, strlen(t4_d), t4_hash3);
-  EXPECT_EQ(t4_hash4, t4_res);
-  // note: These are probabalistic, not determinate, but c'mon.
-  // These hash values should be different, or something's not
-  // working.
-  EXPECT_NE(t4_hash1, t4_hash4);
-  EXPECT_NE(t4_hash2, t4_hash4);
-  EXPECT_NE(t4_hash3, t4_hash4);
-}
-
-TEST(Hash, Hsieh32) {
-  const char* s1 = "hello, world!";
-  const uint32_t s1_res = 2918802987ul;
-  EXPECT_EQ(hsieh_hash32(s1), s1_res);
-  EXPECT_EQ(hsieh_hash32(s1), hsieh_hash32_buf(s1, strlen(s1)));
-
-  const char* s2 = "monkeys! m0nk3yz! ev3ry \\/\\/here~~~~";
-  const uint32_t s2_res = 47373213ul;
-  EXPECT_EQ(hsieh_hash32(s2), s2_res);
-  EXPECT_EQ(hsieh_hash32(s2), hsieh_hash32_buf(s2, strlen(s2)));
-
-  const char* s3 = "";
-  const uint32_t s3_res = 0;
-  EXPECT_EQ(hsieh_hash32(s3), s3_res);
-  EXPECT_EQ(hsieh_hash32(s3), hsieh_hash32_buf(s3, strlen(s3)));
 }
 
 TEST(Hash, TWangMix64) {
@@ -341,8 +259,9 @@ std::vector<size_t> getStats(size_t iter) {
   M m;
   ret.push_back(A::getAllocatedMemorySize());
   for (size_t i = 1; i < iter; ++i) {
-    m.insert(std::make_pair(
-        folly::to<typename M::key_type>(i), typename M::mapped_type{}));
+    m.insert(
+        std::make_pair(
+            folly::to<typename M::key_type>(i), typename M::mapped_type{}));
     ret.push_back(A::getAllocatedMemorySize());
   }
   return ret;
@@ -493,7 +412,7 @@ TEST(Hash, hashBool10) {
 }
 
 TEST(Hash, stdTuple) {
-  typedef std::tuple<int64_t, std::string, int32_t> tuple3;
+  using tuple3 = std::tuple<int64_t, std::string, int32_t>;
   tuple3 t(42, "foo", 1);
 
   std::unordered_map<tuple3, std::string> m;
@@ -533,7 +452,7 @@ TEST(Hash, enumType) {
 }
 
 TEST(Hash, pairFollyHash) {
-  typedef std::pair<int64_t, int32_t> pair2;
+  using pair2 = std::pair<int64_t, int32_t>;
   pair2 p(42, 1);
 
   std::unordered_map<pair2, std::string, folly::Hash> m;
@@ -542,7 +461,7 @@ TEST(Hash, pairFollyHash) {
 }
 
 TEST(Hash, tupleFollyHash) {
-  typedef std::tuple<int64_t, int32_t, int32_t> tuple3;
+  using tuple3 = std::tuple<int64_t, int32_t, int32_t>;
   tuple3 t(42, 1, 1);
 
   std::unordered_map<tuple3, std::string, folly::Hash> m;
@@ -594,7 +513,7 @@ TEST(Hash, commutativeHashCombine) {
 }
 
 TEST(Hash, stdTupleDifferentHash) {
-  typedef std::tuple<int64_t, std::string, int32_t> tuple3;
+  using tuple3 = std::tuple<int64_t, std::string, int32_t>;
   tuple3 t1(42, "foo", 1);
   tuple3 t2(9, "bar", 3);
   tuple3 t3(42, "foo", 3);
@@ -688,23 +607,46 @@ TEST(Hash, Pointer) {
           value));
 }
 
+template <typename T>
 struct FNVTestParam {
   std::string in;
-  uint64_t out;
+  T out;
 };
+using FNV32TestParam = FNVTestParam<uint32_t>;
+using FNV64TestParam = FNVTestParam<uint64_t>;
 
-class FNVTest : public ::testing::TestWithParam<FNVTestParam> {};
+class FNV32Test : public ::testing::TestWithParam<FNV32TestParam> {};
+class FNV64Test : public ::testing::TestWithParam<FNV64TestParam> {};
 
-TEST_P(FNVTest, Fnva64Buf) {
+TEST_P(FNV32Test, Fnva32Buf) {
+  EXPECT_EQ(
+      GetParam().out, fnva32_buf(GetParam().in.data(), GetParam().in.size()));
+}
+
+TEST_P(FNV64Test, Fnva64Buf) {
   EXPECT_EQ(
       GetParam().out, fnva64_buf(GetParam().in.data(), GetParam().in.size()));
 }
 
-TEST_P(FNVTest, Fnva64) {
+TEST_P(FNV32Test, Fnva32) {
+  EXPECT_EQ(GetParam().out, fnva32(GetParam().in));
+}
+
+TEST_P(FNV64Test, Fnva64) {
   EXPECT_EQ(GetParam().out, fnva64(GetParam().in));
 }
 
-TEST_P(FNVTest, Fnva64Partial) {
+TEST_P(FNV32Test, Fnva32Partial) {
+  size_t partialLen = GetParam().in.size() / 2;
+  auto data = GetParam().in.data();
+  auto partial = fnva32_buf(data, partialLen);
+  EXPECT_EQ(
+      GetParam().out,
+      fnva32_buf(
+          data + partialLen, GetParam().in.size() - partialLen, partial));
+}
+
+TEST_P(FNV64Test, Fnva64Partial) {
   size_t partialLen = GetParam().in.size() / 2;
   auto data = GetParam().in.data();
   auto partial = fnva64_buf(data, partialLen);
@@ -716,22 +658,43 @@ TEST_P(FNVTest, Fnva64Partial) {
 
 // Taken from http://www.isthe.com/chongo/src/fnv/test_fnv.c
 INSTANTIATE_TEST_SUITE_P(
-    FNVTesting,
-    FNVTest,
+    FNV32Testing,
+    FNV32Test,
     ::testing::Values(
-        FNVTestParam{
+        FNV32TestParam{
+            "foobar", // 11
+            0xbf9cf968},
+        FNV32TestParam{
+            "chongo was here!\n", // 39
+            0xd49930d5},
+        FNV32TestParam{
+            "127.0.0.3", // 106,
+            0x06a3cdf8},
+        FNV32TestParam{
+            "http://en.wikipedia.org/wiki/Fowler_Noll_Vo_hash", // 126
+            0xdd16ef45},
+        FNV32TestParam{
+            "http://norvig.com/21-days.html", // 136
+            0xeb08bfba}));
+
+// Taken from http://www.isthe.com/chongo/src/fnv/test_fnv.c
+INSTANTIATE_TEST_SUITE_P(
+    FNV64Testing,
+    FNV64Test,
+    ::testing::Values(
+        FNV64TestParam{
             "foobar", // 11
             0x85944171f73967e8},
-        FNVTestParam{
+        FNV64TestParam{
             "chongo was here!\n", // 39
             0x46810940eff5f915},
-        FNVTestParam{
+        FNV64TestParam{
             "127.0.0.3", // 106,
             0xaabafc7104d91158},
-        FNVTestParam{
+        FNV64TestParam{
             "http://en.wikipedia.org/wiki/Fowler_Noll_Vo_hash", // 126
             0xd9b957fb7fe794c5},
-        FNVTestParam{
+        FNV64TestParam{
             "http://norvig.com/21-days.html", // 136
             0x07aaa640476e0b9a}));
 
@@ -739,163 +702,137 @@ INSTANTIATE_TEST_SUITE_P(
 
 static constexpr bool k32Bit = sizeof(std::size_t) == 4;
 
-static_assert(!folly::IsAvalanchingHasher<std::hash<int>, int>::value, "");
+static_assert(!folly::IsAvalanchingHasher<std::hash<int>, int>::value);
 static_assert(
-    !folly::IsAvalanchingHasher<std::hash<char const*>, char const*>::value,
-    "");
-static_assert(!folly::IsAvalanchingHasher<std::hash<float>, float>::value, "");
+    !folly::IsAvalanchingHasher<std::hash<char const*>, char const*>::value);
+static_assert(!folly::IsAvalanchingHasher<std::hash<float>, float>::value);
+static_assert(!folly::IsAvalanchingHasher<std::hash<double>, double>::value);
 static_assert(
-    !folly::IsAvalanchingHasher<std::hash<double>, double>::value, "");
+    !folly::IsAvalanchingHasher<std::hash<long double>, long double>::value);
 static_assert(
-    !folly::IsAvalanchingHasher<std::hash<long double>, long double>::value,
-    "");
+    folly::IsAvalanchingHasher<std::hash<std::string>, std::string>::value);
 static_assert(
-    folly::IsAvalanchingHasher<std::hash<std::string>, std::string>::value, "");
+    folly::IsAvalanchingHasher<std::hash<std::string_view>, std::string_view>::
+        value);
 static_assert(
-    !folly::IsAvalanchingHasher<std::hash<TestEnum>, TestEnum>::value, "");
+    !folly::IsAvalanchingHasher<std::hash<TestEnum>, TestEnum>::value);
 static_assert(
-    !folly::IsAvalanchingHasher<std::hash<TestStruct>, TestStruct>::value, "");
+    !folly::IsAvalanchingHasher<std::hash<TestStruct>, TestStruct>::value);
 
 static_assert(
-    !folly::IsAvalanchingHasher<folly::transparent<std::hash<int>>, int>::value,
-    "");
-static_assert(
+    !folly::IsAvalanchingHasher<folly::transparent<std::hash<int>>, int>::
+        value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::transparent<std::hash<std::string>>,
-        std::string>::value,
-    "");
+        std::string>::value);
 
 // these come from folly/hash/Hash.h
-static_assert(
+static_assert( //
     folly::IsAvalanchingHasher<
         std::hash<std::pair<int, int>>,
-        std::pair<int, int>>::value,
-    "");
+        std::pair<int, int>>::value);
 static_assert(
     !folly::IsAvalanchingHasher<std::hash<std::tuple<int>>, std::tuple<int>>::
-        value,
-    "");
-static_assert(
+        value);
+static_assert( //
     folly::IsAvalanchingHasher<
         std::hash<std::tuple<std::string>>,
-        std::tuple<std::string>>::value,
-    "");
-static_assert(
+        std::tuple<std::string>>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         std::hash<std::tuple<int, int>>,
-        std::tuple<int, int>>::value,
-    "");
-static_assert(
+        std::tuple<int, int>>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         std::hash<std::tuple<int, int, int>>,
-        std::tuple<int, int, int>>::value,
-    "");
+        std::tuple<int, int, int>>::value);
 
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, uint8_t>::value, "");
+    k32Bit == folly::IsAvalanchingHasher<folly::Hash, uint8_t>::value);
+static_assert(k32Bit == folly::IsAvalanchingHasher<folly::Hash, char>::value);
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, char>::value, "");
+    k32Bit == folly::IsAvalanchingHasher<folly::Hash, uint16_t>::value);
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, uint16_t>::value, "");
+    k32Bit == folly::IsAvalanchingHasher<folly::Hash, int16_t>::value);
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, int16_t>::value, "");
+    k32Bit == folly::IsAvalanchingHasher<folly::Hash, uint32_t>::value);
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, uint32_t>::value, "");
+    k32Bit == folly::IsAvalanchingHasher<folly::Hash, int32_t>::value);
+static_assert(folly::IsAvalanchingHasher<folly::Hash, uint64_t>::value);
+static_assert(folly::IsAvalanchingHasher<folly::Hash, int64_t>::value);
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, int32_t>::value, "");
-static_assert(folly::IsAvalanchingHasher<folly::Hash, uint64_t>::value, "");
-static_assert(folly::IsAvalanchingHasher<folly::Hash, int64_t>::value, "");
+    folly::IsAvalanchingHasher<folly::Hash, folly::StringPiece>::value);
+static_assert(folly::IsAvalanchingHasher<folly::Hash, std::string>::value);
 static_assert(
-    folly::IsAvalanchingHasher<folly::Hash, folly::StringPiece>::value, "");
-static_assert(folly::IsAvalanchingHasher<folly::Hash, std::string>::value, "");
-static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::Hash, TestEnum>::value, "");
-static_assert(folly::IsAvalanchingHasher<folly::Hash, TestBigEnum>::value, "");
+    k32Bit == folly::IsAvalanchingHasher<folly::Hash, TestEnum>::value);
+static_assert(folly::IsAvalanchingHasher<folly::Hash, TestBigEnum>::value);
 
 static_assert(
     k32Bit ==
-        folly::IsAvalanchingHasher<folly::hasher<uint8_t>, uint8_t>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<uint8_t>, uint8_t>::value);
 static_assert(
-    k32Bit == folly::IsAvalanchingHasher<folly::hasher<char>, char>::value, "");
-static_assert(
-    k32Bit ==
-        folly::IsAvalanchingHasher<folly::hasher<uint16_t>, uint16_t>::value,
-    "");
+    k32Bit == folly::IsAvalanchingHasher<folly::hasher<char>, char>::value);
 static_assert(
     k32Bit ==
-        folly::IsAvalanchingHasher<folly::hasher<int16_t>, int16_t>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<uint16_t>, uint16_t>::value);
 static_assert(
     k32Bit ==
-        folly::IsAvalanchingHasher<folly::hasher<uint32_t>, uint32_t>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<int16_t>, int16_t>::value);
 static_assert(
     k32Bit ==
-        folly::IsAvalanchingHasher<folly::hasher<int32_t>, int32_t>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<uint32_t>, uint32_t>::value);
 static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<uint64_t>, uint64_t>::value, "");
+    k32Bit ==
+    folly::IsAvalanchingHasher<folly::hasher<int32_t>, int32_t>::value);
 static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<int64_t>, int64_t>::value, "");
+    folly::IsAvalanchingHasher<folly::hasher<uint64_t>, uint64_t>::value);
 static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<float>, float>::value, "");
+    folly::IsAvalanchingHasher<folly::hasher<int64_t>, int64_t>::value);
+static_assert(folly::IsAvalanchingHasher<folly::hasher<float>, float>::value);
+static_assert(folly::IsAvalanchingHasher<folly::hasher<double>, double>::value);
 static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<double>, double>::value, "");
-static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<std::string>, std::string>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<std::string>, std::string>::value);
 static_assert(
     folly::IsAvalanchingHasher<folly::hasher<folly::StringPiece>, std::string>::
-        value,
-    "");
-static_assert(
+        value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::hasher<folly::StringPiece>,
-        folly::StringPiece>::value,
-    "");
-static_assert(
+        folly::StringPiece>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::transparent<folly::hasher<folly::StringPiece>>,
-        folly::StringPiece>::value,
-    "");
+        folly::StringPiece>::value);
 
 static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<std::string>, std::string>::value,
-    "");
-static_assert(
+    folly::IsAvalanchingHasher<folly::hasher<std::string>, std::string>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::hasher<std::pair<int, int>>,
-        std::pair<int, int>>::value,
-    "");
+        std::pair<int, int>>::value);
 static_assert(
     k32Bit ==
-        folly::IsAvalanchingHasher<
-            folly::hasher<std::tuple<int>>,
-            std::tuple<int>>::value,
-    "");
-static_assert(
+    folly::IsAvalanchingHasher<
+        folly::hasher<std::tuple<int>>,
+        std::tuple<int>>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::hasher<std::tuple<std::string>>,
-        std::tuple<std::string>>::value,
-    "");
-static_assert(
+        std::tuple<std::string>>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::hasher<std::tuple<int, int>>,
-        std::tuple<int, int>>::value,
-    "");
-static_assert(
+        std::tuple<int, int>>::value);
+static_assert( //
     folly::IsAvalanchingHasher<
         folly::hasher<std::tuple<int, int, int>>,
-        std::tuple<int, int, int>>::value,
-    "");
+        std::tuple<int, int, int>>::value);
 static_assert(
     k32Bit ==
-        folly::IsAvalanchingHasher<folly::hasher<TestEnum>, TestEnum>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<TestEnum>, TestEnum>::value);
 static_assert(
-    folly::IsAvalanchingHasher<folly::hasher<TestBigEnum>, TestBigEnum>::value,
-    "");
+    folly::IsAvalanchingHasher<folly::hasher<TestBigEnum>, TestBigEnum>::value);
 
 //////// dynamic checks
 
@@ -979,6 +916,18 @@ TEST(Traits, stdHashStringAvalances) {
       });
 }
 
+TEST(Traits, stdHashStringViewAvalances) {
+  verifyAvalanching<std::hash<std::string_view>, std::string>(
+      "00000000000000000000000000000", [](std::string& str) {
+        std::size_t i = 0;
+        while (str[i] == '1') {
+          str[i] = '0';
+          ++i;
+        }
+        str[i] = '1';
+      });
+}
+
 TEST(Traits, follyHashUint64Avalances) {
   verifyAvalanching<folly::Hash>(uint64_t{0}, [](uint64_t& v) { v++; });
 }
@@ -995,4 +944,101 @@ TEST(Traits, follyHasherFloatAvalanches) {
 
 TEST(Traits, follyHasherDoubleAvalanches) {
   verifyAvalanching<folly::hasher<double>>(0.0, [](double& v) { v += 1; });
+}
+
+TEST(HashSequence, Fold) {
+  EXPECT_EQ(folly::hash::detail::hash_sequence(folly::hasher<int>{}), 0);
+  EXPECT_EQ(
+      folly::hash::detail::hash_sequence(folly::hasher<int>{}, 1),
+      folly::hasher<int>{}(1));
+  EXPECT_EQ(
+      folly::hash::detail::hash_sequence(folly::hasher<int>{}, 1, 2),
+      folly::hash::hash_128_to_64(
+          folly::hasher<int>{}(1), folly::hasher<int>{}(2)));
+  EXPECT_EQ(
+      folly::hash::detail::hash_sequence(folly::hasher<int>{}, 1, 2, 3),
+      folly::hash::hash_128_to_64(
+          folly::hasher<int>{}(1),
+          folly::hash::hash_128_to_64(
+              folly::hasher<int>{}(2), folly::hasher<int>{}(3))));
+}
+
+TEST(HashSequence, TypeMix) {
+  EXPECT_EQ(
+      folly::hash::detail::hash_sequence(
+          folly::detail::hash_one, 1, 1.0, std::string_view{"hello"}),
+      folly::hash::hash_128_to_64(
+          folly::hasher<int>{}(1),
+          folly::hash::hash_128_to_64(
+              folly::hasher<double>{}(1.0),
+              folly::hasher<std::string_view>{}("hello"))));
+}
+
+TEST(HashTuple, Empty) {
+  auto empty = std::make_tuple<>();
+  EXPECT_EQ(
+      folly::hash::detail::hash_tuple(folly::hasher<decltype(empty)>{}, empty),
+      0);
+}
+
+TEST(HashTuple, Basic) {
+  auto basic = std::make_tuple<int, double, std::string>(1, 1.0, "hello");
+  EXPECT_EQ(
+      folly::hash::detail::hash_tuple(folly::detail::hash_one, basic),
+      folly::hash::hash_128_to_64(
+          folly::hasher<int>{}(1),
+          folly::hash::hash_128_to_64(
+              folly::hasher<double>{}(1.0),
+              folly::hasher<std::string>{}("hello"))));
+}
+
+TEST(Hash, cstring_view_hasher_basic) {
+  folly::cstring_view svz("hello");
+  std::string_view sv("hello");
+
+  folly::hasher<folly::cstring_view> hasher_csv;
+  folly::hasher<std::string_view> hasher_sv;
+
+  EXPECT_EQ(hasher_csv(svz), hasher_sv(sv));
+}
+
+TEST(Hash, cstring_view_hasher_different_strings) {
+  folly::cstring_view svz1("hello");
+  folly::cstring_view svz2("world");
+
+  folly::hasher<folly::cstring_view> hasher;
+
+  EXPECT_NE(hasher(svz1), hasher(svz2));
+}
+
+TEST(Hash, cstring_view_hasher_empty_string) {
+  folly::cstring_view svz("");
+  std::string_view sv("");
+
+  folly::hasher<folly::cstring_view> hasher_csv;
+  folly::hasher<std::string_view> hasher_sv;
+
+  EXPECT_EQ(hasher_csv(svz), hasher_sv(sv));
+}
+
+TEST(Hash, cstring_view_hasher_after_remove_prefix) {
+  folly::cstring_view svz("hello world");
+  svz.remove_prefix(6);
+
+  std::string_view sv("world");
+
+  folly::hasher<folly::cstring_view> hasher_csv;
+  folly::hasher<std::string_view> hasher_sv;
+
+  EXPECT_EQ(hasher_csv(svz), hasher_sv(sv));
+}
+
+TEST(Hash, cstring_view_hasher_consistency) {
+  folly::cstring_view svz("test");
+  folly::hasher<folly::cstring_view> hasher;
+
+  size_t hash1 = hasher(svz);
+  size_t hash2 = hasher(svz);
+
+  EXPECT_EQ(hash1, hash2);
 }

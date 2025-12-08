@@ -382,15 +382,16 @@ class rcu_domain {
     if (time > syncTime + syncTimePeriod_ &&
         syncTime_.compare_exchange_strong(
             syncTime, time, std::memory_order_relaxed)) {
-      list_head finished;
-      {
-        std::lock_guard<std::mutex> g(syncMutex_);
+      std::unique_lock g(syncMutex_, std::try_to_lock);
+      if (g.owns_lock()) {
+        list_head finished;
         half_sync(false, finished);
+        g.unlock();
+        // callbacks are called outside of syncMutex_
+        finished.forEach([&](list_node* item) {
+          executor_->add(std::move(item->cb_));
+        });
       }
-      // callbacks are called outside of syncMutex_
-      finished.forEach([&](list_node* item) {
-        executor_->add(std::move(item->cb_));
-      });
     }
   }
 
@@ -410,7 +411,7 @@ class rcu_domain {
       if (work < target && work_.compare_exchange_strong(tmp, target)) {
         list_head finished;
         {
-          std::lock_guard<std::mutex> g(syncMutex_);
+          std::lock_guard g(syncMutex_);
           while (version_.load(std::memory_order_acquire) < target) {
             half_sync(true, finished);
           }
@@ -533,7 +534,7 @@ inline void rcu_barrier(rcu_domain& domain = rcu_default_domain()) noexcept {
 // Free-function retire.  Always allocates.
 //
 // This will invoke the deleter d(p) asynchronously some time after all
-// pre-existing RCU readers have completed.  See synchronize_rcu() for more
+// pre-existing RCU readers have completed.  See rcu_synchronize() for more
 // information about RCU readers and domains.
 template <typename T, typename D = std::default_delete<T>>
 void rcu_retire(T* p, D d = {}, rcu_domain& domain = rcu_default_domain()) {

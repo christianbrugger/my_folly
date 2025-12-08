@@ -168,7 +168,7 @@ class EvictingCacheMap {
         keyEqual_(keyEqual),
         index_(maxSize + /*transient*/ 1, keyHash_, keyEqual_),
         maxSize_(maxSize),
-        clearSize_(clearSize) {}
+        clearSize_(clampClearSize(clearSize)) {}
 
   EvictingCacheMap(const EvictingCacheMap&) = delete;
   EvictingCacheMap& operator=(const EvictingCacheMap&) = delete;
@@ -197,7 +197,9 @@ class EvictingCacheMap {
 
   std::size_t getMaxSize() const { return maxSize_; }
 
-  void setClearSize(std::size_t clearSize) { clearSize_ = clearSize; }
+  void setClearSize(std::size_t clearSize) {
+    clearSize_ = clampClearSize(clearSize);
+  }
 
   /**
    * Check for existence of a specific key in the map.  This operation has
@@ -556,39 +558,54 @@ class EvictingCacheMap {
     }
   };
 
-  struct KeyHasher {
+  struct KeyHasher : THash {
+    static_assert(std::is_nothrow_copy_constructible_v<THash>);
+    template <typename K>
+    static inline constexpr bool nx =
+        is_nothrow_invocable_v<THash const&, K const&>;
+
     using is_transparent = void;
     using folly_is_avalanching = IsAvalanchingHasher<THash, TKey>;
 
-    KeyHasher() : hash() {}
-    explicit KeyHasher(const THash& keyHash) : hash(keyHash) {}
-    std::size_t operator()(const NodePtr& node) const {
-      return hash(node->pr.first);
-    }
+    using THash::THash;
+
+    explicit KeyHasher(THash const& that) noexcept : THash(that) {}
+
     template <typename K>
-    std::size_t operator()(const K& key) const {
-      return hash(key);
+    std::size_t operator()(const K& key) const noexcept(nx<K>) {
+      return THash::operator()(key);
     }
-    THash hash;
+    std::size_t operator()(const NodePtr& node) const noexcept(nx<TKey>) {
+      return THash::operator()(node->pr.first);
+    }
   };
 
-  struct KeyValueEqual {
+  struct KeyValueEqual : private TKeyEqual {
+    static_assert(std::is_nothrow_copy_constructible_v<TKeyEqual>);
+    template <typename L, typename R>
+    static inline constexpr bool nx =
+        is_nothrow_invocable_v<TKeyEqual const&, L const&, R const&>;
+
     using is_transparent = void;
 
-    KeyValueEqual() : equal() {}
-    explicit KeyValueEqual(const TKeyEqual& keyEqual) : equal(keyEqual) {}
+    using TKeyEqual::TKeyEqual;
+
+    explicit KeyValueEqual(TKeyEqual const& that) noexcept : TKeyEqual(that) {}
+
     template <typename K>
-    bool operator()(const K& lhs, const NodePtr& rhs) const {
-      return equal(lhs, rhs->pr.first);
+    bool operator()(const K& lhs, const NodePtr& rhs) const
+        noexcept(nx<K, TKey>) {
+      return TKeyEqual::operator()(lhs, rhs->pr.first);
     }
     template <typename K>
-    bool operator()(const NodePtr& lhs, const K& rhs) const {
-      return equal(lhs->pr.first, rhs);
+    bool operator()(const NodePtr& lhs, const K& rhs) const
+        noexcept(nx<TKey, K>) {
+      return TKeyEqual::operator()(lhs->pr.first, rhs);
     }
-    bool operator()(const NodePtr& lhs, const NodePtr& rhs) const {
-      return equal(lhs->pr.first, rhs->pr.first);
+    bool operator()(const NodePtr& lhs, const NodePtr& rhs) const
+        noexcept(nx<TKey, TKey>) {
+      return TKeyEqual::operator()(lhs->pr.first, rhs->pr.first);
     }
-    TKeyEqual equal;
   };
 
   template <typename K>
@@ -720,6 +737,12 @@ class EvictingCacheMap {
     } else {
       return nullptr;
     }
+  }
+
+  // A zero clear size doesnt make sense. If you want to disable clearing, set
+  // maxSize to 0.
+  static std::size_t clampClearSize(std::size_t clearSize) {
+    return std::max(clearSize, std::size_t{1});
   }
 
   PruneHookCall pruneHook_;

@@ -73,8 +73,20 @@ namespace folly {
  * responding and no further progress can be made sending the data.
  */
 
-#if defined __linux__ && !defined SO_NO_TRANSPARENT_TLS
-#define SO_NO_TRANSPARENT_TLS 200
+/**
+ *This is a @deprecated approach to disabling TTLS and should be
+ *removed after completing the migration to FOLLY_SO_TTLS_TRUSTED.
+ */
+#if defined __linux__ && !defined FOLLY_SO_NO_TRANSPARENT_TLS
+#define FOLLY_SO_NO_TRANSPARENT_TLS 200
+#endif
+
+#if defined __linux__ && !defined FOLLY_SO_TTLS_TRUSTED
+#define FOLLY_SO_TTLS_TRUSTED 206
+#endif
+
+#if defined __linux__ && !defined FOLLY_SO_TTLS_TRUSTED_VAL_ENCRYPTED
+#define FOLLY_SO_TTLS_TRUSTED_VAL_ENCRYPTED 1
 #endif
 
 #if defined __linux__ && !defined SO_NO_TSOCKS
@@ -91,6 +103,8 @@ class AsyncSocket : public AsyncSocketTransport {
   using ByteEvent = AsyncSocketObserverInterface::ByteEvent;
   using Observer = AsyncSocketObserverContainer::Observer;
   using ManagedObserver = AsyncSocketObserverContainer::ManagedObserver;
+
+  static inline constexpr size_t kMaxAttemptsEnableByteEvents = 10;
 
   class EvbChangeCallback {
    public:
@@ -173,7 +187,8 @@ class AsyncSocket : public AsyncSocketTransport {
      *         is, choosing to read `msg_name*` or `msg_iov*` leads to
      *         undefined behavior.
      */
-    virtual void ancillaryData(struct ::msghdr&) noexcept = 0;
+    virtual folly::Expected<folly::Unit, AsyncSocketException> ancillaryData(
+        struct ::msghdr&) noexcept = 0;
 
     /**
      * Must return a buffer large enough to contain the incoming ancillary
@@ -394,7 +409,7 @@ class AsyncSocket : public AsyncSocketTransport {
      *         Otherwise, returns an empty optional.
      *
      *         If the helper has previously thrown a ByteEventHelper::Exception,
-     *         it will not process further Cmsg and will continiously return an
+     *         it will not process further Cmsg and will continuously return an
      *         empty optional.
      *
      * @throw  If the helper receives a sequence of Cmsg that violate its
@@ -687,7 +702,7 @@ class AsyncSocket : public AsyncSocketTransport {
    * receiving notifications for messages posted to the error queue
    * associated with the socket.
    * ErrMessageCallback is implemented only for platforms with
-   * per-socket error message queus support (recvmsg() system call must
+   * per-socket error message queues support (recvmsg() system call must
    * )
    *
    */
@@ -925,7 +940,7 @@ class AsyncSocket : public AsyncSocketTransport {
   }
 
   /**
-   * Returns when connect() finished (either successsfully or failed).
+   * Returns when connect() finished (either successfully or failed).
    */
   std::chrono::steady_clock::time_point getConnectEndTime() const {
     return connectEndTime_;
@@ -957,7 +972,7 @@ class AsyncSocket : public AsyncSocketTransport {
   bool getTFOFinished() const { return tfoInfo_.finished; }
 
   /**
-   * Returns whether or not TFO attempt succeded on this
+   * Returns whether or not TFO attempt succeeded on this
    * connection.
    * For servers this is pretty straightforward API and can
    * be invoked right after the connection is accepted. This API
@@ -968,7 +983,7 @@ class AsyncSocket : public AsyncSocketTransport {
    * data is read from the socket when the caller knows that
    * the SYN has been ACKed by the server.
    */
-  bool getTFOSucceded() const override;
+  bool getTFOSucceeded() const override;
 
   // Methods controlling socket options
 
@@ -1141,6 +1156,17 @@ class AsyncSocket : public AsyncSocketTransport {
     tfoInfo_.enabled = true;
 #endif
   }
+
+  /**
+   * Sets TOS or traffic class. Throws an exception on error.
+   */
+  void setTosOrTrafficClass(int tosOrTrafficClass);
+
+  /**
+   * This flag controls whether or not IP_BIND_ADDRESS_NO_PORT is enabled for
+   * AsyncSocket sockets. This is enabled by default.
+   */
+  void setBindAddressNoPort(bool flag) { bindAddressNoPort_ = flag; }
 
   void disableTransparentTls() override { noTransparentTls_ = true; }
 
@@ -1369,7 +1395,7 @@ class AsyncSocket : public AsyncSocketTransport {
     /**
      * Constructor for observer.
      *
-     * @param config      Config, defaults to auxilary instrumentaton disabled.
+     * @param config      Config, defaults to auxilary instrumentation disabled.
      */
     explicit LegacyLifecycleObserver(const Config& observerConfig)
         : observerConfig_(observerConfig) {}
@@ -1443,7 +1469,7 @@ class AsyncSocket : public AsyncSocketTransport {
    *
    * @return             Vector with installed observers.
    */
-  FOLLY_NODISCARD virtual std::vector<LegacyLifecycleObserver*>
+  [[nodiscard]] virtual std::vector<LegacyLifecycleObserver*>
   getLifecycleObservers() const;
 
   /**
@@ -1559,6 +1585,7 @@ class AsyncSocket : public AsyncSocketTransport {
     READ_ERROR = -1,
     READ_BLOCKING = -2,
     READ_NO_ERROR = -3,
+    READ_ASYNC = -4,
   };
 
   enum WriteResultEnum {
@@ -1989,10 +2016,12 @@ class AsyncSocket : public AsyncSocketTransport {
   };
 
   TCPFastOpenInfo tfoInfo_;
+  bool bindAddressNoPort_{true};
   bool noTransparentTls_{false};
   bool noTSocks_{false};
   // Whether to track EOR or not.
   bool trackEor_{false};
+  Optional<int> tosOrTrafficClass_;
 
   // ByteEvent state
   std::unique_ptr<ByteEventHelper> byteEventHelper_;

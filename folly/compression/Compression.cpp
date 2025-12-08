@@ -57,11 +57,11 @@
 #include <folly/Portability.h>
 #include <folly/Random.h>
 #include <folly/ScopeGuard.h>
+#include <folly/Utility.h>
 #include <folly/Varint.h>
 #include <folly/compression/Utils.h>
 #include <folly/io/Cursor.h>
 #include <folly/lang/Bits.h>
-#include <folly/stop_watch.h>
 
 using folly::compression::detail::dataStartsWithLE;
 using folly::compression::detail::prefixToStringLE;
@@ -220,8 +220,9 @@ bool StreamCodec::doNeedsDataLength() const {
 
 void StreamCodec::assertStateIs(State expected) const {
   if (state_ != expected) {
-    throw std::logic_error(folly::to<std::string>(
-        "Codec: state is ", state_, "; expected state ", expected));
+    throw std::logic_error(
+        folly::to<std::string>(
+            "Codec: state is ", state_, "; expected state ", expected));
   }
 }
 
@@ -515,10 +516,10 @@ inline uint64_t decodeVarintFromCursor(folly::io::Cursor& cursor) {
 
 #if LZ4_VERSION_NUMBER >= 10802 && defined(LZ4_STATIC_LINKING_ONLY) && \
     defined(LZ4_HC_STATIC_LINKING_ONLY) && !defined(FOLLY_USE_LZ4_FAST_RESET)
-#define FOLLY_USE_LZ4_FAST_RESET
+#define FOLLY_USE_LZ4_FAST_RESET 1
 #endif
 
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
 void lz4_stream_t_deleter(LZ4_stream_t* ctx) {
   LZ4_freeStream(ctx);
 }
@@ -547,7 +548,7 @@ class LZ4Codec final : public Codec {
   std::unique_ptr<IOBuf> doUncompress(
       const IOBuf* data, Optional<uint64_t> uncompressedLength) override;
 
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
   std::unique_ptr<
       LZ4_stream_t,
       folly::static_function_deleter<LZ4_stream_t, lz4_stream_t_deleter>>
@@ -623,7 +624,7 @@ std::unique_ptr<IOBuf> LZ4Codec::doCompress(const IOBuf* data) {
   auto output = reinterpret_cast<char*>(out->writableTail());
   const auto inputLength = data->length();
 
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
   if (!highCompression_ && !ctx) {
     ctx.reset(LZ4_createStream());
   }
@@ -721,7 +722,7 @@ class LZ4FrameCodec final : public Codec {
   void resetDCtx();
 
   int level_;
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
   LZ4F_compressionContext_t cctx_{nullptr};
 #endif
   LZ4F_decompressionContext_t dctx_{nullptr};
@@ -790,7 +791,7 @@ LZ4FrameCodec::~LZ4FrameCodec() {
   if (dctx_) {
     LZ4F_freeDecompressionContext(dctx_);
   }
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
   if (cctx_) {
     LZ4F_freeCompressionContext(cctx_);
   }
@@ -805,7 +806,7 @@ std::unique_ptr<IOBuf> LZ4FrameCodec::doCompress(const IOBuf* data) {
     data = &clone;
   }
 
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
   if (!cctx_) {
     lz4FrameThrowOnError(LZ4F_createCompressionContext(&cctx_, LZ4F_VERSION));
   }
@@ -819,7 +820,7 @@ std::unique_ptr<IOBuf> LZ4FrameCodec::doCompress(const IOBuf* data) {
   // Compress
   auto buf = IOBuf::create(maxCompressedLength(uncompressedLength));
   const size_t written = lz4FrameThrowOnError(
-#ifdef FOLLY_USE_LZ4_FAST_RESET
+#if FOLLY_USE_LZ4_FAST_RESET
       LZ4F_compressFrame_usingCDict(
           cctx_,
           buf->writableTail(),
@@ -1187,8 +1188,9 @@ void LZMA2StreamCodec::resetCStream() {
   lzma_ret const rc =
       lzma_easy_encoder(cstream_.get_pointer(), level_, LZMA_CHECK_NONE);
   if (rc != LZMA_OK) {
-    throw std::runtime_error(folly::to<std::string>(
-        "LZMA2StreamCodec: lzma_easy_encoder error: ", rc));
+    throw std::runtime_error(
+        folly::to<std::string>(
+            "LZMA2StreamCodec: lzma_easy_encoder error: ", rc));
   }
 }
 
@@ -1199,8 +1201,9 @@ void LZMA2StreamCodec::resetDStream() {
   lzma_ret const rc = lzma_auto_decoder(
       dstream_.get_pointer(), std::numeric_limits<uint64_t>::max(), 0);
   if (rc != LZMA_OK) {
-    throw std::runtime_error(folly::to<std::string>(
-        "LZMA2StreamCodec: lzma_auto_decoder error: ", rc));
+    throw std::runtime_error(
+        folly::to<std::string>(
+            "LZMA2StreamCodec: lzma_auto_decoder error: ", rc));
   }
 }
 
@@ -1597,41 +1600,51 @@ int bzip2TranslateFlush(StreamCodec::FlushOp flushOp) {
 
 bool Bzip2StreamCodec::doCompressStream(
     ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
-  if (needReset_) {
-    resetCStream();
-    needReset_ = false;
-  }
-  if (input.empty() && output.empty()) {
-    return false;
-  }
+  // Bzip2 uses uint32_t for sizes, so we can't compress more than 4GB at a time
+  return detail::chunkedStream(
+      detail::kDefaultChunkSizeFor32BitSizes,
+      input,
+      output,
+      flushOp,
+      [this](auto& input, auto& output, auto flushOp) {
+        if (needReset_) {
+          resetCStream();
+          needReset_ = false;
+        }
+        if (input.empty() && output.empty()) {
+          return false;
+        }
 
-  cstream_->next_in =
-      const_cast<char*>(reinterpret_cast<const char*>(input.data()));
-  cstream_->avail_in = input.size();
-  cstream_->next_out = reinterpret_cast<char*>(output.data());
-  cstream_->avail_out = output.size();
-  SCOPE_EXIT {
-    input.uncheckedAdvance(input.size() - cstream_->avail_in);
-    output.uncheckedAdvance(output.size() - cstream_->avail_out);
-  };
-  int const rc = bzCheck(
-      BZ2_bzCompress(cstream_.get_pointer(), bzip2TranslateFlush(flushOp)));
-  switch (flushOp) {
-    case StreamCodec::FlushOp::NONE:
-      return false;
-    case StreamCodec::FlushOp::FLUSH:
-      if (rc == BZ_RUN_OK) {
-        DCHECK_EQ(cstream_->avail_in, 0);
-        DCHECK(input.empty() || cstream_->avail_out != output.size());
-        return true;
-      }
-      return false;
-    case StreamCodec::FlushOp::END:
-      return rc == BZ_STREAM_END;
-    default:
-      throw std::invalid_argument("Bzip2StreamCodec: invalid FlushOp");
-  }
-  return false;
+        cstream_->next_in =
+            const_cast<char*>(reinterpret_cast<const char*>(input.data()));
+        cstream_->avail_in = to_narrow(input.size());
+        cstream_->next_out = reinterpret_cast<char*>(output.data());
+        cstream_->avail_out = to_narrow(output.size());
+        DCHECK_EQ(cstream_->avail_in, input.size());
+        DCHECK_EQ(cstream_->avail_out, output.size());
+        SCOPE_EXIT {
+          input.uncheckedAdvance(input.size() - cstream_->avail_in);
+          output.uncheckedAdvance(output.size() - cstream_->avail_out);
+        };
+        int const rc = bzCheck(BZ2_bzCompress(
+            cstream_.get_pointer(), bzip2TranslateFlush(flushOp)));
+        switch (flushOp) {
+          case StreamCodec::FlushOp::NONE:
+            return false;
+          case StreamCodec::FlushOp::FLUSH:
+            if (rc == BZ_RUN_OK) {
+              DCHECK_EQ(cstream_->avail_in, 0);
+              DCHECK(input.empty() || cstream_->avail_out != output.size());
+              return true;
+            }
+            return false;
+          case StreamCodec::FlushOp::END:
+            return rc == BZ_STREAM_END;
+          default:
+            throw std::invalid_argument("Bzip2StreamCodec: invalid FlushOp");
+        }
+        return false;
+      });
 }
 
 void Bzip2StreamCodec::resetDStream() {
@@ -1644,26 +1657,37 @@ void Bzip2StreamCodec::resetDStream() {
 
 bool Bzip2StreamCodec::doUncompressStream(
     ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
-  if (flushOp == StreamCodec::FlushOp::FLUSH) {
-    throw std::invalid_argument(
-        "Bzip2StreamCodec: FlushOp::FLUSH not supported");
-  }
-  if (needReset_) {
-    resetDStream();
-    needReset_ = false;
-  }
+  // Bzip2 uses uint32_t for sizes, so we can't uncompress more than 4GB at a
+  // time
+  return detail::chunkedStream(
+      detail::kDefaultChunkSizeFor32BitSizes,
+      input,
+      output,
+      flushOp,
+      [this](auto& input, auto& output, auto flushOp) {
+        if (flushOp == StreamCodec::FlushOp::FLUSH) {
+          throw std::invalid_argument(
+              "Bzip2StreamCodec: FlushOp::FLUSH not supported");
+        }
+        if (needReset_) {
+          resetDStream();
+          needReset_ = false;
+        }
 
-  dstream_->next_in =
-      const_cast<char*>(reinterpret_cast<const char*>(input.data()));
-  dstream_->avail_in = input.size();
-  dstream_->next_out = reinterpret_cast<char*>(output.data());
-  dstream_->avail_out = output.size();
-  SCOPE_EXIT {
-    input.uncheckedAdvance(input.size() - dstream_->avail_in);
-    output.uncheckedAdvance(output.size() - dstream_->avail_out);
-  };
-  int const rc = bzCheck(BZ2_bzDecompress(dstream_.get_pointer()));
-  return rc == BZ_STREAM_END;
+        dstream_->next_in =
+            const_cast<char*>(reinterpret_cast<const char*>(input.data()));
+        dstream_->avail_in = to_narrow(input.size());
+        dstream_->next_out = reinterpret_cast<char*>(output.data());
+        dstream_->avail_out = to_narrow(output.size());
+        DCHECK_EQ(dstream_->avail_in, input.size());
+        DCHECK_EQ(dstream_->avail_out, output.size());
+        SCOPE_EXIT {
+          input.uncheckedAdvance(input.size() - dstream_->avail_in);
+          output.uncheckedAdvance(output.size() - dstream_->avail_out);
+        };
+        int const rc = bzCheck(BZ2_bzDecompress(dstream_.get_pointer()));
+        return rc == BZ_STREAM_END;
+      });
 }
 
 #endif // FOLLY_HAVE_LIBBZ2
@@ -1792,21 +1816,25 @@ AutomaticCodec::AutomaticCodec(
   }
 
   // Check that none of the codecs are null
-  DCHECK(std::none_of(
-      codecs_.begin(), codecs_.end(), [](std::unique_ptr<Codec> const& codec) {
-        return codec == nullptr;
-      }));
+  DCHECK(
+      std::none_of(
+          codecs_.begin(),
+          codecs_.end(),
+          [](std::unique_ptr<Codec> const& codec) {
+            return codec == nullptr;
+          }));
 
   // Check that the terminal codec's type is not duplicated (with the exception
   // of USER_DEFINED).
   if (terminalCodec_) {
-    DCHECK(std::none_of(
-        codecs_.begin(),
-        codecs_.end(),
-        [&](std::unique_ptr<Codec> const& codec) {
-          return codec->type() != CodecType::USER_DEFINED &&
-              codec->type() == terminalCodec_->type();
-        }));
+    DCHECK(
+        std::none_of(
+            codecs_.begin(),
+            codecs_.end(),
+            [&](std::unique_ptr<Codec> const& codec) {
+              return codec->type() != CodecType::USER_DEFINED &&
+                  codec->type() == terminalCodec_->type();
+            }));
   }
 
   bool const terminalNeedsUncompressedLength =

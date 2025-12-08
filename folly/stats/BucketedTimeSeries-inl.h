@@ -19,8 +19,6 @@
 #include <algorithm>
 #include <stdexcept>
 
-#include <glog/logging.h>
-
 #include <folly/Likely.h>
 
 namespace folly {
@@ -34,8 +32,10 @@ BucketedTimeSeries<VT, CT>::BucketedTimeSeries(
   if (!isAllTime()) {
     // Round nBuckets down to duration_.count().
     //
-    // There is no point in having more buckets than our timestamp
-    // granularity: otherwise we would have buckets that could never be used.
+    // Integer divisions in the class depend on the invariant nBuckets <=
+    // duration_.count(). Besides, there is no point in having more buckets than
+    // our timestamp granularity: otherwise we would have buckets that could
+    // never be used.
     if (nBuckets > size_t(duration_.count())) {
       nBuckets = size_t(duration_.count());
     }
@@ -119,9 +119,10 @@ bool BucketedTimeSeries<VT, CT>::addValueAggregated(
     // Current time.
     bucketIdx = getBucketIdx(now);
   } else {
+    firstTime_ = std::min(firstTime_, now);
     // An earlier time in the past.  We need to check if this time still falls
     // within our window.
-    if (now < getEarliestTimeNonEmpty()) {
+    if (now < getEarliestTrackableTimeBy(latestTime_)) {
       return false;
     }
     bucketIdx = getBucketIdx(now);
@@ -137,6 +138,8 @@ size_t BucketedTimeSeries<VT, CT>::update(TimePoint now) {
   if (empty()) {
     // This is the first data point.
     firstTime_ = now;
+  } else {
+    firstTime_ = std::min(firstTime_, now);
   }
 
   // For all-time data, all we need to do is update latestTime_
@@ -228,7 +231,7 @@ typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTime() const {
   }
 
   // Compute the earliest time we can track
-  TimePoint earliestTime = getEarliestTimeNonEmpty();
+  TimePoint earliestTime = getEarliestTrackableTimeBy(latestTime_);
 
   // We're never tracking data before firstTime_
   earliestTime = std::max(earliestTime, firstTime_);
@@ -237,13 +240,14 @@ typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTime() const {
 }
 
 template <typename VT, typename CT>
-typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTimeNonEmpty()
-    const {
+typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTrackableTimeBy(
+    TimePoint latestTime) const {
+  DCHECK(!isAllTime());
   size_t currentBucket;
   TimePoint currentBucketStart;
   TimePoint nextBucketStart;
   getBucketInfo(
-      latestTime_, &currentBucket, &currentBucketStart, &nextBucketStart);
+      latestTime, &currentBucket, &currentBucketStart, &nextBucketStart);
 
   // Subtract 1 duration from the start of the next bucket to find the
   // earliest possible data point we could be tracking.
@@ -333,6 +337,50 @@ ReturnType BucketedTimeSeries<VT, CT>::avg(
   return detail::avgHelper<ReturnType>(total, sample_count);
 }
 
+template <typename VT, typename CT>
+typename BucketedTimeSeries<VT, CT>::Bucket BucketedTimeSeries<VT, CT>::totalBy(
+    TimePoint now) const {
+  DCHECK(now >= latestTime_);
+  if (count() == 0) {
+    // fast-path when there is no samples in the timeseries at all
+    return Bucket{};
+  }
+
+  // Can't be empty if the count is non-zero.
+  DCHECK(!empty());
+
+  if (isAllTime() || now == latestTime_) {
+    return total_;
+  }
+
+  size_t currentBucket;
+  TimePoint currentBucketStart;
+  TimePoint nextBucketStart;
+  getBucketInfo(
+      latestTime_, &currentBucket, &currentBucketStart, &nextBucketStart);
+
+  if (now < nextBucketStart) {
+    // `now` falls in the latest bucket
+    return total_;
+  } else if (now >= currentBucketStart + duration_) {
+    // We do not need to go through the buckets when all of them have expired.
+    return Bucket{};
+  } else {
+    // There is a partial overlap. Subtract tail bucket values from the total.
+    Bucket ret = total_;
+    size_t newBucket = getBucketIdx(now);
+    size_t idx = currentBucket;
+    while (idx != newBucket) {
+      ++idx;
+      if (idx >= buckets_.size()) {
+        idx = 0;
+      }
+      ret -= buckets_[idx];
+    }
+    return ret;
+  }
+}
+
 /*
  * A note about some of the bucket index calculations below:
  *
@@ -387,6 +435,32 @@ void BucketedTimeSeries<VT, CT>::getBucketInfo(
   TimeInt scaledBucketStart = scaledTime - scaledOffsetInBucket;
   TimeInt scaledNextBucketStart = scaledBucketStart + duration_.count();
 
+  // To ensure consistency, we perform ceiling division here to scale
+  // down by a factor of buckets_.size(), while we perform floor division
+  // in getBucketIdx to scale down by a factor of duration.
+  // The correctness is guaranteed by the invariant that buckets_.size() <=
+  // duration_.count(). Here is a brief proof.
+  //
+  // Bucket start time is correct iff getBucketIdx(startTime) returns the same
+  // bucket index, and getBucketIdx(startTime-1) returns the previous bucket
+  // index.
+  // bucketStartMod is essentially ceil(bucket_idx * duration / bucket_size).
+  // The bucket index from bucketStartMode is
+  //    floor(ceil(bucket_idx * duration / bucket_size) * bucket_size /
+  //    duration)
+  // If duration is divisible by bucket_size, getBucketIdx(bucketStart) equals
+  // bucket_idx. Otherwise, ceil(bucket_idx * duration / bucket_size) *
+  // bucket_size is strictly greater than bucket_idx * duration and less than
+  // bucket_idx * duration + bucket_size. Since duration >= bucket_size, and we
+  // perform floor division for getBucketIdx, getBucketIdx(bucketStart) still
+  // equals bucket_idx.
+  // For bucketStartMod - 1, the same reasoning applies.
+  // (ceil(bucket_idx * duration / bucket_size) - 1) * bucket_size falls in
+  // [bucket_idx * duration - bucket_size, bucket_idx * duration); the left
+  // equality can be achieved when duration is divisible by bucket_size. It will
+  // always be strictly less than bucket_idx * duration again because of the
+  // bucket_size <= duration invariant. Hence getBucketIdx(bucketStart - 1)
+  // equals bucket_idx - 1.
   Duration bucketStartMod(
       (scaledBucketStart + buckets_.size() - 1) / buckets_.size());
   Duration nextBucketStartMod(

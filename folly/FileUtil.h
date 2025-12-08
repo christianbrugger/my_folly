@@ -83,11 +83,10 @@ ssize_t pwritevNoInt(int fd, const iovec* iov, int count, off_t offset);
  * readv and preadv.  The contents of iov after these functions return
  * is unspecified.
  */
-FOLLY_NODISCARD ssize_t readFull(int fd, void* buf, size_t count);
-FOLLY_NODISCARD ssize_t
-preadFull(int fd, void* buf, size_t count, off_t offset);
-FOLLY_NODISCARD ssize_t readvFull(int fd, iovec* iov, int count);
-FOLLY_NODISCARD ssize_t preadvFull(int fd, iovec* iov, int count, off_t offset);
+[[nodiscard]] ssize_t readFull(int fd, void* buf, size_t count);
+[[nodiscard]] ssize_t preadFull(int fd, void* buf, size_t count, off_t offset);
+[[nodiscard]] ssize_t readvFull(int fd, iovec* iov, int count);
+[[nodiscard]] ssize_t preadvFull(int fd, iovec* iov, int count, off_t offset);
 
 /**
  * Similar to readFull and preadFull above, wrappers around write() and
@@ -147,8 +146,10 @@ bool readFile(
   // should attempt to read stuff. If not zero, we'll attempt to read
   // one extra byte.
   constexpr size_t initialAlloc = 1024 * 4;
-  out.resize(std::min(
-      buf.st_size > 0 ? (size_t(buf.st_size) + 1) : initialAlloc, num_bytes));
+  out.resize(
+      std::min(
+          buf.st_size > 0 ? (size_t(buf.st_size) + 1) : initialAlloc,
+          num_bytes));
 
   while (soFar < out.size()) {
     const auto actual = readFull(fd, &out[soFar], out.size() - soFar);

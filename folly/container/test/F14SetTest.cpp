@@ -25,7 +25,6 @@ FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 #include <folly/container/F14Set.h>
 // clang-format on
 
-#include <chrono>
 #include <numeric>
 #include <random>
 #include <string>
@@ -114,8 +113,7 @@ TEST(F14Set, customSwap) {
 
 namespace {
 template <
-    template <typename, typename, typename, typename>
-    class TSet,
+    template <typename, typename, typename, typename> class TSet,
     typename K>
 void runAllocatedMemorySizeTest() {
   using A = SwapTrackingAlloc<K>;
@@ -737,9 +735,9 @@ TEST(F14FastSet, pmrSimple) {
 }
 #endif
 
-TEST(F14Set, ContainerSize) {
-  SKIP_IF(kFallback);
+#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 
+TEST(F14Set, ContainerSize) {
   {
     F14ValueSet<int> set;
     set.insert(10);
@@ -772,7 +770,6 @@ TEST(F14Set, ContainerSize) {
   }
 }
 
-#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 TEST(F14VectorMap, reverseIterator) {
   using TSet = F14VectorSet<uint64_t>;
   auto populate = [](TSet& h, uint64_t lo, uint64_t hi) {
@@ -825,6 +822,7 @@ TEST(F14VectorSet, OrderPreservingReinsertionView) {
 
   EXPECT_EQ(asVector(s1), asVector(s2));
 }
+
 #endif
 
 TEST(F14ValueSet, eraseWhileIterating) {
@@ -863,9 +861,9 @@ TEST(F14VectorSet, random) {
   runRandom<F14VectorSet<uint64_t>>();
 }
 
-TEST(F14ValueSet, growStats) {
-  SKIP_IF(kFallback);
+#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 
+TEST(F14ValueSet, growStats) {
   F14ValueSet<uint64_t> h;
   for (unsigned i = 1; i <= 3072; ++i) {
     h.insert(i);
@@ -878,8 +876,6 @@ TEST(F14ValueSet, growStats) {
 }
 
 TEST(F14ValueSet, steadyStateStats) {
-  SKIP_IF(kFallback);
-
   // 10k keys, 14% probability of insert, 90% chance of erase, so the
   // table should converge to 1400 size without triggering the rehash
   // that would occur at 1536.
@@ -894,24 +890,24 @@ TEST(F14ValueSet, steadyStateStats) {
       h.erase(key);
     }
     if (((i + 1) % 10000) == 0) {
-#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
       auto stats = F14TableStats::compute(h);
       // Verify that average miss probe length is bounded despite continued
       // erase + reuse.  p99 of the average across 10M random steps is 4.69,
       // average is 2.96.
       EXPECT_LT(f14::expectedProbe(stats.missProbeLengthHisto), 10.0);
-#endif
     }
   }
   // F14ValueSet at steady state
   runSanityChecks(h);
 }
 
+#endif
+
 // S should be a set of Tracked<0>.  F should take a set
 // and a key_type const& or key_type&& and cause it to be inserted
 template <typename S, typename F>
 void runInsertCases(std::string const& /* name */, F const& insertFunc) {
-  static_assert(std::is_same<typename S::value_type, Tracked<0>>::value, "");
+  static_assert(std::is_same<typename S::value_type, Tracked<0>>::value);
   {
     typename S::value_type k{0};
     S s;
@@ -1501,9 +1497,9 @@ struct C {
 } // namespace
 
 TEST(F14FastSet, disabledDoubleTransparent) {
-  static_assert(std::is_convertible<B<char>, A>::value, "");
-  static_assert(std::is_convertible<C, B<char>>::value, "");
-  static_assert(!std::is_convertible<C, A>::value, "");
+  static_assert(std::is_convertible<B<char>, A>::value);
+  static_assert(std::is_convertible<C, B<char>>::value);
+  static_assert(!std::is_convertible<C, A>::value);
 
   F14FastSet<B<char>, transparent<AHasher>, transparent<std::equal_to<A>>> set;
   set.emplace(A{10});
@@ -1521,13 +1517,12 @@ struct CharArrayHasher {
 };
 
 template <
-    template <typename, typename, typename, typename>
-    class S,
+    template <typename, typename, typename, typename> class S,
     std::size_t N>
 struct RunAllValueSizeTests {
   void operator()() const {
     using Key = std::array<char, N>;
-    static_assert(sizeof(Key) == N, "");
+    static_assert(sizeof(Key) == N);
     S<Key, CharArrayHasher, std::equal_to<Key>, std::allocator<Key>> set;
 
     for (int i = 0; i < 100; ++i) {
@@ -1608,6 +1603,51 @@ TEST(F14Set, containsWithPrecomputedHash) {
   testContainsWithPrecomputedHash<F14VectorSet>();
   testContainsWithPrecomputedHash<F14FastSet>();
 }
+
+#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
+template <template <class...> class TSet>
+void testFindHashedKey() {
+  TSet<std::string> s{};
+  std::string key{"hello"};
+  s.insert(key);
+
+  F14HashedKey<std::string> hashedKey{key};
+  EXPECT_NE(s.find(hashedKey), s.end());
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string> hashedKeyNotFound{otherKey};
+  EXPECT_EQ(s.find(hashedKeyNotFound), s.end());
+}
+
+TEST(F14Set, findHashedKey) {
+  testFindHashedKey<F14ValueSet>();
+  testFindHashedKey<F14NodeSet>();
+  testFindHashedKey<F14VectorSet>();
+  testFindHashedKey<F14FastSet>();
+}
+
+template <template <class...> class TSet>
+void testContainsHashedKey() {
+  TSet<std::string> s{};
+  std::string key{"hello"};
+  s.insert(key);
+
+  F14HashedKey<std::string> hashedKey{key};
+  EXPECT_TRUE(s.contains(hashedKey));
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string> hashedKeyNotFound{otherKey};
+  EXPECT_FALSE(s.contains(hashedKeyNotFound));
+}
+
+TEST(F14Set, containsHashedKey) {
+  testContainsHashedKey<F14ValueSet>();
+  testContainsHashedKey<F14NodeSet>();
+  testContainsHashedKey<F14VectorSet>();
+  testContainsHashedKey<F14FastSet>();
+}
+
+#endif // FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 
 template <template <class...> class TSet>
 void testEraseIf() {

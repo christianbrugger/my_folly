@@ -44,33 +44,52 @@ class Foo {
 };
 
 struct FooCreator {
-  Foo* operator()() {
+  Foo* operator()() const {
     numFoos++;
     return new Foo();
   }
 };
 
 struct BadFooCreator {
-  Foo* operator()() {
+  Foo* operator()() const {
     numFoos++;
     return nullptr;
   }
 };
 
 struct FooDeleter {
-  void operator()(Foo* f) {
+  void operator()(Foo* f) const {
     numDeleted++;
     delete f;
   }
 };
 
 struct FooResetter {
-  void operator()(Foo* f) { f->reset(); }
+  void operator()(Foo* f) const { f->reset(); }
 };
 
-using Pool = CompressionContextPool<Foo, FooCreator, FooDeleter, FooResetter>;
-using BadPool =
-    CompressionContextPool<Foo, BadFooCreator, FooDeleter, FooResetter>;
+struct FooSizeof {
+  size_t operator()(const Foo* f) const { return sizeof(*f); }
+};
+
+struct FooCallback {
+  void operator()() const {}
+};
+
+using Pool = CompressionContextPool<
+    Foo,
+    FooCreator,
+    FooDeleter,
+    FooResetter,
+    FooSizeof,
+    FooCallback>;
+using BadPool = CompressionContextPool<
+    Foo,
+    BadFooCreator,
+    FooDeleter,
+    FooResetter,
+    FooSizeof,
+    FooCallback>;
 
 } // anonymous namespace
 
@@ -218,6 +237,30 @@ TEST_F(CompressionContextPoolTest, testFlush) {
   EXPECT_EQ(pool_->created_count(), 2);
 }
 
+struct FooIncrementCallback {
+  void operator()() const { ++count; }
+
+  static size_t count;
+};
+
+size_t FooIncrementCallback::count = 0;
+
+using TestCallbackPool = CompressionContextPool<
+    Foo,
+    FooCreator,
+    FooDeleter,
+    FooResetter,
+    FooSizeof,
+    FooIncrementCallback>;
+
+TEST_F(CompressionContextPoolTest, testCallback) {
+  auto pool = std::make_unique<TestCallbackPool>();
+  for (size_t i = 0; i < COMPRESSION_CONTEXT_POOL_CALLBACK_INTERVAL; ++i) {
+    pool->get();
+  }
+  EXPECT_EQ(FooIncrementCallback::count, 1);
+}
+
 class CompressionCoreLocalContextPoolTest : public testing::Test {
  protected:
   using Pool = CompressionCoreLocalContextPool<
@@ -225,7 +268,8 @@ class CompressionCoreLocalContextPoolTest : public testing::Test {
       FooCreator,
       FooDeleter,
       FooResetter,
-      8>;
+      FooSizeof,
+      FooCallback>;
 
   void SetUp() override { pool_ = std::make_unique<Pool>(); }
 
@@ -329,6 +373,19 @@ TEST_F(CompressionCoreLocalContextPoolTest, testReset) {
     EXPECT_EQ(ptr1.get(), tmp1);
     EXPECT_EQ(ptr2.get(), tmp2);
   }
+}
+
+TEST_F(CompressionCoreLocalContextPoolTest, testSetSize) {
+  size_t numStripes = 6;
+  pool_->setSize(numStripes);
+  EXPECT_EQ(pool_->cacheSize(), numStripes);
+}
+
+// To be safe from SIOF, pools should be functional with 0 stripes.
+TEST_F(CompressionCoreLocalContextPoolTest, testGetZeroStripes) {
+  Pool pool(0);
+  auto ptr = pool.get();
+  EXPECT_NE(ptr, nullptr);
 }
 
 #ifdef FOLLY_COMPRESSION_HAS_ZSTD_CONTEXT_POOL_SINGLETONS

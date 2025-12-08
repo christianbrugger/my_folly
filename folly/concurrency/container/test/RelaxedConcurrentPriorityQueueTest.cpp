@@ -546,8 +546,9 @@ void blockingFirst() {
   do {
     pq.push(1);
     c++;
-    while (finished.load(std::memory_order_acquire) != c)
+    while (finished.load(std::memory_order_acquire) != c) {
       ;
+    }
     EXPECT_EQ(finished.load(std::memory_order_acquire), c);
   } while (c < nPop);
 
@@ -579,8 +580,9 @@ void concurrentBlocking() {
       threads_push[tid] = std::thread([&, tid] {
         b.wait();
         pq.push(tid);
-        while (finished.load(std::memory_order_acquire) != nThrs)
+        while (finished.load(std::memory_order_acquire) != nThrs) {
           ;
+        }
         EXPECT_EQ(finished.load(std::memory_order_acquire), nThrs);
       });
     }
@@ -848,12 +850,12 @@ class GlobalLockPQ {
 
  public:
   void push(const T& val) {
-    std::lock_guard<std::mutex> g(m_);
+    std::lock_guard g(m_);
     q_.push(val);
   }
   void pop(T& val) {
     while (true) {
-      std::lock_guard<std::mutex> g(m_);
+      std::lock_guard g(m_);
       if (q_.empty()) {
         continue;
       }

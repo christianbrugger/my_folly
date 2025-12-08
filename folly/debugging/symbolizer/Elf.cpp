@@ -18,9 +18,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <cstring>
-#include <string>
 
 #include <glog/logging.h>
 
@@ -96,7 +94,11 @@ ElfFile::OpenResult ElfFile::openNoThrow(
   }
 
   uint64_t mtime_ns = st.st_mtim.tv_sec * 1000'000'000LL + st.st_mtim.tv_nsec;
-  fileId_ = ElfFileId{st.st_dev, st.st_ino, st.st_size, mtime_ns};
+  fileId_ = ElfFileId{
+      to_narrow(st.st_dev),
+      to_narrow(st.st_ino),
+      to_narrow(st.st_size),
+      mtime_ns};
 
   length_ = st.st_size;
   int prot = PROT_READ;
@@ -222,12 +224,12 @@ ElfFile::OpenResult ElfFile::init() noexcept {
     return {kInvalidElfFile, "not an ELF file (too short)"};
   }
 
-  std::array<char, 5> elfMagBuf = {{0, 0, 0, 0, 0}};
+  std::array<char, SELFMAG> elfMagBuf = {{0, 0, 0, 0}};
   if (::lseek(fd_, 0, SEEK_SET) != 0 ||
-      fileops::read(fd_, elfMagBuf.data(), 4) != 4) {
+      fileops::read(fd_, elfMagBuf.data(), SELFMAG) != SELFMAG) {
     return {kInvalidElfFile, "unable to read ELF file for magic number"};
   }
-  if (std::strncmp(elfMagBuf.data(), ELFMAG, sizeof(ELFMAG)) != 0) {
+  if (std::strncmp(elfMagBuf.data(), ELFMAG, SELFMAG) != 0) {
     return {kInvalidElfFile, "invalid ELF magic"};
   }
   char c;
@@ -325,6 +327,11 @@ const ElfShdr* ElfFile::getSectionByIndex(size_t idx) const noexcept {
 folly::StringPiece ElfFile::getSectionBody(
     const ElfShdr& section) const noexcept {
   return folly::StringPiece(file_ + section.sh_offset, section.sh_size);
+}
+
+folly::StringPiece ElfFile::getSegmentBody(
+    const ElfPhdr& segment) const noexcept {
+  return folly::StringPiece(file_ + segment.p_offset, segment.p_filesz);
 }
 
 void ElfFile::validateStringTable(const ElfShdr& stringTable) const noexcept {
@@ -480,23 +487,47 @@ const char* ElfFile::getSymbolName(const Symbol& symbol) const noexcept {
   return getString(*linkSection, symbol.second->st_name);
 }
 
-std::pair<const int, char const*> ElfFile::posixFadvise(
-    off_t offset, off_t len, int const advice) const noexcept {
-  if (fd_ == -1) {
-    return {1, "file not open"};
-  }
-  int res = posix_fadvise(fd_, offset, len, advice);
-  if (res != 0) {
-    return {res, "posix_fadvise failed for file"};
-  }
-  return {res, ""};
+folly::Expected<span<const uint8_t>, ElfFile::FindNoteError>
+ElfFile::getNoteGnuBuildId() const noexcept {
+  auto filter = [](const Note& note) {
+    return note.getName() == "GNU" && note.getType() == NT_GNU_BUILD_ID;
+  };
+  auto desc = [](auto note) { return note.getDesc(); };
+  auto section = getSectionByName(".note.gnu.build-id");
+  return iterateNotesInSections(section, filter).then(desc);
 }
 
-std::pair<const int, char const*> ElfFile::posixFadvise(
-    int const advice) const noexcept {
-  return posixFadvise(0, 0, advice);
+folly::Expected<ElfFile::Note, ElfFile::FindNoteError> ElfFile::findNoteByName(
+    std::string_view name) const noexcept {
+  auto filter = [name](const Note& note) { return note.getName() == name; };
+
+  // If we get a success, or a data corruption error, return it.
+  // otherwise iterate segments.
+  auto foundMaybe = iterateNotesInSections(nullptr, filter);
+  if (foundMaybe || foundMaybe.error().isDataCorruptionError()) {
+    return foundMaybe;
+  }
+
+  foundMaybe = iterateNotesInSegments(nullptr, filter);
+  return foundMaybe;
 }
 
+folly::Expected<ElfFile::Note, ElfFile::FindNoteError> ElfFile::findNoteByType(
+    size_t type) const noexcept {
+  auto filter = [type](const Note& note) {
+    return note.header()->n_type == type;
+  };
+
+  // If we get a success, or a data corruption error, return it.
+  // otherwise iterate segments.
+  auto foundMaybe = iterateNotesInSections(nullptr, filter);
+  if (foundMaybe || foundMaybe.error().isDataCorruptionError()) {
+    return foundMaybe;
+  }
+
+  foundMaybe = iterateNotesInSegments(nullptr, filter);
+  return foundMaybe;
+}
 } // namespace symbolizer
 } // namespace folly
 

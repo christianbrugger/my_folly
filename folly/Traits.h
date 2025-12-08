@@ -72,6 +72,39 @@ inline constexpr vtag_t<V...> vtag{};
 template <std::size_t I>
 using index_constant = std::integral_constant<std::size_t, I>;
 
+namespace detail {
+
+template <typename Int>
+constexpr Int parse_uic(char const* str) noexcept {
+  Int result = 0;
+  while (*str) {
+    auto const c = *str++;
+    if (c >= '0' && c <= '9') {
+      result = result * 10 + (c - '0');
+    }
+  }
+  return result;
+}
+
+} // namespace detail
+
+inline namespace literals {
+inline namespace integral_constant_literals {
+
+/// operator""_uzic
+///
+/// Evaluates {XYZ}_uzic as index_constant<{XYZ}>.
+///
+/// mimic: operator""_uzic, p2725r0
+template <char... Digits>
+constexpr auto operator""_uzic() noexcept {
+  constexpr char digits[] = {Digits..., '\0'};
+  return index_constant<detail::parse_uic<size_t>(digits)>{};
+}
+
+} // namespace integral_constant_literals
+} // namespace literals
+
 /// always_false
 ///
 /// A variable template that is always false but requires template arguments to
@@ -112,7 +145,9 @@ namespace detail {
 
 template <typename Void, typename T>
 struct require_sizeof_ {
-  static_assert(always_false<T>, "application of sizeof fails substitution");
+  static_assert(
+      always_false<T>,
+      "application of sizeof fails substitution - most commonly, the type is incomplete");
 };
 template <typename T>
 struct require_sizeof_<decltype(void(sizeof(T))), T> {
@@ -128,8 +163,26 @@ struct require_sizeof_<decltype(void(sizeof(T))), T> {
 ///
 /// Equivalent to sizeof, but with a static_assert enforcing that application of
 /// sizeof would not fail substitution.
+///
+/// Application of sizeof fails on the following kinds of types:
+/// * function types.
+/// * incomplete types, including possibly-cv-qualified void
+/// * references to types to which application of sizeof would fail
 template <typename T>
 constexpr std::size_t require_sizeof = detail::require_sizeof_<void, T>::size;
+
+/// is_complete
+/// is_complete_v
+///
+/// It is tempting to define is_complete and is_complete_v, but ultimately these
+/// would be a bad idea. These traits are defined here to witness that these are
+/// intentionally excluded and not merely a missing feature.
+template <typename T>
+struct is_complete {
+  static_assert(always_false<T>, "is_complete would break ODR");
+};
+template <typename T>
+constexpr auto is_complete_v = is_complete<T>::value;
 
 /// is_unbounded_array_v
 /// is_unbounded_array
@@ -199,6 +252,18 @@ struct member_pointer_traits<M O::*> {
   using member_type = M;
   using object_type = O;
 };
+
+/// member_pointer_member_t
+///
+/// The member-type of a pointer-to-member type.
+template <typename P>
+using member_pointer_member_t = typename member_pointer_traits<P>::member_type;
+
+/// member_pointer_object_t
+///
+/// The object-type of a pointer-to-member type.
+template <typename P>
+using member_pointer_object_t = typename member_pointer_traits<P>::object_type;
 
 namespace detail {
 
@@ -912,6 +977,9 @@ struct IsRelocatable<std::pair<T, U>>
 template <typename T, typename... Ts>
 using IsOneOf = StrictDisjunction<std::is_same<T, Ts>...>;
 
+template <typename T, typename... Ts>
+inline constexpr bool is_one_of_v = IsOneOf<T, Ts...>::value;
+
 /*
  * Complementary type traits for integral comparisons.
  *
@@ -1007,6 +1075,17 @@ FOLLY_ASSUME_FBVECTOR_COMPATIBLE_1(std::shared_ptr)
 #endif
 
 namespace folly {
+
+/// is_non_bool_integral_v
+///
+/// A common need.
+template <typename Int>
+inline constexpr bool is_non_bool_integral_v =
+    !std::is_same_v<bool, std::remove_cv_t<Int>> && std::is_integral_v<Int>;
+
+template <typename Int>
+struct is_non_bool_integral //
+    : std::bool_constant<is_non_bool_integral_v<Int>> {};
 
 //  Some compilers have signed __int128 and unsigned __int128 types, and some
 //  libraries with some compilers have traits for those types. It's a mess.
@@ -1254,23 +1333,18 @@ template <template <typename...> class Out>
 inline constexpr type_identity<Out<>> type_list_concat_<Out>;
 
 template <
-    template <typename...>
-    class Out,
-    template <typename...>
-    class In,
+    template <typename...> class Out,
+    template <typename...> class In,
     typename... T>
 inline constexpr auto type_list_concat_<Out, In<T...>> =
     type_identity<Out<T...>>{};
 
 template <
-    template <typename...>
-    class Out,
+    template <typename...> class Out,
     // Allow input lists to come from heterogeneous templates.
-    template <typename...>
-    class InA,
+    template <typename...> class InA,
     typename... A,
-    template <typename...>
-    class InB,
+    template <typename...> class InB,
     typename... B,
     typename... Tail>
 inline constexpr auto type_list_concat_<Out, InA<A...>, InB<B...>, Tail...> =
@@ -1391,14 +1465,11 @@ inline constexpr auto value_list_concat_<Out, In<V...>> =
     type_identity<Out<V...>>{};
 
 template <
-    template <auto...>
-    class Out,
+    template <auto...> class Out,
     // Allow input lists to come from heterogeneous templates.
-    template <auto...>
-    class InA,
+    template <auto...> class InA,
     auto... A,
-    template <auto...>
-    class InB,
+    template <auto...> class InB,
     auto... B,
     typename... Tail>
 inline constexpr auto value_list_concat_<Out, InA<A...>, InB<B...>, Tail...> =
@@ -1419,14 +1490,15 @@ using value_list_concat_t =
 namespace detail {
 
 template <typename V, typename... T>
-constexpr std::size_t type_pack_find_() {
-  bool eq[] = {std::is_same_v<V, T>..., true};
-  for (size_t i = 0; i < sizeof...(T); ++i) {
-    if (eq[i]) {
-      return i;
-    }
+constexpr bool type_pack_find_a_[sizeof...(T) + 1] = {
+    std::is_same_v<V, T>..., true};
+
+constexpr std::size_t type_pack_find_(bool const* eq) {
+  size_t i = 0;
+  while (!eq[i]) {
+    ++i;
   }
-  return sizeof...(T);
+  return i;
 }
 
 template <typename>
@@ -1434,7 +1506,8 @@ struct type_list_find_;
 template <template <typename...> class List, typename... T>
 struct type_list_find_<List<T...>> {
   template <typename V>
-  static inline constexpr std::size_t apply = type_pack_find_<V, T...>();
+  static inline constexpr std::size_t apply =
+      type_pack_find_(type_pack_find_a_<V, T...>);
 };
 
 } // namespace detail
@@ -1445,7 +1518,7 @@ struct type_list_find_<List<T...>> {
 /// type, or the size of the pack if there is no such element.
 template <typename V, typename... T>
 inline constexpr std::size_t type_pack_find_v =
-    detail::type_pack_find_<V, T...>();
+    detail::type_pack_find_(detail::type_pack_find_a_<V, T...>);
 
 /// type_pack_find_t
 ///

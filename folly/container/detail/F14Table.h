@@ -50,6 +50,11 @@
 #include <folly/container/detail/F14IntrinsicsAvailability.h>
 #include <folly/container/detail/F14Mask.h>
 
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+#include <arm_neon_sve_bridge.h> // @manual
+#include <arm_sve.h>
+#endif
+
 #if __has_include(<concepts>)
 #include <concepts>
 #endif
@@ -70,6 +75,10 @@
 
 #if FOLLY_NEON
 #include <arm_neon.h> // uint8x16t intrinsics
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+#include <arm_neon_sve_bridge.h> // @manual
+#include <arm_sve.h>
+#endif
 #elif FOLLY_SSE >= 2 // SSE2
 #include <emmintrin.h> // _mm_set1_epi8
 #include <immintrin.h> // __m128i intrinsics
@@ -152,18 +161,11 @@ struct StdNodeReplica {
   V value;
 };
 
-#else
+#elif defined(__GLIBCXX__)
 
-template <typename H>
-struct StdIsFastHash : std::true_type {};
-template <>
-struct StdIsFastHash<std::hash<long double>> : std::false_type {};
-template <typename... Args>
-struct StdIsFastHash<std::hash<std::basic_string<Args...>>> : std::false_type {
-};
-template <typename... Args>
-struct StdIsFastHash<std::hash<std::basic_string_view<Args...>>>
-    : std::false_type {};
+template <typename K, typename H>
+constexpr bool kStdNodeContainsHash =
+    !std::__is_fast_hash<H>::value || !is_nothrow_invocable_v<H, K const&>;
 
 // mimic internal node of unordered containers in STL to estimate the size
 template <typename K, typename V, typename H, typename Enable = void>
@@ -172,15 +174,18 @@ struct StdNodeReplica {
   V value;
 };
 template <typename K, typename V, typename H>
-struct StdNodeReplica<
-    K,
-    V,
-    H,
-    std::enable_if_t<
-        !StdIsFastHash<H>::value || !is_nothrow_invocable_v<H, K>>> {
+struct StdNodeReplica<K, V, H, std::enable_if_t<kStdNodeContainsHash<K, H>>> {
   void* next;
   V value;
   std::size_t hash;
+};
+
+#else
+
+template <typename K, typename V, typename H>
+struct StdNodeReplica {
+  void* next;
+  V value;
 };
 
 #endif
@@ -233,7 +238,7 @@ class F14HashToken final {
   template <typename Policy>
   friend class f14::detail::F14Table;
 
-  template <typename Key, typename Hasher>
+  template <typename Key, typename Hasher, typename KeyEqual>
   friend class F14HashedKey;
 };
 
@@ -307,7 +312,7 @@ struct ShouldAssume32BitHash<
 // 64-bit
 template <typename Hasher, typename Key>
 std::pair<std::size_t, std::size_t> splitHashImpl(std::size_t hash) {
-  static_assert(sizeof(std::size_t) == sizeof(uint64_t), "");
+  static_assert(sizeof(std::size_t) == sizeof(uint64_t));
   std::size_t tag;
   if (!IsAvalanchingHasher<Hasher, Key>::value) {
 #if FOLLY_F14_CRC_INTRINSIC_AVAILABLE
@@ -375,7 +380,7 @@ std::pair<std::size_t, std::size_t> splitHashImpl(std::size_t hash) {
 // 32-bit
 template <typename Hasher, typename Key>
 std::pair<std::size_t, std::size_t> splitHashImpl(std::size_t hash) {
-  static_assert(sizeof(std::size_t) == sizeof(uint32_t), "");
+  static_assert(sizeof(std::size_t) == sizeof(uint32_t));
   uint8_t tag;
   if (!IsAvalanchingHasher<Hasher, Key>::value) {
 #if FOLLY_F14_CRC_INTRINSIC_AVAILABLE
@@ -410,14 +415,42 @@ std::pair<std::size_t, std::size_t> splitHashImpl(std::size_t hash) {
 } // namespace detail
 } // namespace f14
 
-template <typename TKeyType, typename Hasher = f14::DefaultHasher<TKeyType>>
+template <
+    typename TKeyType,
+    typename Hasher = f14::DefaultHasher<TKeyType>,
+    typename KeyEqual = f14::DefaultKeyEqual<TKeyType>>
 class F14HashedKey final {
+ private:
+  template <typename K>
+  using EligibleForHeterogeneousCompare =
+      detail::EligibleForHeterogeneousFind<TKeyType, Hasher, KeyEqual, K>;
+
+  template <typename K, typename T>
+  using EnableHeterogeneousCompare =
+      std::enable_if_t<EligibleForHeterogeneousCompare<K>::value, T>;
+
+  static constexpr void checkTemplateParamContract() {
+    static_assert(is_constexpr_default_constructible_v<Hasher>);
+    static_assert(is_constexpr_default_constructible_v<KeyEqual>);
+    static_assert(std::is_trivially_copyable_v<Hasher>);
+    static_assert(std::is_trivially_copyable_v<KeyEqual>);
+    static_assert(std::is_empty_v<Hasher>);
+    static_assert(std::is_empty_v<KeyEqual>);
+    // When `Hasher` or `KeyEqual` is not transparent, `F14HashedKey` will
+    // behave like `TKeyType` without any performance effect, it is most likely
+    // not what is expected.
+    static_assert(is_transparent_v<Hasher>);
+    static_assert(is_transparent_v<KeyEqual>);
+  }
+
  public:
 #if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
   template <typename... Args>
   explicit F14HashedKey(Args&&... args)
       : key_(std::forward<Args>(args)...),
-        hash_(f14::detail::splitHashImpl<Hasher, TKeyType>(Hasher{}(key_))) {}
+        hash_(f14::detail::splitHashImpl<Hasher, TKeyType>(Hasher{}(key_))) {
+    checkTemplateParamContract();
+  }
 #else
   F14HashedKey() = delete;
 #endif
@@ -429,10 +462,58 @@ class F14HashedKey final {
   /* implicit */ operator const TKeyType&() const { return key_; }
   explicit operator const F14HashToken&() const { return hash_; }
 
-  bool operator==(const F14HashedKey& other) const {
-    return key_ == other.key_;
+  template <typename T>
+  using IsRangeConvertible =
+      std::enable_if_t<detail::TransparentlyConvertibleToRange<T>::value>;
+
+  template <typename T>
+  using RangeT =
+      Range<typename detail::ValueTypeForTransparentConversionToRange<
+          T>::type const*>;
+
+  template <typename K = TKeyType, typename Enable = IsRangeConvertible<K>>
+  constexpr explicit operator RangeT<K>() const {
+    return key_;
   }
-  bool operator==(const TKeyType& other) const { return key_ == other; }
+
+  friend bool operator==(const F14HashedKey& a, const F14HashedKey& b) {
+    return KeyEqual{}(a.key_, b.key_);
+  }
+  friend bool operator!=(const F14HashedKey& a, const F14HashedKey& b) {
+    return !(a == b);
+  }
+  friend bool operator==(const F14HashedKey& a, const TKeyType& b) {
+    return KeyEqual{}(a.key_, b);
+  }
+  friend bool operator!=(const F14HashedKey& a, const TKeyType& b) {
+    return !(a == b);
+  }
+  friend bool operator==(const TKeyType& a, const F14HashedKey& b) {
+    return KeyEqual{}(a, b.key_);
+  }
+  friend bool operator!=(const TKeyType& a, const F14HashedKey& b) {
+    return !(a == b);
+  }
+  template <typename K>
+  friend EnableHeterogeneousCompare<K, bool> operator==(
+      const F14HashedKey& a, const K& b) {
+    return KeyEqual{}(a.key_, b);
+  }
+  template <typename K>
+  friend EnableHeterogeneousCompare<K, bool> operator!=(
+      const F14HashedKey& a, const K& b) {
+    return !(a == b);
+  }
+  template <typename K>
+  friend EnableHeterogeneousCompare<K, bool> operator==(
+      const K& a, const F14HashedKey& b) {
+    return KeyEqual{}(a, b.key_);
+  }
+  template <typename K>
+  friend EnableHeterogeneousCompare<K, bool> operator!=(
+      const K& a, const F14HashedKey& b) {
+    return !(a == b);
+  }
 
  private:
   TKeyType key_;
@@ -458,7 +539,15 @@ using Defaulted =
 template <typename T>
 FOLLY_ALWAYS_INLINE static void prefetchAddr(T const* ptr) {
 #ifndef _WIN32
+  FOLLY_PUSH_WARNING
+  FOLLY_GNU_DISABLE_WARNING("-Warray-bounds")
+  /// The argument ptr is permitted to be wild, since wild pointers are allowed
+  /// for prefetching on every architecture. While this behavior is technically
+  /// undefined (forbidden) in C and C++, we need this behavior in order to
+  /// avoid extra cost in the callers. Recent versions of GCC warn when they
+  /// detect uses of pointers which may be wild. So we suppress the warning.
   __builtin_prefetch(static_cast<void const*>(ptr));
+  FOLLY_POP_WARNING
 #elif FOLLY_NEON
   __prefetch(static_cast<void const*>(ptr));
 #elif FOLLY_SSE >= 2
@@ -637,13 +726,29 @@ struct alignas(kRequiredVectorAlignment) F14Chunk {
   }
 
 #if FOLLY_NEON
-  ////////
-  // Tag filtering using NEON intrinsics
 
-  SparseMaskIter tagMatchIter(std::size_t needle) const {
-    FOLLY_SAFE_DCHECK(needle >= 0x80 && needle < 0x100, "");
+  ////////
+  // Tag filtering using NEON/SVE intrinsics
+
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+
+  SparseMaskIter tagMatchIter(uint8x16_t needleV, svbool_t pred) const {
+    svuint8_t tagV = svld1_u8(pred, &tags_[0]);
+    auto eqV =
+        svset_neonq_u8(svundef_u8(), vceqq_u8(svget_neonq(tagV), needleV));
+    // preserve only bits 0 and 4 of each byte
+    eqV = svand_n_u8_x(pred, eqV, 17);
+    // get info from every byte into the bottom half of every uint16_t
+    // by shifting right 4, then round to get it into a 64-bit vector
+    uint8x8_t maskV = vshrn_n_u16(vreinterpretq_u16_u8(svget_neonq(eqV)), 4);
+    uint64_t mask = vreinterpret_u64_u8(maskV)[0];
+    return SparseMaskIter(mask);
+  }
+
+#else
+
+  SparseMaskIter tagMatchIter(uint8x16_t needleV) const {
     uint8x16_t tagV = vld1q_u8(&tags_[0]);
-    auto needleV = vdupq_n_u8(static_cast<uint8_t>(needle));
     auto eqV = vceqq_u8(tagV, needleV);
     // get info from every byte into the bottom half of every uint16_t
     // by shifting right 4, then round to get it into a 64-bit vector
@@ -651,6 +756,8 @@ struct alignas(kRequiredVectorAlignment) F14Chunk {
     uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(maskV), 0) & kFullMask;
     return SparseMaskIter(mask);
   }
+
+#endif
 
   MaskType occupiedMask() const {
     uint8x16_t tagV = vld1q_u8(&tags_[0]);
@@ -668,27 +775,9 @@ struct alignas(kRequiredVectorAlignment) F14Chunk {
     return static_cast<TagVector const*>(static_cast<void const*>(&tags_[0]));
   }
 
-  SparseMaskIter tagMatchIter(std::size_t needle) const {
-    FOLLY_SAFE_DCHECK(needle >= 0x80 && needle < 0x100, "");
+  SparseMaskIter tagMatchIter(__m128i needleV) const {
     auto tagV = _mm_load_si128(tagVector());
 
-    // TRICKY!  It may seem strange to have a std::size_t needle and narrow
-    // it at the last moment, rather than making HashPair::second be a
-    // uint8_t, but the latter choice sometimes leads to a performance
-    // problem.
-    //
-    // On architectures with SSE2 but not AVX2, _mm_set1_epi8 expands
-    // to multiple instructions.  One of those is a MOVD of either 4 or
-    // 8 byte width.  Only the bottom byte of that move actually affects
-    // the result, but if a 1-byte needle has been spilled then this will
-    // be a 4 byte load.  GCC 5.5 has been observed to reload needle
-    // (or perhaps fuse a reload and part of a previous static_cast)
-    // needle using a MOVZX with a 1 byte load in parallel with the MOVD.
-    // This combination causes a failure of store-to-load forwarding,
-    // which has a big performance penalty (60 nanoseconds per find on
-    // a microbenchmark).  Keeping needle >= 4 bytes avoids the problem
-    // and also happens to result in slightly more compact assembly.
-    auto needleV = _mm_set1_epi8(static_cast<uint8_t>(needle));
     auto eqV = _mm_cmpeq_epi8(tagV, needleV);
     auto mask = _mm_movemask_epi8(eqV) & kFullMask;
     return SparseMaskIter{mask};
@@ -745,6 +834,11 @@ struct alignas(kRequiredVectorAlignment) F14Chunk {
     return tags_[index] != 0;
   }
 
+  /// Permitted to return a wild pointer, which is allowed for prefetching on
+  /// every architecture. This behavior is technically undefined (forbidden) in
+  /// C and C++, but we violate the rule in order to avoid extra cost in the
+  /// prefetch paths. The wild pointer that may be returned is whatever follows
+  /// any empty-instance global in the memory of any DSO.
   Item* itemAddr(std::size_t i) const {
     return static_cast<Item*>(
         const_cast<void*>(static_cast<void const*>(&rawItems_[i])));
@@ -752,6 +846,7 @@ struct alignas(kRequiredVectorAlignment) F14Chunk {
 
   Item& item(std::size_t i) {
     FOLLY_SAFE_DCHECK(this->occupied(i), "");
+    compiler_may_unsafely_assume(this != getSomeEmptyInstance());
     return *std::launder(itemAddr(i));
   }
 
@@ -811,7 +906,7 @@ class PackedChunkItemPtr {
 // alignment, so it works on 32-bit and 64-bit platforms
 template <typename T>
 class PackedChunkItemPtr<T*> {
-  static_assert((alignof(F14Chunk<T>) % 16) == 0, "");
+  static_assert((alignof(F14Chunk<T>) % 16) == 0);
 
   // Chunks are 16-byte aligned, so we can maintain a packed pointer to a
   // chunk item by packing the 4-bit item index into the least significant
@@ -1447,7 +1542,7 @@ class F14Table : public Policy {
     FOLLY_SAFE_DCHECK(chunkCount > 0, "");
     FOLLY_SAFE_DCHECK(!(chunkCount > 1 && capacityScale == 0), "");
     if (chunkCount == 1) {
-      static_assert(offsetof(Chunk, rawItems_) == 16, "");
+      static_assert(offsetof(Chunk, rawItems_) == 16);
       return 16 + sizeof(Item) * computeCapacity(1, capacityScale);
     } else {
       return sizeof(Chunk) * chunkCount;
@@ -1562,19 +1657,55 @@ class F14Table : public Policy {
 
   std::size_t probeDelta(HashPair hp) const { return 2 * hp.second + 1; }
 
+  // TRICKY!  It may seem strange to have a std::size_t needle and narrow
+  // it at the last moment, rather than making HashPair::second be a
+  // uint8_t, but the latter choice sometimes leads to a performance
+  // problem.
+  //
+  // On architectures with SSE2 but not AVX2, _mm_set1_epi8 expands
+  // to multiple instructions.  One of those is a MOVD of either 4 or
+  // 8 byte width.  Only the bottom byte of that move actually affects
+  // the result, but if a 1-byte needle has been spilled then this will
+  // be a 4 byte load.  GCC 5.5 has been observed to reload needle
+  // (or perhaps fuse a reload and part of a previous static_cast)
+  // needle using a MOVZX with a 1 byte load in parallel with the MOVD.
+  // This combination causes a failure of store-to-load forwarding,
+  // which has a big performance penalty (60 nanoseconds per find on
+  // a microbenchmark).  Keeping needle >= 4 bytes avoids the problem
+  // and also happens to result in slightly more compact assembly.
+
+  FOLLY_ALWAYS_INLINE auto loadNeedleV(std::size_t needle) const {
+#if FOLLY_NEON
+    return vdupq_n_u8(static_cast<uint8_t>(needle));
+#elif FOLLY_SSE >= 2
+    return _mm_set1_epi8(static_cast<uint8_t>(needle));
+#else
+    return needle;
+#endif
+  }
+
   enum class Prefetch { DISABLED, ENABLED };
 
   template <typename K>
   FOLLY_ALWAYS_INLINE ItemIter
   findImpl(HashPair hp, K const& key, Prefetch prefetch) const {
+    FOLLY_SAFE_DCHECK(hp.second >= 0x80 && hp.second < 0x100, "");
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+    svbool_t pred = svwhilelt_b8_u32(0, chunks_->kCapacity);
+#endif
     std::size_t index = hp.first;
     std::size_t step = probeDelta(hp);
-    for (std::size_t tries = 0; tries >> chunkShift() == 0; ++tries) {
+    auto needleV = loadNeedleV(hp.second);
+    for (std::size_t tries = chunkCount(); tries > 0;) {
       ChunkPtr chunk = chunks_ + moduloByChunkCount(index);
       if (prefetch == Prefetch::ENABLED && sizeof(Chunk) > 64) {
         prefetchAddr(chunk->itemAddr(8));
       }
-      auto hits = chunk->tagMatchIter(hp.second);
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+      auto hits = chunk->tagMatchIter(needleV, pred);
+#else
+      auto hits = chunk->tagMatchIter(needleV);
+#endif
       while (hits.hasNext()) {
         auto i = hits.next();
         if (FOLLY_LIKELY(this->keyMatchesItem(key, chunk->item(i)))) {
@@ -1589,6 +1720,7 @@ class F14Table : public Policy {
         // entry, so our search is over.  This is the common case.
         break;
       }
+      --tries;
       index += step;
     }
     // Loop exit because tries is exhausted is rare, but possible.
@@ -1596,6 +1728,19 @@ class F14Table : public Policy {
     // in the map that visited that chunk on its probe search but ended
     // up somewhere else, and we have searched every chunk.
     return ItemIter{};
+  }
+
+  template <typename K>
+  HashPair computeHash(K const& key) const {
+    return splitHash(this->computeKeyHash(key));
+  }
+
+  template <typename HKKey, typename HKHasher, typename HKEqual>
+  HashPair computeHash(
+      F14HashedKey<HKKey, HKHasher, HKEqual> const& hashedKey) const {
+    static_assert(HeterogeneousPreHashCompatible<Hasher, HKHasher>::value);
+    static_assert(HeterogeneousPreHashCompatible<HKEqual, KeyEqual>::value);
+    return static_cast<HashPair>(hashedKey.getHashToken());
   }
 
  public:
@@ -1606,7 +1751,7 @@ class F14Table : public Policy {
   // search.
   template <typename K>
   F14HashToken prehash(K const& key) const {
-    return F14HashToken{splitHash(this->computeKeyHash(key))};
+    return F14HashToken{computeHash(key)};
   }
 
   template <typename K>
@@ -1623,16 +1768,28 @@ class F14Table : public Policy {
 
   template <typename K>
   FOLLY_ALWAYS_INLINE ItemIter find(K const& key) const {
-    auto hp = splitHash(this->computeKeyHash(key));
+    const auto sz = size();
+    if (sz == 0) {
+      return ItemIter{};
+    }
+    // There is no easy way to obtain a begin iterator with the current policy
+    // design.
+    // As a result, F14Vector* containers (kEnableItemIteration == false) do
+    // not benefit from this optimization yet.
+    if constexpr (kEnableItemIteration) {
+      if (sz == 1) {
+        ItemIter beg = begin();
+        return this->keyMatchesItem(key, beg.citem()) ? beg : ItemIter{};
+      }
+    }
+    auto hp = computeHash(key);
     return findImpl(hp, key, Prefetch::ENABLED);
   }
 
   template <typename K>
   FOLLY_ALWAYS_INLINE ItemIter
   find(F14HashToken const& token, K const& key) const {
-    FOLLY_SAFE_DCHECK(
-        splitHash(this->computeKeyHash(key)) == static_cast<HashPair>(token),
-        "");
+    FOLLY_SAFE_DCHECK(computeHash(key) == static_cast<HashPair>(token), "");
     return findImpl(static_cast<HashPair>(token), key, Prefetch::DISABLED);
   }
 
@@ -1642,15 +1799,23 @@ class F14Table : public Policy {
   // constraints.
   template <typename K, typename F>
   FOLLY_ALWAYS_INLINE ItemIter findMatching(K const& key, F&& func) const {
-    auto hp = splitHash(this->computeKeyHash(key));
+    auto hp = computeHash(key);
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+    svbool_t pred = svwhilelt_b8_u32(0, chunks_->kCapacity);
+#endif
     std::size_t index = hp.first;
+    auto needleV = loadNeedleV(hp.second);
     std::size_t step = probeDelta(hp);
-    for (std::size_t tries = 0; tries >> chunkShift() == 0; ++tries) {
+    for (std::size_t tries = chunkCount(); tries > 0; --tries) {
       ChunkPtr chunk = chunks_ + moduloByChunkCount(index);
       if (sizeof(Chunk) > 64) {
         prefetchAddr(chunk->itemAddr(8));
       }
-      auto hits = chunk->tagMatchIter(hp.second);
+#if FOLLY_ARM_FEATURE_NEON_SVE_BRIDGE
+      auto hits = chunk->tagMatchIter(needleV, pred);
+#else
+      auto hits = chunk->tagMatchIter(needleV);
+#endif
       while (hits.hasNext()) {
         auto i = hits.next();
         if (FOLLY_LIKELY(
@@ -1701,6 +1866,12 @@ class F14Table : public Policy {
     }
   }
 
+  [[FOLLY_ATTR_GNU_COLD]] FOLLY_NOINLINE static void eraseBlankCold(
+      F14Table* self, ItemIter iter, HashPair hp) {
+    self->eraseBlank(iter, hp);
+    rethrow_current_exception();
+  }
+
   void adjustSizeAndBeginBeforeErase(ItemIter iter) {
     sizeAndChunkShiftAndPackedBegin_.decrementSize();
     if constexpr (kEnableItemIteration) {
@@ -1717,13 +1888,15 @@ class F14Table : public Policy {
 
   template <typename... Args>
   void insertAtBlank(ItemIter pos, HashPair hp, Args&&... args) {
-    try {
-      auto dst = pos.itemAddr();
-      this->constructValueAtItem(*this, dst, std::forward<Args>(args)...);
-    } catch (...) {
-      eraseBlank(pos, hp);
-      throw;
-    }
+    auto dst = pos.itemAddr();
+    catch_exception(
+        [&] {
+          this->constructValueAtItem(*this, dst, std::forward<Args>(args)...);
+        },
+        &eraseBlankCold,
+        this,
+        pos,
+        hp);
     adjustSizeAndBeginAfterInsert(pos);
   }
 
@@ -1930,7 +2103,7 @@ class F14Table : public Policy {
           auto& srcItem = srcChunk->item(i);
           auto&& srcArg = std::forward<T>(src).buildArgForItem(srcItem);
           auto const& srcKey = src.keyForValue(srcArg);
-          auto hp = splitHash(this->computeKeyHash(srcKey));
+          auto hp = computeHash(srcKey);
           FOLLY_SAFE_CHECK(hp.second == srcChunk->tag(i), "");
           insertAtBlank(
               allocateTag(fullness, hp),
@@ -1945,6 +2118,13 @@ class F14Table : public Policy {
     }
 
     success = true;
+  }
+
+  [[FOLLY_ATTR_GNU_COLD]] FOLLY_NOINLINE static void buildFromF14TableCatchCold(
+      F14Table* self) {
+    self->reset();
+    F14LinkCheck<getF14IntrinsicsMode()>::check();
+    rethrow_current_exception();
   }
 
   template <typename T>
@@ -1967,17 +2147,16 @@ class F14Table : public Policy {
     }
     rehashImpl(0, 1, 0, ccas.first, ccas.second);
 
-    try {
-      if (chunkShift() == src.chunkShift()) {
-        directBuildFrom(std::forward<T>(src));
-      } else {
-        rehashBuildFrom(std::forward<T>(src));
-      }
-    } catch (...) {
-      reset();
-      F14LinkCheck<getF14IntrinsicsMode()>::check();
-      throw;
-    }
+    catch_exception(
+        [&] {
+          if (chunkShift() == src.chunkShift()) {
+            directBuildFrom(std::forward<T>(src));
+          } else {
+            rehashBuildFrom(std::forward<T>(src));
+          }
+        },
+        &F14Table::buildFromF14TableCatchCold,
+        this);
   }
 
   void maybeRehash(std::size_t desiredCapacity, bool attemptExact) {
@@ -2072,7 +2251,9 @@ class F14Table : public Policy {
     std::size_t newChunkCount;
     std::size_t newCapacityScale;
     std::tie(newChunkCount, newCapacityScale) = computeChunkCountAndScale(
-        desiredCapacity, /*attemptExact=*/true, kContinuousCapacity);
+        desiredCapacity,
+        /*continuousSingleChunkCapacity=*/true,
+        kContinuousCapacity);
     auto newCapacity = computeCapacity(newChunkCount, newCapacityScale);
     auto newAllocSize = chunkAllocSize(newChunkCount, newCapacityScale);
 
@@ -2307,16 +2488,14 @@ class F14Table : public Policy {
   // from args...  key won't be accessed after args are touched.
   template <typename K, typename... Args>
   std::pair<ItemIter, bool> tryEmplaceValue(K const& key, Args&&... args) {
-    const auto hp = splitHash(this->computeKeyHash(key));
+    const auto hp = computeHash(key);
     return tryEmplaceValueImpl(hp, key, std::forward<Args>(args)...);
   }
 
   template <typename K, typename... Args>
   std::pair<ItemIter, bool> tryEmplaceValueWithToken(
       F14HashToken const& token, K const& key, Args&&... args) {
-    FOLLY_SAFE_DCHECK(
-        splitHash(this->computeKeyHash(key)) == static_cast<HashPair>(token),
-        "");
+    FOLLY_SAFE_DCHECK(computeHash(key) == static_cast<HashPair>(token), "");
     return tryEmplaceValueImpl(
         static_cast<HashPair>(token), key, std::forward<Args>(args)...);
   }
@@ -2456,7 +2635,7 @@ class F14Table : public Policy {
     if (FOLLY_UNLIKELY(size() == 0)) {
       return 0;
     }
-    auto hp = splitHash(this->computeKeyHash(key));
+    auto hp = computeHash(key);
     auto iter = findImpl(hp, key, Prefetch::ENABLED);
     if (!iter.atEnd()) {
       beforeDestroy(this->valueAtItemForExtract(iter.item()));
@@ -2472,11 +2651,9 @@ class F14Table : public Policy {
       // force recycling of heap memory
       auto bc = bucket_count();
       reset();
-      try {
-        reserveImpl(bc);
-      } catch (std::bad_alloc const&) {
-        // ASAN mode only, keep going
-      }
+      catch_exception<std::bad_alloc const&>(
+          [this, bc]() { reserveImpl(bc); },
+          &folly::detail::thunk::noop<std::bad_alloc const&>);
     } else {
       clearImpl<false>();
     }
@@ -2670,8 +2847,9 @@ namespace f14 {
 namespace test {
 inline void disableInsertOrderRandomization() {
   if constexpr (kIsLibrarySanitizeAddress || kIsDebug) {
-    detail::tlsPendingSafeInserts(static_cast<std::ptrdiff_t>(
-        (std::numeric_limits<std::size_t>::max)() / 2));
+    detail::tlsPendingSafeInserts(
+        static_cast<std::ptrdiff_t>(
+            (std::numeric_limits<std::size_t>::max)() / 2));
   }
 }
 } // namespace test

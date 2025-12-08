@@ -18,10 +18,10 @@ import typing
 from shlex import quote as shellquote
 from typing import Optional
 
-from .copytree import simple_copytree
+from .copytree import rmtree_more, simple_copytree
 from .dyndeps import create_dyn_dep_munger
 from .envfuncs import add_path_entry, Env, path_search
-from .fetcher import copy_if_different
+from .fetcher import copy_if_different, is_public_commit
 from .runcmd import run_cmd
 
 if typing.TYPE_CHECKING:
@@ -84,6 +84,12 @@ class BuilderBase(object):
                     f.write("exit /b 0\n")
                 return [wrapper, "&&"]
         return []
+
+    def _check_cmd(self, cmd, **kwargs) -> None:
+        """Run the command and abort on failure"""
+        rc = self._run_cmd(cmd, **kwargs)
+        if rc != 0:
+            raise RuntimeError(f"Failure exit code {rc} for command {cmd}")
 
     def _run_cmd(
         self,
@@ -197,7 +203,7 @@ class BuilderBase(object):
                 if os.path.islink(self.build_dir):
                     os.remove(self.build_dir)
                 else:
-                    shutil.rmtree(self.build_dir)
+                    rmtree_more(self.build_dir)
         elif self.build_opts.is_windows():
             # On Windows, emit a wrapper script that can be used to run build artifacts
             # directly from the build directory, without installing them.  On Windows $PATH
@@ -232,7 +238,9 @@ class BuilderBase(object):
             )
         )
 
-    def run_tests(self, schedule_type, owner, test_filter, retry, no_testpilot) -> None:
+    def run_tests(
+        self, schedule_type, owner, test_filter, retry, no_testpilot, timeout=None
+    ) -> None:
         """Execute any tests that we know how to run.  If they fail,
         raise an exception."""
         pass
@@ -324,10 +332,10 @@ class MakeBuilder(BuilderBase):
             + self.build_args
             + self._get_prefix()
         )
-        self._run_cmd(cmd, env=env)
+        self._check_cmd(cmd, env=env)
 
         install_cmd = [self._make_binary] + self.install_args + self._get_prefix()
-        self._run_cmd(install_cmd, env=env)
+        self._check_cmd(install_cmd, env=env)
 
         # bz2's Makefile doesn't install its .so properly
         if self.manifest and self.manifest.name == "bz2":
@@ -337,7 +345,9 @@ class MakeBuilder(BuilderBase):
             for file in glob.glob(srcpattern):
                 shutil.copy(file, libdir)
 
-    def run_tests(self, schedule_type, owner, test_filter, retry, no_testpilot) -> None:
+    def run_tests(
+        self, schedule_type, owner, test_filter, retry, no_testpilot, timeout=None
+    ) -> None:
         if not self.test_args:
             return
 
@@ -352,17 +362,20 @@ class MakeBuilder(BuilderBase):
         else:
             env["GETDEPS_TEST_RETRY"] = 0
 
+        if timeout is not None:
+            env["GETDEPS_TEST_TIMEOUT"] = str(timeout)
+
         cmd = (
             [self._make_binary, "-j%s" % self.num_jobs]
             + self.test_args
             + self._get_prefix()
         )
-        self._run_cmd(cmd, allow_fail=False, env=env)
+        self._check_cmd(cmd, allow_fail=False, env=env)
 
 
 class CMakeBootStrapBuilder(MakeBuilder):
     def _build(self, reconfigure) -> None:
-        self._run_cmd(
+        self._check_cmd(
             [
                 "./bootstrap",
                 "--prefix=" + self.inst_dir,
@@ -426,21 +439,21 @@ class AutoconfBuilder(BuilderBase):
             # seem to realize that it should invoke libtoolize and then
             # error out when the configure script references a libtool
             # related symbol.
-            self._run_cmd(["libtoolize"], cwd=self.src_dir, env=env)
+            self._check_cmd(["libtoolize"], cwd=self.src_dir, env=env)
 
             # We generally prefer to call the `autogen.sh` script provided
             # by the project on the basis that it may know more than plain
             # autoreconf does.
             if os.path.exists(autogen_path):
-                self._run_cmd(["bash", autogen_path], cwd=self.src_dir, env=env)
+                self._check_cmd(["bash", autogen_path], cwd=self.src_dir, env=env)
             else:
-                self._run_cmd(["autoreconf", "-ivf"], cwd=self.src_dir, env=env)
+                self._check_cmd(["autoreconf", "-ivf"], cwd=self.src_dir, env=env)
         configure_cmd = [configure_path, "--prefix=" + self.inst_dir] + self.args
-        self._run_cmd(configure_cmd, env=env)
-        only_install = self.manifest.get("build", "only_install", "false", ctx=self.ctx)
-        if not only_install:
-            self._run_cmd([self._make_binary, "-j%s" % self.num_jobs], env=env)
-        self._run_cmd([self._make_binary, "install"], env=env)
+        self._check_cmd(configure_cmd, env=env)
+        only_install = self.manifest.get("build", "only_install", ctx=self.ctx)
+        if not only_install or only_install.lower() == "false":
+            self._check_cmd([self._make_binary, "-j%s" % self.num_jobs], env=env)
+        self._check_cmd([self._make_binary, "install"], env=env)
 
 
 class Iproute2Builder(BuilderBase):
@@ -473,10 +486,10 @@ class Iproute2Builder(BuilderBase):
     def _build(self, reconfigure) -> None:
         configure_path = os.path.join(self.src_dir, "configure")
         env = self.env.copy()
-        self._run_cmd([configure_path], env=env)
+        self._check_cmd([configure_path], env=env)
         shutil.rmtree(self.build_dir)
         shutil.copytree(self.src_dir, self.build_dir)
-        self._run_cmd(["make", "-j%s" % self.num_jobs], env=env)
+        self._check_cmd(["make", "-j%s" % self.num_jobs], env=env)
         install_cmd = ["make", "install", "DESTDIR=" + self.inst_dir]
 
         for d in ["include", "lib"]:
@@ -485,7 +498,7 @@ class Iproute2Builder(BuilderBase):
                     os.path.join(self.build_dir, d), os.path.join(self.inst_dir, d)
                 )
 
-        self._run_cmd(install_cmd, env=env)
+        self._check_cmd(install_cmd, env=env)
 
 
 class SystemdBuilder(BuilderBase):
@@ -522,7 +535,7 @@ class SystemdBuilder(BuilderBase):
         # Meson builds typically require setup, compile, and install steps.
         # During this setup step we ensure that the static library is built and
         # the prefix is empty.
-        self._run_cmd(
+        self._check_cmd(
             [
                 meson,
                 "setup",
@@ -535,10 +548,10 @@ class SystemdBuilder(BuilderBase):
 
         # Compile step needs to satisfy the build directory that was previously
         # prepared during setup.
-        self._run_cmd([meson, "compile", "-C", self.build_dir])
+        self._check_cmd([meson, "compile", "-C", self.build_dir])
 
         # Install step
-        self._run_cmd(
+        self._check_cmd(
             [meson, "install", "-C", self.build_dir, "--destdir", self.inst_dir]
         )
 
@@ -697,6 +710,7 @@ if __name__ == "__main__":
         self.loader = loader
         if build_opts.shared_libs:
             self.defines["BUILD_SHARED_LIBS"] = "ON"
+            self.defines["BOOST_LINK_STATIC"] = "OFF"
 
     def _invalidate_cache(self) -> None:
         for name in [
@@ -834,7 +848,31 @@ if __name__ == "__main__":
 
         return define_args
 
+    def _run_include_rewriter(self):
+        """Run include path rewriting on source files before building."""
+        from .include_rewriter import rewrite_includes_from_manifest
+
+        print(f"Rewriting include paths for {self.manifest.name}...")
+        try:
+            modified_count = rewrite_includes_from_manifest(
+                self.manifest, self.ctx, self.src_dir, verbose=True
+            )
+            if modified_count > 0:
+                print(f"Successfully modified {modified_count} files")
+            else:
+                print("No files needed modification")
+        except Exception as e:
+            print(f"Warning: Include path rewriting failed: {e}")
+            # Don't fail the build for include rewriting issues
+
     def _build(self, reconfigure: bool) -> None:
+        # Check if include rewriting is enabled
+        rewrite_includes = self.manifest.get(
+            "build", "rewrite_includes", "false", ctx=self.ctx
+        )
+        if rewrite_includes.lower() == "true":
+            self._run_include_rewriter()
+
         reconfigure = reconfigure or self._needs_reconfigure()
 
         env = self._compute_env()
@@ -845,6 +883,14 @@ if __name__ == "__main__":
         cmake = path_search(env, "cmake")
         if cmake is None:
             raise Exception("Failed to find CMake")
+
+        if self.build_opts.is_windows():
+            checkdir = self.src_dir
+            if os.path.exists(checkdir):
+                children = os.listdir(checkdir)
+                print(f"Building from source {checkdir} contents: {children}")
+            else:
+                print(f"Source {checkdir} not found")
 
         if reconfigure:
             define_args = self._compute_cmake_define_args(env)
@@ -862,9 +908,9 @@ if __name__ == "__main__":
             )
 
             self._invalidate_cache()
-            self._run_cmd([cmake, self.src_dir] + define_args, env=env)
+            self._check_cmd([cmake, self.src_dir] + define_args, env=env)
 
-        self._run_cmd(
+        self._check_cmd(
             [
                 cmake,
                 "--build",
@@ -880,7 +926,7 @@ if __name__ == "__main__":
         )
 
     def run_tests(
-        self, schedule_type, owner, test_filter, retry: int, no_testpilot
+        self, schedule_type, owner, test_filter, retry: int, no_testpilot, timeout=None
     ) -> None:
         env = self._compute_env()
         ctest = path_search(env, "ctest")
@@ -974,17 +1020,29 @@ if __name__ == "__main__":
                 )
             return tests
 
-        if schedule_type == "continuous" or schedule_type == "testwarden":
+        discover_like_continuous = False
+        if schedule_type == "continuous" or (
+            schedule_type == "base_retry" and is_public_commit(self.build_opts)
+        ):
+            discover_like_continuous = True
+
+        if discover_like_continuous or schedule_type == "testwarden":
             # for continuous and testwarden runs, disabling retry can give up
             # better signals for flaky tests.
             retry = 0
 
-        tpx = path_search(env, "tpx")
+        tpx = None
+        try:
+            from .facebook.testinfra import start_run
+
+            tpx = path_search(env, "tpx")
+        except ImportError:
+            # internal testinfra not available
+            pass
+
         if tpx and not no_testpilot:
             buck_test_info = list_tests()
             import os
-
-            from .facebook.testinfra import start_run
 
             buck_test_info_name = os.path.join(self.build_dir, ".buck-test-info.json")
             with open(buck_test_info_name, "w") as f:
@@ -1015,12 +1073,15 @@ if __name__ == "__main__":
                 if run_id is not None:
                     testpilot_args += ["--run-id", run_id]
 
+                if timeout is not None:
+                    testpilot_args += ["--timeout", str(timeout)]
+
                 if test_filter:
                     testpilot_args += ["--", test_filter]
 
                 if schedule_type == "diff":
                     runs.append(["--collection", "oss-diff", "--purpose", "diff"])
-                elif schedule_type == "continuous":
+                elif discover_like_continuous:
                     runs.append(
                         [
                             "--tag-new-tests",
@@ -1059,6 +1120,7 @@ if __name__ == "__main__":
                     runs.append([])
 
                 for run in runs:
+                    # FIXME: What is this trying to accomplish? Should it fail on first or >=1 errors?
                     self._run_cmd(
                         testpilot_args + run,
                         cwd=self.build_opts.fbcode_builder_dir,
@@ -1074,10 +1136,14 @@ if __name__ == "__main__":
             ]
             if test_filter:
                 args += ["-R", test_filter]
+            if timeout is not None:
+                args += ["--timeout", str(timeout)]
 
             count = 0
+            retcode = -1
             while count <= retry:
-                retcode = self._run_cmd(
+                # FIXME: What is this trying to accomplish? Should it fail on first or >=1 errors?
+                retcode = self._check_cmd(
                     args, env=env, use_cmd_prefix=use_cmd_prefix, allow_fail=True
                 )
 
@@ -1087,11 +1153,9 @@ if __name__ == "__main__":
                     # Only add this option in the second run.
                     args += ["--rerun-failed"]
                 count += 1
-            # pyre-fixme[61]: `retcode` is undefined, or not always defined.
-            if retcode != 0:
+            if retcode is not None and retcode != 0:
                 # Allow except clause in getdeps.main to catch and exit gracefully
                 # This allows non-testpilot runs to fail through the same logic as failed testpilot runs, which may become handy in case if post test processing is needed in the future
-                # pyre-fixme[61]: `retcode` is undefined, or not always defined.
                 raise subprocess.CalledProcessError(retcode, args)
 
 
@@ -1119,7 +1183,9 @@ class NinjaBootstrap(BuilderBase):
         )
 
     def _build(self, reconfigure) -> None:
-        self._run_cmd([sys.executable, "configure.py", "--bootstrap"], cwd=self.src_dir)
+        self._check_cmd(
+            [sys.executable, "configure.py", "--bootstrap"], cwd=self.src_dir
+        )
         src_ninja = os.path.join(self.src_dir, "ninja")
         dest_ninja = os.path.join(self.inst_dir, "bin/ninja")
         bin_dir = os.path.dirname(dest_ninja)
@@ -1191,7 +1257,7 @@ class OpenSSLBuilder(BuilderBase):
         else:
             raise Exception("don't know how to build openssl for %r" % self.ctx)
 
-        self._run_cmd(
+        self._check_cmd(
             [
                 perl,
                 configure,
@@ -1209,11 +1275,11 @@ class OpenSSLBuilder(BuilderBase):
             + extra_args
         )
         # show the config produced
-        self._run_cmd([perl, "configdata.pm", "--dump"], env=env)
+        self._check_cmd([perl, "configdata.pm", "--dump"], env=env)
         make_build = [make] + make_j_args
-        self._run_cmd(make_build, env=env)
+        self._check_cmd(make_build, env=env)
         make_install = [make, "install_sw", "install_ssldirs"]
-        self._run_cmd(make_install, env=env)
+        self._check_cmd(make_install, env=env)
 
 
 class Boost(BuilderBase):
@@ -1266,18 +1332,18 @@ class Boost(BuilderBase):
             )
             if self.build_opts.is_windows():
                 bootstrap = os.path.join(self.src_dir, "bootstrap.bat")
-                self._run_cmd([bootstrap] + bootstrap_args, cwd=self.src_dir, env=env)
+                self._check_cmd([bootstrap] + bootstrap_args, cwd=self.src_dir, env=env)
                 args += ["address-model=64"]
             else:
                 bootstrap = os.path.join(self.src_dir, "bootstrap.sh")
-                self._run_cmd(
+                self._check_cmd(
                     [bootstrap, "--prefix=%s" % self.inst_dir] + bootstrap_args,
                     cwd=self.src_dir,
                     env=env,
                 )
 
             b2 = os.path.join(self.src_dir, "b2")
-            self._run_cmd(
+            self._check_cmd(
                 [
                     b2,
                     "-j%s" % self.num_jobs,
@@ -1345,6 +1411,52 @@ class NopBuilder(BuilderBase):
                 simple_copytree(self.src_dir, self.inst_dir)
 
 
+class SetupPyBuilder(BuilderBase):
+    def _build(self, reconfigure) -> None:
+        env = self._compute_env()
+
+        setup_env = self.manifest.get_section_as_dict("setup-py.env", self.ctx)
+        for key, value in setup_env.items():
+            env[key] = value
+
+        setup_py_path = os.path.join(self.src_dir, "setup.py")
+
+        if not os.path.exists(setup_py_path):
+            raise RuntimeError(f"setup.py script not found at {setup_py_path}")
+
+        self._check_cmd(
+            [path_search(env, "python3"), setup_py_path, "install"],
+            cwd=self.src_dir,
+            env=env,
+        )
+
+        # Create the installation directory if it doesn't exist
+        os.makedirs(self.inst_dir, exist_ok=True)
+
+        # Mark the project as built
+        with open(os.path.join(self.inst_dir, ".built-by-getdeps"), "w") as f:
+            f.write("built")
+
+    def run_tests(
+        self, schedule_type, owner, test_filter, retry, no_testpilot, timeout=None
+    ) -> None:
+        # setup.py actually no longer has a standard command for running tests.
+        # Instead we let manifest files specify an arbitrary Python file to run
+        # as a test.
+
+        # Get the test command from the manifest
+        python_script = self.manifest.get(
+            "setup-py.test", "python_script", ctx=self.ctx
+        )
+        if not python_script:
+            print(f"No test script specified for {self.manifest.name}")
+            return
+
+        # Run the command
+        env = self._compute_env()
+        self._check_cmd(["python3", python_script], cwd=self.src_dir, env=env)
+
+
 class SqliteBuilder(BuilderBase):
     def __init__(
         self,
@@ -1375,7 +1487,7 @@ class SqliteBuilder(BuilderBase):
             copy_if_different(src, dest)
 
         cmake_lists = """
-cmake_minimum_required(VERSION 3.1.3 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 project(sqlite3 C)
 add_library(sqlite3 STATIC sqlite3.c)
 # These options are taken from the defaults in Makefile.msc in
@@ -1412,8 +1524,8 @@ install(FILES sqlite3.h sqlite3ext.h DESTINATION include)
         # Resolve the cmake that we installed
         cmake = path_search(env, "cmake")
 
-        self._run_cmd([cmake, self.build_dir] + define_args, env=env)
-        self._run_cmd(
+        self._check_cmd([cmake, self.build_dir] + define_args, env=env)
+        self._check_cmd(
             [
                 cmake,
                 "--build",

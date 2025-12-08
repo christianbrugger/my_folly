@@ -1,15 +1,20 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target", "non_fbcode_target")
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbsource//tools/build_defs/dirsync:fb_dirsync_cpp_library.bzl", "fb_dirsync_cpp_library")
+load("../../defs.bzl", "folly_xplat_cxx_library")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_base_fwd",
     headers = [
         "HHWheelTimer-fwd.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_base",
     srcs = [
         "AsyncTimeout.cpp",
@@ -36,9 +41,10 @@ cpp_library(
         "TimeoutManager.h",
         "VirtualEventBase.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:chrono",
-        "//folly:map_util",
         "//folly:string",
         "//folly/container:bit_iterator",
         "//folly/lang:assume",
@@ -92,10 +98,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_pipe",
     srcs = ["AsyncPipe.cpp"],
     headers = ["AsyncPipe.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         ":async_socket_exception",
         "//folly:file_util",
@@ -110,10 +118,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_signal_handler",
     srcs = ["AsyncSignalHandler.cpp"],
     headers = ["AsyncSignalHandler.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:conv",
     ],
@@ -123,12 +133,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_socket_transport",
     srcs = ["AsyncSocketTransport.cpp"],
     headers = ["AsyncSocketTransport.h"],
-    deps = [
-    ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_socket_exception",
         ":async_transport",
@@ -139,13 +149,15 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_socket",
     srcs = ["AsyncSocket.cpp"],
     headers = ["AsyncSocket.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
+        "fbsource//third-party/fmt:fmt",
         "//folly:exception",
-        "//folly:format",
         "//folly:portability",
         "//folly:string",
         "//folly/lang:checked_math",
@@ -179,19 +191,23 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_socket_base",
     headers = ["AsyncSocketBase.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_base",
         "//folly:network_address",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_socket_exception",
     srcs = ["AsyncSocketException.cpp"],
     headers = ["AsyncSocketException.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:format",
         "//folly:string",
@@ -202,11 +218,14 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_ssl_socket",
     srcs = ["AsyncSSLSocket.cpp"],
     headers = ["AsyncSSLSocket.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
+        "fbsource//third-party/fmt:fmt",
         "//folly:format",
         "//folly:indestructible",
         "//folly:network_address",
@@ -235,9 +254,11 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_transport",
     headers = ["AsyncTransport.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_base",
         ":async_socket_base",
@@ -252,27 +273,29 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_transport_certificate",
     headers = ["AsyncTransportCertificate.h"],
-    exported_deps = [
-        "//folly:optional",
-    ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "certificate_identity_verifier",
     headers = ["CertificateIdentityVerifier.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_transport_certificate",
-        "//folly:try",
-        "//folly:unit",
+        "//folly/portability:openssl",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_udp_server_socket",
     headers = ["AsyncUDPServerSocket.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_base",
         ":async_udp_socket",
@@ -281,10 +304,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_udp_socket",
     srcs = ["AsyncUDPSocket.cpp"],
     headers = ["AsyncUDPSocket.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:likely",
         "//folly:small_vector",
@@ -311,19 +336,21 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "decorated_async_transport_wrapper",
     headers = [
         "DecoratedAsyncTransportWrapper.h",
         "WriteChainAsyncTransportWrapper.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_transport",
         "//folly/io:iobuf",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "delayed_destruction",
     srcs = [
         "DelayedDestruction.cpp",
@@ -332,20 +359,26 @@ cpp_library(
         "DelayedDestruction.h",
         "DelayedDestructionBase.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         "//folly:portability",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "destructor_check",
     headers = ["DestructorCheck.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "event_base_manager",
     srcs = ["EventBaseManager.cpp"],
     headers = ["EventBaseManager.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         ":async_base",
         "//folly:optional",
@@ -353,13 +386,14 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "event_base_thread",
     srcs = ["EventBaseThread.cpp"],
     headers = ["EventBaseThread.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         ":scoped_event_base_thread",
-        "//folly:memory",
     ],
     exported_deps = [
         ":async_base",
@@ -367,18 +401,22 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "event_util",
     headers = ["EventUtil.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         "//folly/portability:event",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "request_context",
     srcs = ["Request.cpp"],
     headers = ["Request.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:glog",
         "//folly/concurrency/container:single_writer_fixed_hash_map",
@@ -395,10 +433,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "scoped_event_base_thread",
     srcs = ["ScopedEventBaseThread.cpp"],
     headers = ["ScopedEventBaseThread.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         ":event_base_manager",
         "//folly:function",
@@ -411,10 +451,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "terminate_cancellation_token",
     srcs = ["TerminateCancellationToken.cpp"],
     headers = ["TerminateCancellationToken.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         ":async_signal_handler",
         ":scoped_event_base_thread",
@@ -425,10 +467,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "server_socket",
     srcs = ["AsyncServerSocket.cpp"],
     headers = ["AsyncServerSocket.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:file_util",
         "//folly:glog",
@@ -452,20 +496,20 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "ssl_context",
     srcs = ["SSLContext.cpp"],
     headers = ["SSLContext.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:format",
         "//folly:memory",
         "//folly:random",
         "//folly:shared_mutex",
-        "//folly:spin_lock",
         "//folly/ssl:openssl_ticket_handler",
         "//folly/ssl:password_collector",
         "//folly/ssl:ssl_session_manager",
-        "//folly/system:thread_id",
     ],
     exported_deps = [
         "//folly:function",
@@ -482,10 +526,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "ssl_options",
     srcs = ["SSLOptions.cpp"],
     headers = ["SSLOptions.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:format",
     ],
@@ -498,10 +544,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "password_in_file",
     srcs = ["PasswordInFile.cpp"],
     headers = ["PasswordInFile.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:file_util",
         "//folly/portability:openssl",
@@ -511,12 +559,14 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "write_flags",
     headers = ["WriteFlags.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "timerfd",
     srcs = [
         "STTimerFDTimeoutManager.cpp",
@@ -528,6 +578,8 @@ cpp_library(
         "TimerFD.h",
         "TimerFDTimeoutManager.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:file_util",
         "//folly/io/async:event_util",
@@ -538,15 +590,15 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_base_class",
     srcs = ["AsyncBase.cpp"],
     headers = ["AsyncBase.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:exception",
         "//folly:format",
-        "//folly:likely",
-        "//folly:string",
         "//folly/portability:filesystem",
         "//folly/portability:unistd",
     ],
@@ -557,15 +609,16 @@ cpp_library(
         "//folly/portability:sys_uio",
     ],
     external_deps = [
-        "boost",
         "glog",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "async_io",
     srcs = ["AsyncIO.cpp"],
     headers = ["AsyncIO.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "fbsource//third-party/fmt:fmt",
         "//folly:exception",
@@ -586,21 +639,35 @@ cpp_library(
     ],
 )
 
-cpp_library(
-    # @autodeps-skip
+# @fb-only[end= ]: _LIBURING_CONDA_SELECT_DICT = {}
+
+# @fb-only[end= ]: _LIBURING_CONDA_SELECT_DICT["DEFAULT"] = []
+
+# @fb-only[end= ]: _LIBURING_CONDA_SELECT_DICT["ovr_config//conda:xlformers_llama4_mtia_conda"] = ["fbsource//third-party/liburing:uring"]
+
+liburing_deps = select({
+    "DEFAULT": [],
+    # @fb-only[end= ]: "ovr_config//distro/constraints:conda": select(_LIBURING_CONDA_SELECT_DICT),
+    # @fb-only[end= ]: "ovr_config//os:linux-sgx": [],
+    "ovr_config//runtime:fbcode": ["fbsource//third-party/liburing:uring"],
+})
+
+non_fbcode_target(
+    _kind = folly_xplat_cxx_library,
     name = "liburing",
-    headers = ["Liburing.h"],
-    os_deps = [(
-        "linux",
-        select({
-            "DEFAULT": ["fbsource//third-party/liburing:uring"],
-            # @fb-only: "ovr_config//distro/constraints:conda": [], 
-            # @fb-only: "ovr_config//os:linux-sgx": [], 
-        }),
-    )],
+    raw_headers = ["Liburing.h"],
+    exported_deps = liburing_deps,
 )
 
-cpp_library(
+fbcode_target(
+    # @autodeps-skip
+    _kind = cpp_library,
+    name = "liburing",
+    headers = ["Liburing.h"],
+    exported_deps = liburing_deps,
+)
+
+fb_dirsync_cpp_library(
     name = "async_io_uring_socket",
     srcs = [
         "AsyncIoUringSocket.cpp",
@@ -609,27 +676,30 @@ cpp_library(
         "AsyncIoUringSocket.h",
         "AsyncIoUringSocketFactory.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
+        ":io_uring_event_base_local",
+        ":io_uring_provided_buffer_ring",
         "//folly:conv",
         "//folly/detail:socket_fast_open",
-        "//folly/io/async:io_uring_event_base_local",
         "//folly/memory:malloc",
         "//folly/portability:sys_uio",
     ],
     exported_deps = [
+        ":async_base",
+        ":async_socket",
+        ":async_socket_exception",
+        ":async_transport",
+        ":delayed_destruction",
+        ":io_uring_backend",
+        ":liburing",
         "//folly:network_address",
         "//folly:optional",
         "//folly:small_vector",
         "//folly/futures:core",
         "//folly/io:iobuf",
         "//folly/io:socket_option_map",
-        "//folly/io/async:async_base",
-        "//folly/io/async:async_socket",
-        "//folly/io/async:async_socket_exception",
-        "//folly/io/async:async_transport",
-        "//folly/io/async:delayed_destruction",
-        "//folly/io/async:io_uring_backend",
-        "//folly/io/async:liburing",
         "//folly/net:net_ops_dispatcher",
         "//folly/portability:sockets",
     ],
@@ -638,10 +708,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "simple_async_io",
     srcs = ["SimpleAsyncIO.cpp"],
     headers = ["SimpleAsyncIO.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:string",
         "//folly/coro:baton",
@@ -658,18 +730,18 @@ cpp_library(
         "//folly/io/async:async_base",
         "//folly/io/async:scoped_event_base_thread",
     ],
-    exported_external_deps = [
-    ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "epoll",
     headers = [
         "Epoll.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "epoll_backend",
     srcs = [
         "EpollBackend.cpp",
@@ -679,6 +751,8 @@ cpp_library(
         "EpollBackend.h",
     ],
     modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:file_util",
         "//folly:intrusive_list",
@@ -691,10 +765,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "event_base_poller",
     srcs = ["EventBasePoller.cpp"],
     headers = ["EventBasePoller.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "fbsource//third-party/fmt:fmt",
         "//folly:file_util",
@@ -717,10 +793,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "mux_io_thread_pool_executor",
     srcs = ["MuxIOThreadPoolExecutor.cpp"],
     headers = ["MuxIOThreadPoolExecutor.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "fbsource//third-party/fmt:fmt",
         "//folly/container:enumerate",
@@ -742,15 +820,16 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "io_uring",
     srcs = ["IoUring.cpp"],
     headers = ["IoUring.h"],
     modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "fbsource//third-party/fmt:fmt",
         "//folly:exception",
-        "//folly:likely",
         "//folly:string",
         "//folly/portability:unistd",
     ],
@@ -760,12 +839,11 @@ cpp_library(
         "//folly:shared_mutex",
     ],
     external_deps = [
-        "boost",
         "glog",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "io_uring_backend",
     srcs = [
         "IoUringBackend.cpp",
@@ -775,6 +853,8 @@ cpp_library(
         "IoUringBase.h",
     ],
     modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:demangle",
         "//folly:file_util",
@@ -783,7 +863,6 @@ cpp_library(
         "//folly:spin_lock",
         "//folly:string",
         "//folly/container:f14_hash",
-        "//folly/io/async:io_uring_provided_buffer_ring",
         "//folly/lang:bits",
         "//folly/portability:gflags",
         "//folly/portability:sockets",
@@ -793,6 +872,11 @@ cpp_library(
         "//folly/tracing:static_tracepoint",
     ],
     exported_deps = [
+        ":async_base",
+        ":delayed_destruction",
+        ":io_uring_provided_buffer_ring",
+        ":io_uring_zero_copy_buffer_pool",
+        ":liburing",
         "//folly:c_portability",
         "//folly:conv",
         "//folly:cpp_attributes",
@@ -802,9 +886,6 @@ cpp_library(
         "//folly:range",
         "//folly:small_vector",
         "//folly/io:iobuf",
-        "//folly/io/async:async_base",
-        "//folly/io/async:delayed_destruction",
-        "//folly/io/async:liburing",
         "//folly/portability:asm",
     ],
     exported_external_deps = [
@@ -813,7 +894,7 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "io_uring_provided_buffer_ring",
     srcs = [
         "IoUringProvidedBufferRing.cpp",
@@ -823,23 +904,50 @@ cpp_library(
         "IoUringProvidedBufferRing.h",
     ],
     modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:conv",
-        "//folly:exception_string",
         "//folly:string",
+        "//folly/lang:align",
+        "//folly/portability:sys_mman",
     ],
     exported_deps = [
+        ":delayed_destruction",
+        ":liburing",
         "//folly/io:iobuf",
-        "//folly/io/async:delayed_destruction",
-        "//folly/io/async:liburing",
-        "//folly/portability:sys_mman",
+        "//folly/synchronization:distributed_mutex",
     ],
     exported_external_deps = [
         "boost",
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
+    name = "io_uring_zero_copy_buffer_pool",
+    srcs = [
+        "IoUringZeroCopyBufferPool.cpp",
+    ],
+    headers = [
+        "IoUringZeroCopyBufferPool.h",
+    ],
+    modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
+    deps = [
+        "//folly:conv",
+        "//folly:string",
+        "//folly/lang:align",
+        "//folly/portability:sys_mman",
+        "//folly/synchronization:distributed_mutex",
+    ],
+    exported_deps = [
+        ":liburing",
+        "//folly/io:iobuf",
+    ],
+)
+
+fb_dirsync_cpp_library(
     name = "io_uring_event",
     srcs = [
         "IoUringEvent.cpp",
@@ -848,6 +956,8 @@ cpp_library(
         "IoUringEvent.h",
     ],
     modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         "//folly:file",
         "//folly/io/async:async_base",
@@ -856,7 +966,7 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "io_uring_event_base_local",
     srcs = [
         "IoUringEventBaseLocal.cpp",
@@ -865,6 +975,8 @@ cpp_library(
         "IoUringEventBaseLocal.h",
     ],
     modular_headers = False,
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     deps = [
         "//folly:singleton",
         "//folly/io/async:io_uring_event",
@@ -873,7 +985,5 @@ cpp_library(
         "//folly/io/async:async_base",
         "//folly/io/async:io_uring_backend",
         "//folly/io/async:liburing",
-    ],
-    exported_external_deps = [
     ],
 )

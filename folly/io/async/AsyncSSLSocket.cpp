@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <folly/io/async/AsyncSSLSocket.h>
 
 #include <fcntl.h>
@@ -150,8 +151,7 @@ class AsyncSSLSocketConnector
       if (timeoutLeft <= std::chrono::milliseconds::zero()) {
         AsyncSocketException ex(
             AsyncSocketException::TIMED_OUT,
-            folly::sformat(
-                "SSL connect timed out after {}ms", timeout_.count()));
+            fmt::format("SSL connect timed out after {}ms", timeout_.count()));
         fail(ex);
         delete this;
         return;
@@ -619,7 +619,7 @@ void AsyncSSLSocket::attachSSLContext(
   OpenSSLUtils::setSSLInitialCtx(ssl_.get(), sslCtx);
   // Detach sets the socket's context to the dummy context. Thus we must acquire
   // this lock.
-  std::unique_lock<SpinLock> guard(dummyCtxLock);
+  std::unique_lock guard(dummyCtxLock);
   SSL_set_SSL_CTX(ssl_.get(), sslCtx);
 }
 
@@ -645,7 +645,7 @@ void AsyncSSLSocket::detachSSLContext() {
     OpenSSLUtils::setSSLInitialCtx(ssl_.get(), nullptr);
   }
 
-  std::unique_lock<SpinLock> guard(dummyCtxLock);
+  std::unique_lock guard(dummyCtxLock);
   if (nullptr == dummyCtx) {
     // We need to lazily initialize the dummy context so we don't
     // accidentally override any programmatic settings to openssl
@@ -717,7 +717,7 @@ void AsyncSSLSocket::timeoutExpired(
     DestructorGuard dg(this);
     AsyncSocketException ex(
         AsyncSocketException::TIMED_OUT,
-        folly::sformat(
+        fmt::format(
             "SSL {} timed out after {}ms",
             (sslState_ == STATE_CONNECTING) ? "connect" : "accept",
             timeout.count()));
@@ -1996,24 +1996,36 @@ int AsyncSSLSocket::sslVerifyCallback(
 
   if (self->handshakeCallback_) {
     int callbackOk =
-        (self->handshakeCallback_->handshakeVer(self, preverifyOk, x509Ctx))
+        self->handshakeCallback_->handshakeVer(self, preverifyOk, x509Ctx)
         ? 1
         : 0;
 
     if (preverifyOk != callbackOk) {
       // HandshakeCB overwrites result from OpenSSL. One way or another, do not
-      // call CertificateIdentityVerifier.
+      // call verifyLeaf.
       return callbackOk;
     }
   }
 
+  // verifyContext can override the OpenSSL verification result. Unlike
+  // handshakeVer, it doesn't return early - allowing verifyLeaf to be called
+  // for the leaf certificate even if verifyContext changes the result.
+  if (self->certificateIdentityVerifier_) {
+    preverifyOk =
+        self->certificateIdentityVerifier_->verifyContext(preverifyOk, x509Ctx)
+        ? 1
+        : 0;
+  }
+
   if (!preverifyOk) {
-    // OpenSSL verification failure, no need to call CertificateIdentityVerifier
+    // Verification failed (either OpenSSL or verifyContext), no need to call
+    // verifyLeaf.
     return 0;
   }
 
-  // only invoke the CertificateIdentityVerifier for the leaf certificate and
-  // only if OpenSSL's preverify and the HandshakeCB's handshakeVer succeeded
+  // only invoke the verifyLeaf callback for the leaf certificate and
+  // only if all previous verification steps succeeded (OpenSSL, handshakeVer,
+  // and verifyContext)
 
   int currentDepth = X509_STORE_CTX_get_error_depth(x509Ctx);
   if (currentDepth != 0 || self->certificateIdentityVerifier_ == nullptr) {
@@ -2044,10 +2056,15 @@ void AsyncSSLSocket::enableByteEvents() {
   if (getSSLVersion() == SSL3_VERSION || getSSLVersion() == TLS1_VERSION) {
     // Socket timestamping can cause us to split up TLS records in a way that
     // breaks some old Android (<= 3.0) clients.
+
+    if (!byteEventHelper_) {
+      byteEventHelper_ = std::make_unique<ByteEventHelper>();
+    }
     return failByteEvents(AsyncSocketException(
         AsyncSocketException::NOT_SUPPORTED,
-        withAddr("failed to enable byte events: "
-                 "not supported for SSLv3 or TLSv1")));
+        withAddr(
+            "failed to enable byte events: "
+            "not supported for SSLv3 or TLSv1")));
   }
   AsyncSocket::enableByteEvents();
 }
@@ -2291,8 +2308,9 @@ std::string AsyncSSLSocket::getSSLClientSigAlgs() const {
     sigAlgs.append(
         folly::to<std::string>(clientHelloInfo_->clientHelloSigAlgs_[i].first));
     sigAlgs.push_back(',');
-    sigAlgs.append(folly::to<std::string>(
-        clientHelloInfo_->clientHelloSigAlgs_[i].second));
+    sigAlgs.append(
+        folly::to<std::string>(
+            clientHelloInfo_->clientHelloSigAlgs_[i].second));
   }
 
   return sigAlgs;

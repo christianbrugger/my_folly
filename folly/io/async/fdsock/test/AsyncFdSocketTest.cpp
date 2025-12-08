@@ -105,34 +105,34 @@ struct AsyncFdSocketTest : public testing::Test {
 };
 
 TEST_F(AsyncFdSocketTest, TestAddSeqNum) {
-  EXPECT_EQ(17, AsyncFdSocket::addSeqNum(0, 17));
-  EXPECT_EQ(17, AsyncFdSocket::addSeqNum(17, 0));
-  EXPECT_EQ(17, AsyncFdSocket::addSeqNum(8, 9));
+  EXPECT_EQ(17, detail::addSocketFdsSeqNum(0, 17));
+  EXPECT_EQ(17, detail::addSocketFdsSeqNum(17, 0));
+  EXPECT_EQ(17, detail::addSocketFdsSeqNum(8, 9));
 
   EXPECT_EQ(
-      9223372036854775807, AsyncFdSocket::addSeqNum(9223372036854775805, 2));
+      9223372036854775807, detail::addSocketFdsSeqNum(9223372036854775805, 2));
   EXPECT_EQ(
-      9223372036854775807, AsyncFdSocket::addSeqNum(2, 9223372036854775805));
-  EXPECT_EQ(0, AsyncFdSocket::addSeqNum(9223372036854775805, 3));
-  EXPECT_EQ(0, AsyncFdSocket::addSeqNum(3, 9223372036854775805));
-  EXPECT_EQ(1, AsyncFdSocket::addSeqNum(9223372036854775805, 4));
-  EXPECT_EQ(1, AsyncFdSocket::addSeqNum(4, 9223372036854775805));
+      9223372036854775807, detail::addSocketFdsSeqNum(2, 9223372036854775805));
+  EXPECT_EQ(0, detail::addSocketFdsSeqNum(9223372036854775805, 3));
+  EXPECT_EQ(0, detail::addSocketFdsSeqNum(3, 9223372036854775805));
+  EXPECT_EQ(1, detail::addSocketFdsSeqNum(9223372036854775805, 4));
+  EXPECT_EQ(1, detail::addSocketFdsSeqNum(4, 9223372036854775805));
 
   EXPECT_EQ(
-      9223372036854775807, AsyncFdSocket::addSeqNum(9223372036854775806, 1));
+      9223372036854775807, detail::addSocketFdsSeqNum(9223372036854775806, 1));
   EXPECT_EQ(
-      9223372036854775807, AsyncFdSocket::addSeqNum(1, 9223372036854775806));
-  EXPECT_EQ(3, AsyncFdSocket::addSeqNum(9223372036854775806, 5));
-  EXPECT_EQ(3, AsyncFdSocket::addSeqNum(5, 9223372036854775806));
+      9223372036854775807, detail::addSocketFdsSeqNum(1, 9223372036854775806));
+  EXPECT_EQ(3, detail::addSocketFdsSeqNum(9223372036854775806, 5));
+  EXPECT_EQ(3, detail::addSocketFdsSeqNum(5, 9223372036854775806));
 
   EXPECT_EQ(
-      9223372036854775807, AsyncFdSocket::addSeqNum(9223372036854775807, 0));
+      9223372036854775807, detail::addSocketFdsSeqNum(9223372036854775807, 0));
   EXPECT_EQ(
-      9223372036854775807, AsyncFdSocket::addSeqNum(0, 9223372036854775807));
-  EXPECT_EQ(0, AsyncFdSocket::addSeqNum(9223372036854775807, 1));
-  EXPECT_EQ(0, AsyncFdSocket::addSeqNum(1, 9223372036854775807));
-  EXPECT_EQ(3, AsyncFdSocket::addSeqNum(9223372036854775807, 4));
-  EXPECT_EQ(3, AsyncFdSocket::addSeqNum(4, 9223372036854775807));
+      9223372036854775807, detail::addSocketFdsSeqNum(0, 9223372036854775807));
+  EXPECT_EQ(0, detail::addSocketFdsSeqNum(9223372036854775807, 1));
+  EXPECT_EQ(0, detail::addSocketFdsSeqNum(1, 9223372036854775807));
+  EXPECT_EQ(3, detail::addSocketFdsSeqNum(9223372036854775807, 4));
+  EXPECT_EQ(3, detail::addSocketFdsSeqNum(4, 9223372036854775807));
 }
 
 TEST_F(AsyncFdSocketTest, FailNoData) {
@@ -145,7 +145,7 @@ TEST_F(AsyncFdSocketTest, FailNoData) {
 TEST_F(AsyncFdSocketTest, FailSendReceivedFds) {
   char data = 'a'; // Need >= 1 data byte to send ancillary data.
   SocketFds::Received receivedFds;
-  receivedFds.emplace_back(folly::File{0, /*owns*/ false});
+  receivedFds.emplace_back(0, /*owns*/ false);
   SocketFds fds{std::move(receivedFds)};
   sendSock_.writeChainWithFds(
       &wcb_, IOBuf::wrapBuffer(&data, sizeof(data)), std::move(fds));
@@ -291,8 +291,8 @@ TEST_P(AsyncFdSocketSequenceRoundtripTest, WithDataSize) {
     sendSock_.writeChainWithFds(
         &wcb_, IOBuf::wrapBuffer(data.data(), data.size()), std::move(fds));
 
-    sentQueue.push(
-        {msgFirstByte, std::move(data), std::move(sendFds), sendSeqNum});
+    sentQueue.emplace(
+        msgFirstByte, std::move(data), std::move(sendFds), sendSeqNum);
   }
 
   // Read from the socket, and check that any batches of FDs arrive with the

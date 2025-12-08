@@ -79,6 +79,7 @@
 #include <folly/lang/Access.h>
 #include <folly/lang/Exception.h>
 #include <folly/memory/MemoryResource.h>
+#include <folly/small_vector.h>
 
 namespace folly {
 
@@ -105,7 +106,7 @@ template <class Policy>
 struct growth_policy_wrapper : private Policy {
   template <class Container, class Iterator>
   Iterator increase_capacity(Container& c, Iterator desired_insertion) {
-    typedef typename Container::difference_type diff_t;
+    using diff_t = typename Container::difference_type;
     diff_t d = desired_insertion - c.begin();
     Policy::increase_capacity(c);
     return c.begin() + d;
@@ -185,8 +186,9 @@ class DirectMutationGuard {
 
   ~DirectMutationGuard() noexcept(false) {
     if (isSortedUnique_) {
-      assert(detail::is_sorted_unique(
-          container_.begin(), container_.end(), comp_));
+      assert(
+          detail::is_sorted_unique(
+              container_.begin(), container_.end(), comp_));
       return;
     }
     as_sorted_unique(container_, comp_);
@@ -281,30 +283,30 @@ class sorted_vector_set : detail::growth_policy_wrapper<GrowthPolicy> {
   struct EBO;
 
  public:
-  typedef T value_type;
-  typedef T key_type;
-  typedef Compare key_compare;
-  typedef Compare value_compare;
-  typedef Allocator allocator_type;
-  typedef Container container_type;
+  using value_type = T;
+  using key_type = T;
+  using key_compare = Compare;
+  using value_compare = Compare;
+  using allocator_type = Allocator;
+  using container_type = Container;
 
-  typedef typename Container::pointer pointer;
-  typedef typename Container::reference reference;
-  typedef typename Container::const_reference const_reference;
-  typedef typename Container::const_pointer const_pointer;
+  using pointer = typename Container::pointer;
+  using reference = typename Container::reference;
+  using const_reference = typename Container::const_reference;
+  using const_pointer = typename Container::const_pointer;
   /*
    * XXX: Our normal iterator ought to also be a constant iterator
    * (cf. Defect Report 103 for std::set), but this is a bit more of a
    * pain.
    */
-  typedef typename Container::iterator iterator;
-  typedef typename Container::const_iterator const_iterator;
-  typedef typename Container::difference_type difference_type;
-  typedef typename Container::size_type size_type;
-  typedef typename Container::reverse_iterator reverse_iterator;
-  typedef typename Container::const_reverse_iterator const_reverse_iterator;
-  typedef detail::DirectMutationGuard<Container, value_compare>
-      direct_mutation_guard;
+  using iterator = typename Container::iterator;
+  using const_iterator = typename Container::const_iterator;
+  using difference_type = typename Container::difference_type;
+  using size_type = typename Container::size_type;
+  using reverse_iterator = typename Container::reverse_iterator;
+  using const_reverse_iterator = typename Container::const_reverse_iterator;
+  using direct_mutation_guard =
+      detail::DirectMutationGuard<Container, value_compare>;
 
   sorted_vector_set() : m_(Compare(), Allocator()) {}
 
@@ -394,8 +396,9 @@ class sorted_vector_set : detail::growth_policy_wrapper<GrowthPolicy> {
                                       const Compare&,
                                       Container&&>::value)
       : m_(comp, std::move(container)) {
-    assert(detail::is_sorted_unique(
-        m_.cont_.begin(), m_.cont_.end(), value_comp()));
+    assert(
+        detail::is_sorted_unique(
+            m_.cont_.begin(), m_.cont_.end(), value_comp()));
   }
 
   Allocator get_allocator() const { return m_.cont_.get_allocator(); }
@@ -432,6 +435,22 @@ class sorted_vector_set : detail::growth_policy_wrapper<GrowthPolicy> {
   direct_mutation_guard get_container_for_direct_mutation() noexcept {
     return direct_mutation_guard{
         m_.cont_, value_comp(), /* range_is_sorted_unique */ false};
+  }
+
+  /**
+   * Directly swap the container. Similar to swap()
+   */
+  void swap_container(Container& newContainer) {
+    detail::as_sorted_unique(newContainer, value_comp());
+    using std::swap;
+    swap(m_.cont_, newContainer);
+  }
+  void swap_container(sorted_unique_t, Container& newContainer) {
+    assert(
+        detail::is_sorted_unique(
+            newContainer.begin(), newContainer.end(), value_comp()));
+    using std::swap;
+    swap(m_.cont_, newContainer);
   }
 
   sorted_vector_set& operator=(const sorted_vector_set& other) = default;
@@ -745,6 +764,15 @@ class sorted_vector_set : detail::growth_policy_wrapper<GrowthPolicy> {
     return !operator<(other);
   }
 
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_impl_three_way_comparison)
+  template <typename U = Container>
+  friend auto operator<=>(
+      const sorted_vector_set& lhs, const sorted_vector_set& rhs)
+      -> decltype(std::declval<const U&>() <=> std::declval<const U&>()) {
+    return lhs.m_.cont_ <=> rhs.m_.cont_;
+  }
+#endif // FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_impl_three_way_comparison)
+
   const value_type* data() const noexcept { return m_.cont_.data(); }
 
  private:
@@ -867,6 +895,28 @@ inline constexpr bool is_sorted_vector_set_v =
 template <typename T>
 struct is_sorted_vector_set : std::bool_constant<is_sorted_vector_set_v<T>> {};
 
+template <
+    class T,
+    size_t N = 1,
+    class Compare = std::less<T>,
+    class Allocator = std::allocator<T>,
+    class GrowthPolicy = void,
+    class SmallVectorPolicy = void>
+using small_sorted_vector_set = sorted_vector_set<
+    T,
+    Compare,
+    Allocator,
+    GrowthPolicy,
+    folly::small_vector<T, N, SmallVectorPolicy>>;
+
+template <typename T>
+inline constexpr bool is_small_sorted_vector_set_v =
+    is_sorted_vector_set_v<T> && is_small_vector_v<typename T::container_type>;
+
+template <typename T>
+struct is_small_sorted_vector_set
+    : std::bool_constant<is_small_sorted_vector_set_v<T>> {};
+
 #if FOLLY_HAS_MEMORY_RESOURCE
 
 namespace pmr {
@@ -875,12 +925,11 @@ template <
     class T,
     class Compare = std::less<T>,
     class GrowthPolicy = void,
-    class Container =
-        std::vector<T, folly::detail::std_pmr::polymorphic_allocator<T>>>
+    class Container = std::vector<T, std::pmr::polymorphic_allocator<T>>>
 using sorted_vector_set = folly::sorted_vector_set<
     T,
     Compare,
-    folly::detail::std_pmr::polymorphic_allocator<T>,
+    std::pmr::polymorphic_allocator<T>,
     GrowthPolicy,
     Container>;
 
@@ -920,12 +969,12 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
   struct EBO;
 
  public:
-  typedef Key key_type;
-  typedef Value mapped_type;
-  typedef typename Container::value_type value_type;
-  typedef Compare key_compare;
-  typedef Allocator allocator_type;
-  typedef Container container_type;
+  using key_type = Key;
+  using mapped_type = Value;
+  using value_type = typename Container::value_type;
+  using key_compare = Compare;
+  using allocator_type = Allocator;
+  using container_type = Container;
 
   struct value_compare : private Compare {
     bool operator()(const value_type& a, const value_type& b) const {
@@ -937,18 +986,18 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
     explicit value_compare(const Compare& c) : Compare(c) {}
   };
 
-  typedef typename Container::pointer pointer;
-  typedef typename Container::const_pointer const_pointer;
-  typedef typename Container::reference reference;
-  typedef typename Container::const_reference const_reference;
-  typedef typename Container::iterator iterator;
-  typedef typename Container::const_iterator const_iterator;
-  typedef typename Container::difference_type difference_type;
-  typedef typename Container::size_type size_type;
-  typedef typename Container::reverse_iterator reverse_iterator;
-  typedef typename Container::const_reverse_iterator const_reverse_iterator;
-  typedef detail::DirectMutationGuard<Container, value_compare>
-      direct_mutation_guard;
+  using pointer = typename Container::pointer;
+  using const_pointer = typename Container::const_pointer;
+  using reference = typename Container::reference;
+  using const_reference = typename Container::const_reference;
+  using iterator = typename Container::iterator;
+  using const_iterator = typename Container::const_iterator;
+  using difference_type = typename Container::difference_type;
+  using size_type = typename Container::size_type;
+  using reverse_iterator = typename Container::reverse_iterator;
+  using const_reverse_iterator = typename Container::const_reverse_iterator;
+  using direct_mutation_guard =
+      detail::DirectMutationGuard<Container, value_compare>;
 
   sorted_vector_map() noexcept(
       std::is_nothrow_constructible<EBO, value_compare, Allocator>::value)
@@ -1037,8 +1086,9 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
                                       value_compare,
                                       Container&&>::value)
       : m_(value_compare(comp), std::move(container)) {
-    assert(detail::is_sorted_unique(
-        m_.cont_.begin(), m_.cont_.end(), value_comp()));
+    assert(
+        detail::is_sorted_unique(
+            m_.cont_.begin(), m_.cont_.end(), value_comp()));
   }
 
   Allocator get_allocator() const { return m_.cont_.get_allocator(); }
@@ -1075,6 +1125,22 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
   direct_mutation_guard get_container_for_direct_mutation() noexcept {
     return direct_mutation_guard{
         m_.cont_, value_comp(), /* range_is_sorted_unique */ false};
+  }
+
+  /**
+   * Directly swap the container. Similar to swap()
+   */
+  void swap_container(Container& newContainer) {
+    detail::as_sorted_unique(newContainer, value_comp());
+    using std::swap;
+    swap(m_.cont_, newContainer);
+  }
+  void swap_container(sorted_unique_t, Container& newContainer) {
+    assert(
+        detail::is_sorted_unique(
+            newContainer.begin(), newContainer.end(), value_comp()));
+    using std::swap;
+    swap(m_.cont_, newContainer);
   }
 
   sorted_vector_map& operator=(const sorted_vector_map& other) = default;
@@ -1447,6 +1513,15 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
     return !operator<(other);
   }
 
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_impl_three_way_comparison)
+  template <typename U = Container>
+  friend auto operator<=>(
+      const sorted_vector_map& lhs, const sorted_vector_map& rhs)
+      -> decltype(std::declval<const U&>() <=> std::declval<const U&>()) {
+    return lhs.m_.cont_ <=> rhs.m_.cont_;
+  }
+#endif // FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_impl_three_way_comparison)
+
   const value_type* data() const noexcept { return m_.cont_.data(); }
 
  private:
@@ -1629,6 +1704,30 @@ inline constexpr bool is_sorted_vector_map_v =
 template <typename T>
 struct is_sorted_vector_map : std::bool_constant<is_sorted_vector_map_v<T>> {};
 
+template <
+    class Key,
+    class Value,
+    size_t N = 1,
+    class Compare = std::less<Key>,
+    class Allocator = std::allocator<std::pair<Key, Value>>,
+    class GrowthPolicy = void,
+    class SmallVectorPolicy = void>
+using small_sorted_vector_map = sorted_vector_map<
+    Key,
+    Value,
+    Compare,
+    Allocator,
+    GrowthPolicy,
+    folly::small_vector<std::pair<Key, Value>, N, SmallVectorPolicy>>;
+
+template <typename T>
+inline constexpr bool is_small_sorted_vector_map_v =
+    is_sorted_vector_map_v<T> && is_small_vector_v<typename T::container_type>;
+
+template <typename T>
+struct is_small_sorted_vector_map
+    : std::bool_constant<is_small_sorted_vector_map_v<T>> {};
+
 #if FOLLY_HAS_MEMORY_RESOURCE
 
 namespace pmr {
@@ -1640,12 +1739,12 @@ template <
     class GrowthPolicy = void,
     class Container = std::vector<
         std::pair<Key, Value>,
-        folly::detail::std_pmr::polymorphic_allocator<std::pair<Key, Value>>>>
+        std::pmr::polymorphic_allocator<std::pair<Key, Value>>>>
 using sorted_vector_map = folly::sorted_vector_map<
     Key,
     Value,
     Compare,
-    folly::detail::std_pmr::polymorphic_allocator<std::pair<Key, Value>>,
+    std::pmr::polymorphic_allocator<std::pair<Key, Value>>,
     GrowthPolicy,
     Container>;
 

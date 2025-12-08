@@ -21,7 +21,6 @@
 #include <signal.h>
 #include <sys/types.h>
 
-#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <ctime>
@@ -31,7 +30,7 @@
 #include <glog/logging.h>
 
 #include <folly/ScopeGuard.h>
-#include <folly/experimental/symbolizer/Symbolizer.h>
+#include <folly/debugging/symbolizer/Symbolizer.h>
 #include <folly/lang/ToAscii.h>
 #include <folly/portability/SysSyscall.h>
 #include <folly/portability/Unistd.h>
@@ -39,7 +38,11 @@
 namespace folly {
 namespace symbolizer {
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+const unsigned long kAllFatalSignals = 0;
+
+#else
 
 const unsigned long kAllFatalSignals = (1UL << SIGSEGV) | (1UL << SIGILL) |
     (1UL << SIGFPE) | (1UL << SIGABRT) | (1UL << SIGBUS) | (1UL << SIGTERM) |
@@ -70,14 +73,14 @@ FatalSignalCallbackRegistry::FatalSignalCallbackRegistry()
     : installed_(false) {}
 
 void FatalSignalCallbackRegistry::add(SignalCallback func) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard lock(mutex_);
   CHECK(!installed_) << "FatalSignalCallbackRegistry::add may not be used "
                         "after installing the signal handlers.";
   handlers_.push_back(func);
 }
 
 void FatalSignalCallbackRegistry::markInstalled() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard lock(mutex_);
   CHECK(!installed_.exchange(true))
       << "FatalSignalCallbackRegistry::markInstalled must be called "
       << "at most once";
@@ -117,11 +120,13 @@ void installFatalSignalCallbacks() {
 
 namespace {
 
-struct {
+struct FatalSignalInfo {
   int number;
   const char* name;
   struct sigaction oldAction;
-} kFatalSignals[] = {
+};
+
+FatalSignalInfo kFatalSignals[] = {
     {SIGSEGV, "SIGSEGV", {}},
     {SIGILL, "SIGILL", {}},
     {SIGFPE, "SIGFPE", {}},
@@ -132,15 +137,80 @@ struct {
     {0, nullptr, {}},
 };
 
-[[maybe_unused]] void callPreviousSignalHandler(int signum) {
+template <typename...>
+bool try_async_reraise(int signum, siginfo_t* info) {
+  using folly::detail::linux_syscall;
+#if defined(__linux__) && defined(SYS_pidfd_send_signal) && \
+    defined(SYS_pidfd_open)
+  constexpr long nr_pidfd_send_signal = SYS_pidfd_send_signal;
+  constexpr long nr_pidfd_open = SYS_pidfd_open;
+#else
+  constexpr long nr_pidfd_send_signal = -1;
+  constexpr long nr_pidfd_open = -1;
+#endif
+  if constexpr (kIsLinux && nr_pidfd_send_signal >= 0 && nr_pidfd_open >= 0) {
+    constexpr auto kPIdfdSelf = -10000;
+    // PIDFD_SELF handling introduced in linux-6.15 (released 2025-05-25)
+    if (0 == linux_syscall(nr_pidfd_send_signal, kPIdfdSelf, signum, info, 0)) {
+      return true;
+    }
+    // fallback using a real pidfd
+    // TODO: remove fallback once minimum is linux-6.15
+    if (errno != EBADF) { // EBADF here means PIDFD_SELF is not yet supported
+      return false;
+    }
+    auto const tid = linux_syscall(FOLLY_SYS_gettid);
+    // pidfd_open introduced in linux-5.3 (released 2019-09-15)
+    int const fd = to_narrow(linux_syscall(nr_pidfd_open, tid, 0));
+    if (-1 == fd) {
+      return false;
+    }
+    // pidfd_send_signal introduced in linux-5.1 (released 2019-05-05)
+    // no need to close(fd) after this - the process is about to terminate
+    return 0 == linux_syscall(nr_pidfd_send_signal, fd, signum, info, 0);
+  }
+  return false;
+}
+
+void signalHandler(int signum, siginfo_t* info, void* uctx);
+
+[[maybe_unused]] void callPreviousSignalHandler(int signum, siginfo_t* info) {
   // Restore disposition to old disposition, then kill ourselves with the same
-  // signal. The signal will be blocked until we return from our handler,
-  // then it will invoke the default handler and abort.
+  // signal. The signal will remain blocked until the current call to the signal
+  // handler returns.
+  //
+  // On Linux, use pidfd_send_signal to re-raise the original signal with the
+  // original siginfo structure. Otherwise, just re-raise the original signal.
+  // Re-raising the original signal with the original siginfo enables the Linux
+  // kernel to record the true cause of the signal into the coredump. Otherwise,
+  // the kernel would see the explicit call to raise() as the cause and would
+  // record that in the coredump.
+  //
+  // For a signal arising from a faulting instruction, there is an alternative
+  // technique. After restoring disposition, the signal handler would simply
+  // return. Then the faulting instruction would execute again and be expected
+  // to trigger the same signal again. The second time, there would be no signal
+  // handler to handle the signal, so the kernel would see this second execution
+  // of the instruction as the true cause of the signal and would record that in
+  // the coredump. However, this technique is subject to the race where another
+  // thread might resolve the fault, causing the instruction's second execution
+  // to resume without fault. This can be a problem since we do want the process
+  // to terminate immediately with a coredump, and since the process resumes but
+  // without the corresponding signal handler anymore so the next time the same
+  // fault type happens there is no signal handler to report it.
   for (auto p = kFatalSignals; p->name; ++p) {
     if (p->number == signum) {
       sigaction(signum, &p->oldAction, nullptr);
+      if (try_async_reraise(signum, info)) {
+        return;
+      }
+      // Unblock the signal before raising it. Since our handler doesn't use
+      // SA_NODEFER, the signal is currently blocked.
+      sigset_t mask;
+      sigemptyset(&mask);
+      sigaddset(&mask, signum);
+      pthread_sigmask(SIG_UNBLOCK, &mask, nullptr);
       raise(signum);
-      return;
     }
   }
 
@@ -149,6 +219,9 @@ struct {
   memset(&sa, 0, sizeof(sa));
   sa.sa_handler = SIG_DFL;
   sigaction(signum, &sa, nullptr);
+  if (try_async_reraise(signum, info)) {
+    return;
+  }
   raise(signum);
 }
 
@@ -475,7 +548,7 @@ void signalHandler(int signum, siginfo_t* info, void* uctx) {
 
   gSignalThread = kInvalidThreadId;
   // Kill ourselves with the previous handler.
-  callPreviousSignalHandler(signum);
+  callPreviousSignalHandler(signum, info);
 }
 
 #endif // FOLLY_USE_SYMBOLIZER
@@ -483,7 +556,10 @@ void signalHandler(int signum, siginfo_t* info, void* uctx) {
 // Small sigaltstack size threshold.
 // 51392 is known to cause the signal handler to stack overflow during
 // symbolization of trivial async stacks (e.g [] { CHECK(false); co_return; }).
-constexpr size_t kSmallSigAltStackSize = 51392;
+// 54016 is known to cause the signal handler to stack overflow during
+// symbolization of less trivial async stacks. Setting 64KB to have a bit larger
+// and "less" magical threshold.
+constexpr size_t kSmallSigAltStackSize = 65536;
 
 [[maybe_unused]] bool isSmallSigAltStackEnabled() {
   stack_t ss;

@@ -1,14 +1,19 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbsource//tools/build_defs/dirsync:fb_dirsync_cpp_library.bzl", "fb_dirsync_cpp_library")
+load("../defs.bzl", "folly_xplat_cxx_library")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "channel",
     headers = [
         "Channel.h",
         "Channel-fwd.h",
         "Channel-inl.h",
     ],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_cxx_library,
     exported_deps = [
         "//folly:cancellation_token",
         "//folly:synchronized",
@@ -17,7 +22,10 @@ cpp_library(
     ],
 )
 
-cpp_library(
+# !!!! fbcode/folly/channels/TARGETS was merged into this file, see https://fburl.com/workplace/xl8l9yuo for more info !!!!
+
+fbcode_target(
+    _kind = cpp_library,
     name = "channel_callback_handle",
     headers = [
         "ChannelCallbackHandle.h",
@@ -29,13 +37,15 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "channel_processor",
     headers = [
         "ChannelProcessor.h",
         "ChannelProcessor-inl.h",
     ],
     exported_deps = [
+        "fbsource//third-party/fmt:fmt",
         "//folly:executor",
         "//folly/channels:consume_channel",
         "//folly/channels:merge_channel",
@@ -46,13 +56,15 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "consume_channel",
     headers = [
         "ConsumeChannel.h",
         "ConsumeChannel-inl.h",
     ],
     exported_deps = [
+        "fbsource//third-party/fmt:fmt",
         "//folly:executor",
         "//folly:format",
         "//folly:intrusive_list",
@@ -65,7 +77,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "fanout_channel",
     headers = [
         "FanoutChannel.h",
@@ -80,7 +93,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "fanout_sender",
     headers = [
         "FanoutSender.h",
@@ -95,7 +109,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "merge",
     headers = [
         "Merge.h",
@@ -109,7 +124,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "merge_channel",
     headers = [
         "MergeChannel.h",
@@ -123,7 +139,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "multiplex_channel",
     headers = [
         "MultiplexChannel.h",
@@ -146,14 +163,16 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "on_closed_exception",
     headers = [
         "OnClosedException.h",
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "producer",
     headers = [
         "Producer.h",
@@ -170,7 +189,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "proxy_channel",
     headers = [
         "ProxyChannel.h",
@@ -183,7 +203,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "rate_limiter",
     headers = [
         "RateLimiter.h",
@@ -194,7 +215,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "max_concurrent_rate_limiter",
     srcs = [
         "MaxConcurrentRateLimiter.cpp",
@@ -207,7 +229,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "transform",
     headers = [
         "Transform.h",

@@ -22,18 +22,19 @@
 
 #include <glog/logging.h>
 
-#include <folly/CppAttributes.h>
 #include <folly/Portability.h>
 #include <folly/String.h>
 #include <folly/debugging/exception_tracer/ExceptionAbi.h>
 #include <folly/debugging/exception_tracer/StackTrace.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
+#if __has_include(<dlfcn.h>)
+#include <dlfcn.h>
+#endif
+
 #if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
-#if defined(__GLIBCXX__)
-
-#include <dlfcn.h>
+#if FOLLY_HAS_EXCEPTION_TRACER
 
 namespace {
 
@@ -42,7 +43,8 @@ using namespace ::folly::symbolizer;
 using namespace __cxxabiv1;
 
 extern "C" {
-const StackTraceStack* getCaughtExceptionStackTraceStack(void)
+const StackTraceStack*
+folly_exception_tracer_get_caught_exceptions_stack_trace_stack(void)
     __attribute__((__weak__));
 typedef const StackTraceStack* (*GetCaughtExceptionStackTraceStackType)();
 GetCaughtExceptionStackTraceStackType getCaughtExceptionStackTraceStackFn;
@@ -136,14 +138,18 @@ bool isAbiCppException(const __cxa_exception* exc) {
 std::vector<ExceptionInfo> getCurrentExceptions() {
   struct Once {
     Once() {
-      // See if linked in with us (getCaughtExceptionStackTraceStack is weak)
-      getCaughtExceptionStackTraceStackFn = getCaughtExceptionStackTraceStack;
+      // See if linked in with us
+      // (folly_exception_tracer_get_caught_exceptions_stack_trace_stack is
+      // weak)
+      getCaughtExceptionStackTraceStackFn =
+          folly_exception_tracer_get_caught_exceptions_stack_trace_stack;
 
       if (!getCaughtExceptionStackTraceStackFn) {
         // Nope, see if it's in a shared library
         getCaughtExceptionStackTraceStackFn =
             (GetCaughtExceptionStackTraceStackType)dlsym(
-                RTLD_NEXT, "getCaughtExceptionStackTraceStack");
+                RTLD_NEXT,
+                "folly_exception_tracer_get_caught_exceptions_stack_trace_stack");
       }
     }
   };
@@ -238,6 +244,6 @@ void installHandlers() {
 } // namespace exception_tracer
 } // namespace folly
 
-#endif // defined(__GLIBCXX__)
+#endif //  FOLLY_HAS_EXCEPTION_TRACER
 
 #endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF

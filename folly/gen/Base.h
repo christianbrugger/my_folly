@@ -112,7 +112,7 @@ class Get {
 template <class Class, class Result>
 class MemberFunction {
  public:
-  typedef Result (Class::*MemberPtr)();
+  using MemberPtr = Result (Class::*)();
 
  private:
   MemberPtr member_;
@@ -130,7 +130,7 @@ class MemberFunction {
 template <class Class, class Result>
 class ConstMemberFunction {
  public:
-  typedef Result (Class::*MemberPtr)() const;
+  using MemberPtr = Result (Class::*)() const;
 
  private:
   MemberPtr member_;
@@ -146,7 +146,7 @@ class ConstMemberFunction {
 template <class Class, class FieldType>
 class Field {
  public:
-  typedef FieldType Class::*FieldPtr;
+  using FieldPtr = FieldType Class::*;
 
  private:
   FieldPtr field_;
@@ -496,6 +496,8 @@ Yield generator(Source&& source) {
  */
 #define GENERATOR(TYPE) \
   ::folly::gen::detail::GeneratorBuilder<TYPE>() + [=](auto&& yield)
+#define GENERATOR_WITH_THIS(TYPE) \
+  ::folly::gen::detail::GeneratorBuilder<TYPE>() + [ =, this ](auto&& yield)
 #define GENERATOR_REF(TYPE) \
   ::folly::gen::detail::GeneratorBuilder<TYPE>() + [&](auto&& yield)
 
@@ -622,7 +624,7 @@ template <
     class FieldType,
     class Field = Field<Class, FieldType>,
     class Map = detail::Map<Field>>
-Map field(FieldType Class::*field) {
+Map field(FieldType Class::* field) {
   return Map(Field(field));
 }
 
@@ -768,7 +770,7 @@ template <
     class IsEmpty = detail::IsEmpty<true>,
     class Composed = detail::Composed<Filter, IsEmpty>>
 Composed all(Predicate pred = Predicate()) {
-  return Composed(Filter(std::move(negate(pred))), IsEmpty());
+  return Composed(Filter(negate(pred)), IsEmpty());
 }
 
 template <class Seed, class Fold, class FoldLeft = detail::FoldLeft<Seed, Fold>>

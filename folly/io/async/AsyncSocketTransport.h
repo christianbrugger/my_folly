@@ -95,8 +95,10 @@ class AsyncSocketTransport : public AsyncTransport {
     return selfCertData_.get();
   }
 
+  int getNapiId() const override;
+
   virtual NetworkSocket getNetworkSocket() const = 0;
-  virtual bool getTFOSucceded() const = 0;
+  virtual bool getTFOSucceeded() const = 0;
   virtual void enableTFO() = 0;
   virtual void disableTransparentTls() {}
 

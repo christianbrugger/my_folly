@@ -23,6 +23,17 @@ namespace folly {
 namespace compression {
 
 /**
+ * Non-templated base class which allows for generic interaction with context
+ * pool instances.
+ */
+class CompressionCoreLocalContextPoolBase {
+ public:
+  virtual ~CompressionCoreLocalContextPoolBase() = default;
+
+  virtual void setSize(size_t size) = 0;
+};
+
+/**
  * This class is intended to reduce contention on reserving a compression
  * context and improve cache locality (but maybe not hotness) of the contexts
  * it manages.
@@ -41,17 +52,17 @@ template <
     typename Creator,
     typename Deleter,
     typename Resetter,
-    size_t NumStripes = 8>
-class CompressionCoreLocalContextPool {
+    typename Sizeof,
+    typename Callback = CompressionContextPoolDefaultCallback>
+class CompressionCoreLocalContextPool
+    : public CompressionCoreLocalContextPoolBase {
  private:
   /**
    * Force each pointer to be on a different cache line.
    */
   class alignas(folly::hardware_destructive_interference_size) Storage {
    public:
-    Storage() : ptr(nullptr) {}
-
-    std::atomic<T*> ptr;
+    std::atomic<T*> ptr{nullptr};
   };
 
   class ReturnToPoolDeleter {
@@ -61,7 +72,8 @@ class CompressionCoreLocalContextPool {
         Creator,
         Deleter,
         Resetter,
-        NumStripes>;
+        Sizeof,
+        Callback>;
 
     explicit ReturnToPoolDeleter(Pool* pool) : pool_(pool) { DCHECK(pool_); }
 
@@ -71,21 +83,37 @@ class CompressionCoreLocalContextPool {
     Pool* pool_;
   };
 
-  using BackingPool = CompressionContextPool<T, Creator, Deleter, Resetter>;
+  using BackingPool =
+      CompressionContextPool<T, Creator, Deleter, Resetter, Sizeof, Callback>;
   using BackingPoolRef = typename BackingPool::Ref;
 
  public:
+  /**
+   * The max size is derived from maximum stripes for folly::AccessSpreader.
+   */
+  static constexpr size_t kMaxNumStripes =
+      folly::detail::AccessSpreaderBase::kMaxCpus;
+
   using Object = T;
   using Ref = std::unique_ptr<T, ReturnToPoolDeleter>;
 
-  explicit CompressionCoreLocalContextPool(
+  constexpr explicit CompressionCoreLocalContextPool(
+      size_t numStripes = 8,
       Creator creator = Creator(),
       Deleter deleter = Deleter(),
-      Resetter resetter = Resetter())
-      : pool_(std::move(creator), std::move(deleter), std::move(resetter)),
+      Resetter resetter = Resetter(),
+      Sizeof size_of = Sizeof(),
+      Callback callback = Callback())
+      : numStripes_(numStripes),
+        pool_(
+            std::move(creator),
+            std::move(deleter),
+            std::move(resetter),
+            std::move(size_of),
+            std::move(callback)),
         caches_() {}
 
-  ~CompressionCoreLocalContextPool() { flush_shallow(); }
+  ~CompressionCoreLocalContextPool() override { flush_shallow(); }
 
   Ref get() {
     auto ptr = local().ptr.exchange(nullptr);
@@ -98,6 +126,28 @@ class CompressionCoreLocalContextPool {
   }
 
   Ref getNull() { return Ref(nullptr, get_deleter()); }
+
+  /**
+   * Update the number of stripes. This will flush the pool if the stripe count
+   * changes.
+   */
+  void setSize(size_t numStripes) override {
+    if (numStripes == 0) {
+      throw_exception<std::invalid_argument>(
+          "CompressionCoreLocalContextPool must have at least 1 stripe");
+    }
+    if (numStripes > kMaxNumStripes) {
+      DCHECK(false);
+      numStripes = kMaxNumStripes;
+    }
+
+    auto before = numStripes_.exchange(numStripes);
+    if (before != numStripes) {
+      flush_shallow();
+    }
+  }
+
+  size_t cacheSize() const { return numStripes_.load(); }
 
   size_t created_count() const { return pool_.created_count(); }
 
@@ -131,12 +181,21 @@ class CompressionCoreLocalContextPool {
   }
 
   Storage& local() {
-    const auto idx = folly::AccessSpreader<>::cachedCurrent(NumStripes);
+    // Note that cachedCurrent(0) is valid, so this should be SIOF safe.
+    const auto idx = folly::AccessSpreader<>::cachedCurrent(numStripes_);
     return caches_[idx];
   }
 
+  relaxed_atomic<size_t> numStripes_;
   BackingPool pool_;
-  std::array<Storage, NumStripes> caches_{};
+
+  /**
+   * context_pool_max_num_stripes number of stripes are allocated to the
+   * underlying stripes array. However, only the lower numStripes_ indices are
+   * used to actually stripe the pool. This allows us to statically create
+   * singletons while providing flexibility around how many stripes there are.
+   */
+  std::array<Storage, kMaxNumStripes> caches_;
 };
 } // namespace compression
 } // namespace folly

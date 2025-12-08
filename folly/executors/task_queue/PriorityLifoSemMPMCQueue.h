@@ -63,11 +63,11 @@ class PriorityLifoSemMPMCQueue : public BlockingQueue<T> {
   uint8_t getNumPriorities() override { return queues_.size(); }
 
   // Add at medium priority by default
-  BlockingQueueAddResult add(T item) override {
+  BlockingQueueAddResult add(T&& item) override {
     return addWithPriority(std::move(item), folly::Executor::MID_PRI);
   }
 
-  BlockingQueueAddResult addWithPriority(T item, int8_t priority) override {
+  BlockingQueueAddResult addWithPriority(T&& item, int8_t priority) override {
     int mid = getNumPriorities() / 2;
     size_t queue = priority < 0
         ? std::max(0, mid + priority)
@@ -87,23 +87,23 @@ class PriorityLifoSemMPMCQueue : public BlockingQueue<T> {
   }
 
   T take() override {
+    sem_.wait();
     T item;
     while (true) {
       if (nonBlockingTake(item)) {
         return item;
       }
-      sem_.wait();
     }
   }
 
   folly::Optional<T> try_take_for(std::chrono::milliseconds time) override {
+    if (!sem_.try_wait_for(time)) {
+      return folly::none;
+    }
     T item;
     while (true) {
       if (nonBlockingTake(item)) {
         return item;
-      }
-      if (!sem_.try_wait_for(time)) {
-        return folly::none;
       }
     }
   }
@@ -117,21 +117,7 @@ class PriorityLifoSemMPMCQueue : public BlockingQueue<T> {
     return false;
   }
 
-  size_t size() override {
-    size_t size = 0;
-    for (auto& q : queues_) {
-      size += q.size();
-    }
-    return size;
-  }
-
-  size_t sizeGuess() const {
-    size_t size = 0;
-    for (auto& q : queues_) {
-      size += q.sizeGuess();
-    }
-    return size;
-  }
+  size_t size() override { return sem_.valueGuess(); }
 
  private:
   Semaphore sem_;

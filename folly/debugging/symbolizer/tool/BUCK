@@ -1,30 +1,34 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
 load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
 load("@fbcode_macros//build_defs:export_files.bzl", "export_file")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "folly-addr2line",
     srcs = [
         "Addr2Line.cpp",
     ],
     deps = [
         "//folly:range",
-        "//folly/experimental/symbolizer:dwarf",
-        "//folly/experimental/symbolizer:elf",
-        "//folly/experimental/symbolizer:symbolized_frame",
-        "//folly/experimental/symbolizer:symbolizer",
+        "//folly/debugging/symbolizer:dwarf",
+        "//folly/debugging/symbolizer:elf",
+        "//folly/debugging/symbolizer:symbolized_frame",
+        "//folly/debugging/symbolizer:symbolizer",
         "//folly/init:init",
         "//folly/portability:gflags",
     ],
 )
 
-export_file(
+fbcode_target(
+    _kind = export_file,
     name = "libFollySegFault.so.v",
 )
 
 # Build a standlone DSO for use w/ `LD_PRELOAD`.
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "libFollySegFault.so",
     srcs = [
         "LibSegFault.cpp",
@@ -68,6 +72,6 @@ cpp_binary(
     target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
     deps = [
         "//folly:range",
-        "//folly/experimental/symbolizer:signal_handler",
+        "//folly/debugging/symbolizer:signal_handler",
     ],
 )

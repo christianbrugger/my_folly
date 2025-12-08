@@ -51,9 +51,10 @@ class AsyncDetachFdCallback {
 } // namespace folly
 
 #if FOLLY_HAS_LIBURING
-class IoUringBackend;
 
 namespace folly {
+class IoUringBackend;
+class IoUringProvidedBufferRing;
 
 class AsyncIoUringSocket : public AsyncSocketTransport {
  public:
@@ -61,12 +62,14 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
   struct Options {
     Options()
         : allocateNoBufferPoolBuffer(defaultAllocateNoBufferPoolBuffer),
-          multishotRecv(true) {}
+          multishotRecv(true),
+          useBundles(false) {}
 
     static std::unique_ptr<IOBuf> defaultAllocateNoBufferPoolBuffer();
     folly::Function<std::unique_ptr<IOBuf>()> allocateNoBufferPoolBuffer;
     folly::Optional<AsyncWriter::ZeroCopyEnableFunc> zeroCopyEnable;
     bool multishotRecv;
+    bool useBundles;
   };
 
   using UniquePtr = std::unique_ptr<AsyncIoUringSocket, Destructor>;
@@ -78,6 +81,7 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
       EventBase* evb, NetworkSocket ns, Options&& options = Options{});
 
   static bool supports(EventBase* backend);
+  static bool supportsZcRx(EventBase* backend);
 
   void connect(
       AsyncSocket::ConnectCallback* callback,
@@ -106,6 +110,12 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
   std::chrono::nanoseconds getConnectTime() const {
     return connectEndTime_ - connectStartTime_;
   }
+
+  /*
+   * This flag controls whether or not IP_BIND_ADDRESS_NO_PORT is enabled for
+   * AsyncSocket sockets. This is enabled by default.
+   */
+  void setBindAddressNoPort(bool flag) { bindAddressNoPort_ = flag; }
 
   // AsyncSocketBase
   EventBase* getEventBase() const override { return evb_; }
@@ -225,7 +235,7 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
 
   void asyncDetachFd(AsyncDetachFdCallback* callback);
   bool readSqeInFlight() const { return readSqe_->inFlight(); }
-  bool getTFOSucceded() const override;
+  bool getTFOSucceeded() const override;
   void enableTFO() override {
     // No-op if folly does not allow tfo
 #if FOLLY_ALLOW_TFO
@@ -247,14 +257,14 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
   void unregisterFd();
   void readProcessSubmit(
       struct io_uring_sqe* sqe,
-      IoUringBufferProviderBase* bufferProvider,
+      IoUringProvidedBufferRing* bufferProvider,
       size_t* maxSize,
-      IoUringBufferProviderBase* usedBufferProvider) noexcept;
+      IoUringProvidedBufferRing* usedBufferProvider) noexcept;
   void readCallback(
       int res,
       uint32_t flags,
       size_t maxSize,
-      IoUringBufferProviderBase* bufferProvider) noexcept;
+      IoUringProvidedBufferRing* bufferProvider) noexcept;
   void allowReads();
   void previousReadDone();
   void processWriteQueue() noexcept;
@@ -321,6 +331,8 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
     folly::Optional<folly::SemiFuture<std::unique_ptr<IOBuf>>>
     detachEventBase();
 
+    void setUseZeroCopyRx(bool val) { useZeroCopyRx_ = val; }
+
    private:
     ~ReadSqe() override = default;
     void appendReadData(
@@ -331,7 +343,9 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
     void invalidState(ReadCallback* callback);
     void processOldEventBaseRead();
 
-    IoUringBufferProviderBase* lastUsedBufferProvider_;
+    bool isEOF(const io_uring_cqe* cqe) noexcept;
+
+    IoUringProvidedBufferRing* lastUsedBufferProvider_;
     ReadCallback* readCallback_ = nullptr;
     AsyncIoUringSocket* parent_;
     size_t maxSize_;
@@ -343,6 +357,9 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
     std::unique_ptr<IOBuf> tmpBuffer_;
     bool supportsMultishotRecv_ =
         false; // todo: this can be per process instead of per socket
+    bool supportsZeroCopyRx_ = false;
+    bool useZeroCopyRx_ = false;
+    bool useBundles_ = false;
 
     folly::Optional<folly::SemiFuture<std::unique_ptr<IOBuf>>>
         oldEventBaseRead_;
@@ -351,7 +368,10 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
 
   struct CloseSqe : IoSqeBase {
     explicit CloseSqe(AsyncIoUringSocket* parent)
-        : IoSqeBase(IoSqeBase::Type::Close), parent_(parent) {}
+        : IoSqeBase(IoSqeBase::Type::Close), parent_(parent) {
+      setEventBase(parent->evb_);
+    }
+
     void processSubmit(struct io_uring_sqe* sqe) noexcept override {
       parent_->closeProcessSubmit(sqe);
     }
@@ -417,7 +437,10 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
     explicit ConnectSqe(AsyncIoUringSocket* parent)
         : IoSqeBase(IoSqeBase::Type::Connect),
           AsyncTimeout(parent->evb_),
-          parent_(parent) {}
+          parent_(parent) {
+      setEventBase(parent->evb_);
+    }
+
     void processSubmit(struct io_uring_sqe* sqe) noexcept override {
       parent_->processConnectSubmit(sqe, addrStorage);
     }
@@ -487,6 +510,7 @@ class AsyncIoUringSocket : public AsyncSocketTransport {
   std::chrono::milliseconds connectTimeout_{0};
   std::chrono::steady_clock::time_point connectStartTime_;
   std::chrono::steady_clock::time_point connectEndTime_;
+  bool bindAddressNoPort_{true};
 
   // stopTLS helpers:
   std::string securityProtocol_;

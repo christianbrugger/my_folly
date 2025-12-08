@@ -47,8 +47,12 @@
 #define SO_REUSEPORT 15
 #endif
 
-#if defined __linux__ && !defined SO_NO_TRANSPARENT_TLS
-#define SO_NO_TRANSPARENT_TLS 200
+#if defined __linux__ && !defined FOLLY_SO_TTLS_TRUSTED
+#define FOLLY_SO_TTLS_TRUSTED 206
+#endif
+
+#if defined __linux__ && !defined FOLLY_SO_TTLS_TRUSTED_VAL_ENCRYPTED
+#define FOLLY_SO_TTLS_TRUSTED_VAL_ENCRYPTED 1
 #endif
 
 namespace folly {
@@ -73,7 +77,7 @@ namespace folly {
  */
 class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
  public:
-  typedef std::unique_ptr<AsyncServerSocket, Destructor> UniquePtr;
+  using UniquePtr = std::unique_ptr<AsyncServerSocket, Destructor>;
   using CallbackAssignFunction =
       std::function<int(AsyncServerSocket*, NetworkSocket)>;
   // Disallow copy, move, and default construction.
@@ -366,7 +370,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   /**
    * sets the callback assign function
    */
-  void setCallbackAssignFunction(CallbackAssignFunction&& func) {
+  void setCallbackAssignFunction(CallbackAssignFunction func) {
     callbackAssignFunc_ = std::move(func);
   }
 
@@ -780,6 +784,20 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   bool getReusePortEnabled_() const { return reusePortEnabled_; }
 
   /**
+   * Set whether or not IP_FREEBIND is enabled on the server socket. Only
+   * supported on Linux.
+   *
+   * NOTE: This socket option only makes sense as a pre-bind operation. Setting
+   * it to an existing bound socket will have no effect.
+   */
+  void setIPFreebind(bool enable);
+
+  /**
+   * Get whether or not IP_FREEBIND is enabled on the server socket.
+   */
+  bool getIPFreebindEnabled() const { return ipFreebind_; }
+
+  /**
    * Set whether or not the socket should close during exec() (FD_CLOEXEC). By
    * default, this is enabled
    */
@@ -946,6 +964,10 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
     if (callbackAssignFunc_ && socket != NetworkSocket()) {
       auto num = callbackAssignFunc_(this, socket);
       if (num >= 0) {
+        if (auto it = napiIdToCallback_.find(num);
+            it != napiIdToCallback_.end()) {
+          return &it->second;
+        }
         return &callbacks_[num % callbacks_.size()];
       }
     }
@@ -1016,12 +1038,14 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   uint32_t callbackIndex_;
   BackoffTimeout* backoffTimeout_;
   std::vector<CallbackInfo> callbacks_;
+  std::unordered_map<unsigned int, CallbackInfo> napiIdToCallback_;
   CallbackAssignFunction callbackAssignFunc_;
   int localCallbackIndex_{-1};
   bool keepAliveEnabled_;
   bool reusePortEnabled_{false};
   // SO_REUSEADDR is enabled by default
   bool enableReuseAddr_{true};
+  bool ipFreebind_{false};
   bool closeOnExec_;
   bool tfo_{false};
   bool noTransparentTls_{false};

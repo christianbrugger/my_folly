@@ -53,8 +53,7 @@ namespace {
 //    echo "#endif"
 //  done
 
-#define FOLLY_DETAIL_ERROR(name) \
-  { name, #name }
+#define FOLLY_DETAIL_ERROR(name) {name, #name}
 constexpr std::pair<int, const char*> errors[] = {
 #if defined(E2BIG)
     FOLLY_DETAIL_ERROR(E2BIG),
@@ -498,7 +497,7 @@ constexpr int stderr_fileno = STDERR_FILENO;
 
 #endif
 
-#if !defined(_WIN32) && !defined(_POSIX_FSYNC)
+#if !defined(_WIN32) && !defined(_POSIX_FSYNC) || defined(__XTENSA__)
 
 int fsync(int fh) {
   return 0;

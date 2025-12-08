@@ -28,7 +28,6 @@
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/small_vector.h>
-#include <folly/sorted_vector_types.h>
 
 using folly::heap_vector_map;
 using folly::heap_vector_set;
@@ -380,9 +379,9 @@ TEST(HeapVectorTypes, MapBadHints) {
 TEST(HeapVectorTypes, FromVector) {
   {
     folly::heap_vector_map<int, float>::container_type vec;
-    vec.push_back(std::make_pair(3, 3.0f));
-    vec.push_back(std::make_pair(1, 1.0f));
-    vec.push_back(std::make_pair(2, 2.0f));
+    vec.emplace_back(3, 3.0f);
+    vec.emplace_back(1, 1.0f);
+    vec.emplace_back(2, 2.0f);
 
     heap_vector_map<int, float> m(std::move(vec));
 
@@ -462,7 +461,7 @@ TEST(HeapVectorTypes, SimpleMapTest) {
 
   m[32] = 100.0f;
   check_invariant(m);
-  EXPECT_TRUE(m.count(32) == 1);
+  EXPECT_TRUE(m.contains(32));
   EXPECT_DOUBLE_EQ(100.0, m.at(32));
   EXPECT_FALSE(m.find(32) == m.end());
   EXPECT_TRUE(m.contains(32));
@@ -479,7 +478,7 @@ TEST(HeapVectorTypes, SimpleMapTest) {
   EXPECT_TRUE(it == m2.end());
   m2.insert(it, std::make_pair(1 << 20, 10.0f));
   check_invariant(m2);
-  EXPECT_TRUE(m2.count(1 << 20) == 1);
+  EXPECT_TRUE(m2.contains(1 << 20));
   EXPECT_TRUE(m < m2);
   EXPECT_TRUE(m <= m2);
 
@@ -544,7 +543,7 @@ TEST(HeapVectorTypes, SimpleSmallMapTest) {
 
   m[32] = 100.0f;
   check_invariant(m);
-  EXPECT_TRUE(m.count(32) == 1);
+  EXPECT_TRUE(m.contains(32));
   EXPECT_DOUBLE_EQ(100.0, m.at(32));
   EXPECT_FALSE(m.find(32) == m.end());
   EXPECT_TRUE(m.contains(32));
@@ -561,7 +560,7 @@ TEST(HeapVectorTypes, SimpleSmallMapTest) {
   EXPECT_TRUE(it == m2.end());
   m2.insert(it, std::make_pair(1 << 20, 10.0f));
   check_invariant(m2);
-  EXPECT_TRUE(m2.count(1 << 20) == 1);
+  EXPECT_TRUE(m2.contains(1 << 20));
   EXPECT_TRUE(m < m2);
   EXPECT_TRUE(m <= m2);
 
@@ -638,11 +637,11 @@ TEST(HeapVectorTypes, TransparentMapTest) {
   EXPECT_TRUE(m.end() == m.find(zebra));
 
   // count
-  EXPECT_EQ(0, m.count(buddy));
-  EXPECT_EQ(1, m.count(hello));
-  EXPECT_EQ(0, m.count(stake));
-  EXPECT_EQ(1, m.count(world));
-  EXPECT_EQ(0, m.count(zebra));
+  EXPECT_FALSE(m.contains(buddy));
+  EXPECT_TRUE(m.contains(hello));
+  EXPECT_FALSE(m.contains(stake));
+  EXPECT_TRUE(m.contains(world));
+  EXPECT_FALSE(m.contains(zebra));
 
   // lower_bound
   EXPECT_TRUE(m.find(hello) == m.lower_bound(buddy));
@@ -1252,8 +1251,9 @@ TEST(HeapVectorTypes, TestMapCreationFromVector) {
 
   // test very large vector
   std::vector<std::pair<int, int>> vec2;
-  for (int i = 0; i < 100000; i++)
+  for (int i = 0; i < 100000; i++) {
     vec2.emplace_back(i, i);
+  }
   heap_vector_map<int, int> vmap2(std::move(vec2));
   check_invariant(vmap2);
 }
@@ -1449,10 +1449,10 @@ TEST(HeapVectorTypes, TestExceptionSafety) {
 
 #if FOLLY_HAS_MEMORY_RESOURCE
 
-using folly::detail::std_pmr::memory_resource;
-using folly::detail::std_pmr::new_delete_resource;
-using folly::detail::std_pmr::null_memory_resource;
-using folly::detail::std_pmr::polymorphic_allocator;
+using std::pmr::memory_resource;
+using std::pmr::new_delete_resource;
+using std::pmr::null_memory_resource;
+using std::pmr::polymorphic_allocator;
 
 namespace {
 
@@ -1605,8 +1605,7 @@ TEST(HeapVectorTypes, TestPmrMoveConstructDifferentAlloc) {
 }
 
 template <typename T>
-using pmr_vector =
-    std::vector<T, folly::detail::std_pmr::polymorphic_allocator<T>>;
+using pmr_vector = std::vector<T, std::pmr::polymorphic_allocator<T>>;
 
 TEST(HeapVectorTypes, TestCreationFromPmrVector) {
   namespace pmr = folly::pmr;
@@ -1771,4 +1770,32 @@ TEST(HeapVectorTypes, TestGetContainer) {
   EXPECT_TRUE(m2.get_container().empty());
   heap_vector_set<int> s;
   EXPECT_TRUE(s.get_container().empty());
+}
+
+TEST(HeapVectorTypes, TestSwapContainer) {
+  heap_vector_set<int> set{1, 2, 3};
+  std::vector<int> swapped{6, 5, 4};
+  set.swap_container(swapped);
+  EXPECT_EQ(swapped, (std::vector<int>{2, 1, 3}));
+  EXPECT_EQ(set.get_container(), (std::vector<int>{5, 4, 6}));
+  swapped = {1, 3, 5};
+  set.swap_container(folly::sorted_unique, swapped);
+  EXPECT_EQ(swapped, (std::vector<int>{5, 4, 6}));
+  EXPECT_EQ(set.get_container(), (std::vector<int>{3, 1, 5}));
+
+  heap_vector_map<int, int> map{{1, 1}, {2, 2}, {3, 3}};
+  std::vector<std::pair<int, int>> swappedMap{{6, 6}, {5, 5}, {4, 4}};
+  map.swap_container(swappedMap);
+  EXPECT_EQ(
+      swappedMap, (std::vector<std::pair<int, int>>{{2, 2}, {1, 1}, {3, 3}}));
+  EXPECT_EQ(
+      map.get_container(),
+      (std::vector<std::pair<int, int>>{{5, 5}, {4, 4}, {6, 6}}));
+  swappedMap = {{1, 1}, {3, 3}, {5, 5}};
+  map.swap_container(folly::sorted_unique, swappedMap);
+  EXPECT_EQ(
+      swappedMap, (std::vector<std::pair<int, int>>{{5, 5}, {4, 4}, {6, 6}}));
+  EXPECT_EQ(
+      map.get_container(),
+      (std::vector<std::pair<int, int>>{{3, 3}, {1, 1}, {5, 5}}));
 }

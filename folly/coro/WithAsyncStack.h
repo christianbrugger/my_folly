@@ -118,7 +118,7 @@ class WithAsyncStackAwaiter {
 
  public:
   explicit WithAsyncStackAwaiter(Awaitable&& awaitable)
-      : awaiter_(folly::coro::get_awaiter(static_cast<Awaitable&&>(awaitable))),
+      : awaiter_(get_awaiter(static_cast<Awaitable&&>(awaitable))),
         coroWrapper_(WithAsyncStackCoroutine::create()) {}
 
   auto await_ready() noexcept(noexcept(std::declval<Awaiter&>().await_ready()))
@@ -175,6 +175,16 @@ class WithAsyncStackAwaiter {
     coroWrapper_ = WithAsyncStackCoroutine();
     return awaiter_.await_resume_try();
   }
+
+#if FOLLY_HAS_RESULT
+  template <typename Awaiter2 = Awaiter>
+  auto await_resume_result() noexcept(
+      noexcept(FOLLY_DECLVAL(Awaiter2&).await_resume_result()))
+      -> decltype(FOLLY_DECLVAL(Awaiter2&).await_resume_result()) {
+    coroWrapper_ = WithAsyncStackCoroutine();
+    return awaiter_.await_resume_result();
+  }
+#endif
 
  private:
   awaiter_type_t<Awaitable> awaiter_;

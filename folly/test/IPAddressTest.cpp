@@ -34,7 +34,7 @@ using namespace folly;
 using namespace std;
 using namespace testing;
 
-typedef std::vector<uint8_t> ByteVector;
+using ByteVector = std::vector<uint8_t>;
 
 struct AddressData {
   std::string address;
@@ -48,7 +48,7 @@ struct AddressData {
       : address(address_), bytes(), version(version_) {}
   explicit AddressData(const std::string& address_)
       : address(address_), bytes(), version(0) {}
-  AddressData() : address(""), bytes(), version(0) {}
+  AddressData() : bytes(), version(0) {}
 
   static in_addr parseAddress4(const std::string& src) {
     in_addr addr;
@@ -699,9 +699,10 @@ TEST(IPaddress, fromInverseArpaName) {
       IPAddressV4::fromInverseArpaName("1.0.0.10.in-addr.arpa"));
   EXPECT_EQ(
       IPAddressV6("2620:0000:1cfe:face:b00c:0000:0000:0003"),
-      IPAddressV6::fromInverseArpaName(fmt::format(
-          "{}.ip6.arpa",
-          "3.0.0.0.0.0.0.0.0.0.0.0.c.0.0.b.e.c.a.f.e.f.c.1.0.0.0.0.0.2.6.2")));
+      IPAddressV6::fromInverseArpaName(
+          fmt::format(
+              "{}.ip6.arpa",
+              "3.0.0.0.0.0.0.0.0.0.0.0.c.0.0.b.e.c.a.f.e.f.c.1.0.0.0.0.0.2.6.2")));
 }
 
 // Test that invalid string values are killed
@@ -1480,8 +1481,8 @@ static vector<AddressFlags> flagProvider = {
     AddressFlags("0:0:0::0", 6, IS_NONROUTABLE | IS_ZERO),
 
     // link-local v6
-    AddressFlags("fe80::0205:73ff:fef9:46fc", 6, IS_LINK_LOCAL),
-    AddressFlags("fe80::0012:34ff:fe56:7890", 6, IS_LINK_LOCAL),
+    AddressFlags("fe80::0205:73ff:fef9:46fc", 6, IS_LINK_LOCAL | IS_PRIVATE),
+    AddressFlags("fe80::0012:34ff:fe56:7890", 6, IS_LINK_LOCAL | IS_PRIVATE),
 
     // multicast v4
     AddressFlags("224.0.0.1", 4, IS_MULTICAST | IS_NONROUTABLE),

@@ -34,6 +34,7 @@
 #include <folly/io/async/Request.h>
 #include <folly/lang/Assume.h>
 #include <folly/lang/Exception.h>
+#include <folly/lang/Switch.h>
 #include <folly/synchronization/AtomicUtil.h>
 
 namespace folly {
@@ -437,50 +438,55 @@ class CoreBase {
     }
     handler_type* handler = nullptr;
     auto interrupt = interrupt_.load(std::memory_order_acquire);
-    switch (interrupt & InterruptMask) {
-      case InterruptInitial: { // store the handler
-        assert(!interrupt);
-        handler = new handler_type(static_cast<F&&>(fn));
-        auto exchanged = folly::atomic_compare_exchange_strong_explicit(
-            &interrupt_,
-            &interrupt,
-            reinterpret_cast<uintptr_t>(handler) | InterruptHasHandler,
-            std::memory_order_release,
-            std::memory_order_acquire);
-        if (exchanged) {
+    FOLLY_EXHAUSTIVE_SWITCH({
+      switch (interrupt & InterruptMask) {
+        case InterruptInitial: { // store the handler
+          assert(!interrupt);
+          handler = new handler_type(static_cast<F&&>(fn));
+          auto exchanged = folly::atomic_compare_exchange_strong_explicit(
+              &interrupt_,
+              &interrupt,
+              reinterpret_cast<uintptr_t>(handler) | InterruptHasHandler,
+              std::memory_order_release,
+              std::memory_order_acquire);
+          if (exchanged) {
+            return;
+          }
+          // lost the race!
+          if (interrupt & InterruptHasHandler) {
+            terminate_with<std::logic_error>("set-interrupt-handler race");
+          }
+          assert(interrupt & InterruptHasObject);
+          [[fallthrough]];
+        }
+        case InterruptHasObject: { // invoke over the stored object
+          auto exchanged = interrupt_.compare_exchange_strong(
+              interrupt, InterruptTerminal, std::memory_order_relaxed);
+          if (!exchanged) {
+            terminate_with<std::logic_error>("set-interrupt-handler race");
+          }
+          auto pointer = interrupt & ~InterruptMask;
+          auto object = reinterpret_cast<exception_wrapper*>(pointer);
+          if (handler) {
+            handler->handle(*object);
+            delete handler;
+          } else {
+            // mimic constructing and invoking a handler: 1 copy; non-const
+            // invoke
+            auto fn_ = static_cast<F&&>(fn);
+            fn_(std::as_const(*object));
+          }
+          delete object;
           return;
         }
-        // lost the race!
-        if (interrupt & InterruptHasHandler) {
-          terminate_with<std::logic_error>("set-interrupt-handler race");
-        }
-        assert(interrupt & InterruptHasObject);
-        [[fallthrough]];
+        case InterruptHasHandler: // fail all calls after the first
+          terminate_with<std::logic_error>("set-interrupt-handler duplicate");
+        case InterruptTerminal: // fail all calls after the first
+          terminate_with<std::logic_error>("set-interrupt-handler after done");
+        default:
+          folly::assume_unreachable();
       }
-      case InterruptHasObject: { // invoke over the stored object
-        auto exchanged = interrupt_.compare_exchange_strong(
-            interrupt, InterruptTerminal, std::memory_order_relaxed);
-        if (!exchanged) {
-          terminate_with<std::logic_error>("set-interrupt-handler race");
-        }
-        auto pointer = interrupt & ~InterruptMask;
-        auto object = reinterpret_cast<exception_wrapper*>(pointer);
-        if (handler) {
-          handler->handle(*object);
-          delete handler;
-        } else {
-          // mimic constructing and invoking a handler: 1 copy; non-const invoke
-          auto fn_ = static_cast<F&&>(fn);
-          fn_(std::as_const(*object));
-        }
-        delete object;
-        return;
-      }
-      case InterruptHasHandler: // fail all calls after the first
-        terminate_with<std::logic_error>("set-interrupt-handler duplicate");
-      case InterruptTerminal: // fail all calls after the first
-        terminate_with<std::logic_error>("set-interrupt-handler after done");
-    }
+    }); // FOLLY_EXHAUSTIVE_SWITCH
   }
 
  protected:
@@ -628,11 +634,11 @@ class Core final : private ResultHolder<T>, public CoreBase {
       std::shared_ptr<folly::RequestContext>&& context,
       futures::detail::InlineContinuation allowInline) {
     Callback callback =
-        [func = static_cast<F&&>(func)](
+        [func_2 = static_cast<F&&>(func)](
             CoreBase& coreBase,
             Executor::KeepAlive<>&& ka,
             exception_wrapper* ew) mutable {
-          func(std::move(ka), setCallbackGetResult(coreBase, ew));
+          func_2(std::move(ka), setCallbackGetResult(coreBase, ew));
         };
 
     setCallback_(std::move(callback), std::move(context), allowInline);

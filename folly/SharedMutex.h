@@ -63,9 +63,9 @@
 // reader-writer locks in use at Facebook for almost all use cases,
 // sometimes by a wide margin.  (If it is rare that there are actually
 // concurrent readers then RWSpinLock can be a few nanoseconds faster.)
-// I compared it to folly::RWSpinLock, folly::RWTicketSpinLock64,
-// boost::shared_mutex, pthread_rwlock_t, and a RWLock that internally uses
-// spinlocks to guard state and pthread_mutex_t+pthread_cond_t to block.
+// I compared it to folly::RWSpinLock, boost::shared_mutex,
+// pthread_rwlock_t, and a RWLock that internally uses spinlocks to guard
+// state and pthread_mutex_t+pthread_cond_t to block.
 // (Thrift's ReadWriteMutex is based underneath on pthread_rwlock_t.)
 // It is generally as good or better than the rest when evaluating size,
 // speed, scalability, or latency outliers.  In the corner cases where
@@ -962,9 +962,7 @@ class SharedMutexImpl
   // that are the same after integer division by k share that resource.
   // Our strategy for deferred readers is to probe up to numSlots/4 slots,
   // using the full granularity of AccessSpreader for the start slot
-  // and then search outward.  We can use AccessSpreader::current(n)
-  // without managing our own spreader if kMaxDeferredReaders <=
-  // AccessSpreader::kMaxCpus, which is currently 128.
+  // and then search outward.
   //
   // In order to give each L1 cache its own playground, we need
   // kMaxDeferredReaders >= #L1 caches. We double it, making it
@@ -1439,8 +1437,7 @@ extern template class SharedMutexImpl<false>;
 template <
     bool ReaderPriority,
     typename Tag_,
-    template <typename>
-    class Atom,
+    template <typename> class Atom,
     typename Policy>
 alignas(hardware_destructive_interference_size)
     typename SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::
@@ -1452,8 +1449,7 @@ alignas(hardware_destructive_interference_size)
 template <
     bool ReaderPriority,
     typename Tag_,
-    template <typename>
-    class Atom,
+    template <typename> class Atom,
     typename Policy>
 bool SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::
     tryUnlockTokenlessSharedDeferred() {
@@ -1477,8 +1473,7 @@ bool SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::
 template <
     bool ReaderPriority,
     typename Tag_,
-    template <typename>
-    class Atom,
+    template <typename> class Atom,
     typename Policy>
 template <class WaitContext>
 bool SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::lockSharedImpl(
@@ -1621,8 +1616,7 @@ namespace std {
 template <
     bool ReaderPriority,
     typename Tag_,
-    template <typename>
-    class Atom,
+    template <typename> class Atom,
     typename Policy>
 class shared_lock<
     ::folly::SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>> {
@@ -1633,7 +1627,7 @@ class shared_lock<
 
   shared_lock() noexcept = default;
 
-  FOLLY_NODISCARD explicit shared_lock(mutex_type& mutex)
+  [[nodiscard]] explicit shared_lock(mutex_type& mutex)
       : mutex_(std::addressof(mutex)) {
     lock();
   }
@@ -1641,18 +1635,18 @@ class shared_lock<
   shared_lock(mutex_type& mutex, std::defer_lock_t) noexcept
       : mutex_(std::addressof(mutex)) {}
 
-  FOLLY_NODISCARD shared_lock(mutex_type& mutex, std::try_to_lock_t)
+  [[nodiscard]] shared_lock(mutex_type& mutex, std::try_to_lock_t)
       : mutex_(std::addressof(mutex)) {
     try_lock();
   }
 
-  FOLLY_NODISCARD shared_lock(mutex_type& mutex, std::adopt_lock_t)
+  [[nodiscard]] shared_lock(mutex_type& mutex, std::adopt_lock_t)
       : mutex_(std::addressof(mutex)) {
     token_.state_ = token_type::State::LockedShared;
   }
 
   template <typename Clock, typename Duration>
-  FOLLY_NODISCARD shared_lock(
+  [[nodiscard]] shared_lock(
       mutex_type& mutex,
       const std::chrono::time_point<Clock, Duration>& deadline)
       : mutex_(std::addressof(mutex)) {
@@ -1660,7 +1654,7 @@ class shared_lock<
   }
 
   template <typename Rep, typename Period>
-  FOLLY_NODISCARD shared_lock(
+  [[nodiscard]] shared_lock(
       mutex_type& mutex, const std::chrono::duration<Rep, Period>& timeout)
       : mutex_(std::addressof(mutex)) {
     try_lock_for(timeout);
@@ -1727,13 +1721,13 @@ class shared_lock<
     return std::exchange(mutex_, nullptr);
   }
 
-  FOLLY_NODISCARD bool owns_lock() const noexcept {
+  [[nodiscard]] bool owns_lock() const noexcept {
     return static_cast<bool>(token_);
   }
 
   explicit operator bool() const noexcept { return owns_lock(); }
 
-  FOLLY_NODISCARD mutex_type* mutex() const noexcept { return mutex_; }
+  [[nodiscard]] mutex_type* mutex() const noexcept { return mutex_; }
 
  private:
   void error_if_not_lockable() const {

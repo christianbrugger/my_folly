@@ -17,7 +17,6 @@
 #include <folly/container/F14Map.h>
 
 #include <algorithm>
-#include <chrono>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -41,6 +40,9 @@ using namespace folly::f14;
 using namespace folly::string_piece_literals;
 using namespace folly::test;
 
+template <typename A, typename B>
+using detect_op_eq = decltype(FOLLY_DECLVAL(A) == FOLLY_DECLVAL(B));
+
 static constexpr bool kFallback = folly::f14::detail::getF14IntrinsicsMode() ==
     folly::f14::detail::F14IntrinsicsMode::None;
 
@@ -52,8 +54,8 @@ void runSanityChecks(T const& t) {
 #endif
 }
 
-template <template <typename, typename, typename, typename, typename>
-          class TMap>
+template <
+    template <typename, typename, typename, typename, typename> class TMap>
 void testCustomSwap() {
   using std::swap;
 
@@ -78,8 +80,7 @@ TEST(F14Map, customSwap) {
 }
 
 template <
-    template <typename, typename, typename, typename, typename>
-    class TMap,
+    template <typename, typename, typename, typename, typename> class TMap,
     typename K,
     typename V>
 void runAllocatedMemorySizeTest() {
@@ -421,7 +422,9 @@ void runSimple() {
   h8.emplace(s("abc"), s("ABC"));
   EXPECT_GE(h8.bucket_count(), 1);
   h8 = {};
-  EXPECT_GE(h8.bucket_count(), 1);
+  if (!kFallback) {
+    EXPECT_GE(h8.bucket_count(), 1);
+  }
   h9 = {{s("abc"), s("ABD")}, {s("def"), s("DEF")}};
   EXPECT_TRUE(h8.empty());
   EXPECT_EQ(h9.size(), 2);
@@ -527,7 +530,6 @@ void runRandom() {
       try {
         EXPECT_EQ(t0.empty(), r0.empty());
         EXPECT_EQ(t0.size(), r0.size());
-        EXPECT_EQ(2, Tracked<0>::counts().liveCount());
         EXPECT_EQ(t0.size() + t1.size(), Tracked<1>::counts().liveCount());
         EXPECT_EQ(r0.size() + r1.size(), Tracked<2>::counts().liveCount());
         if (pct < 15) {
@@ -1097,8 +1099,8 @@ TEST(Tracked, baseline) {
 template <typename M, typename F>
 void runInsertCases(
     std::string const& name, F const& insertFunc, uint64_t expectedDist = 0) {
-  static_assert(std::is_same<typename M::key_type, Tracked<0>>::value, "");
-  static_assert(std::is_same<typename M::mapped_type, Tracked<1>>::value, "");
+  static_assert(std::is_same<typename M::key_type, Tracked<0>>::value);
+  static_assert(std::is_same<typename M::mapped_type, Tracked<1>>::value);
   {
     typename M::value_type p{0, 0};
     M m;
@@ -1393,9 +1395,9 @@ TEST(F14VectorMap, destructuring) {
   runInsertAndEmplace<F14VectorMap<Tracked<0>, Tracked<1>>>("f14vector");
 }
 
-TEST(F14VectorMap, destructuringErase) {
-  SKIP_IF(kFallback);
+#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 
+TEST(F14VectorMap, destructuringErase) {
   using M = F14VectorMap<Tracked<0>, Tracked<1>>;
   typename M::value_type p1{0, 0};
   typename M::value_type p2{2, 2};
@@ -1414,7 +1416,6 @@ TEST(F14VectorMap, destructuringErase) {
       0);
 }
 
-#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 TEST(F14ValueMap, maxSize) {
   F14ValueMap<int, int> m;
   EXPECT_EQ(
@@ -1445,6 +1446,7 @@ TEST(F14VectorMap, vectorMaxSize) {
            std::allocator_traits<decltype(m)::allocator_type>::max_size(
                m.get_allocator())}));
 }
+
 #endif
 
 template <typename M>
@@ -2017,9 +2019,9 @@ struct C {
 } // namespace
 
 TEST(F14FastMap, disabledDoubleTransparent) {
-  static_assert(std::is_convertible<B<char>, A>::value, "");
-  static_assert(std::is_convertible<C, B<char>>::value, "");
-  static_assert(!std::is_convertible<C, A>::value, "");
+  static_assert(std::is_convertible<B<char>, A>::value);
+  static_assert(std::is_convertible<C, B<char>>::value);
+  static_assert(!std::is_convertible<C, A>::value);
 
   F14FastMap<
       B<char>,
@@ -2073,10 +2075,10 @@ TEST(F14Map, randomInsertOrder) {
   runRandomInsertOrderTest<F14FastMap<char, std::string>>();
 }
 
+#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
+
 template <typename M>
 void runContinuousCapacityTest(std::size_t minSize, std::size_t maxSize) {
-  SKIP_IF(kFallback);
-
   using K = typename M::key_type;
   for (std::size_t n = minSize; n <= maxSize; ++n) {
     M m1;
@@ -2163,6 +2165,8 @@ TEST(F14Map, continuousCapacityF12) {
   runContinuousCapacityTest<F14VectorMap<uint16_t, uint16_t>>(0xfff0, 0xfffe);
 }
 
+#endif
+
 template <template <class...> class TMap>
 void testContainsWithPrecomputedHash() {
   TMap<int, int> m{};
@@ -2187,24 +2191,201 @@ TEST(F14Map, containsWithPrecomputedHash) {
 
 #if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 template <template <class...> class TMap>
-void testContainsWithPrecomputedHashKeyWrapper() {
-  TMap<int, int> m{};
-  const auto key{1};
+void testFindHashedKey() {
+  TMap<std::string, int> m{};
+  std::string key{"hello"};
   m.insert({key, 1});
-  const F14HashedKey<int> hashedKey{key};
+
+  F14HashedKey<std::string> hashedKey{key};
+  EXPECT_NE(m.find(hashedKey), m.end());
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string> hashedKeyNotFound{otherKey};
+  EXPECT_EQ(m.find(hashedKeyNotFound), m.end());
+}
+
+TEST(F14Map, findHashedKey) {
+  testFindHashedKey<F14ValueMap>();
+  testFindHashedKey<F14VectorMap>();
+  testFindHashedKey<F14NodeMap>();
+  testFindHashedKey<F14FastMap>();
+}
+
+template <template <class...> class TMap>
+void testFindHashedKeyTransparent() {
+  struct Hasher {
+    using is_transparent = void;
+    size_t operator()(int key) const { return key; }
+  };
+  struct Equal {
+    using is_transparent = void;
+    bool operator()(int a, int b) const { return a == b; }
+  };
+
+  TMap<int, int, Hasher, Equal> m{};
+  int key{0};
+  m.insert({key, 1});
+
+  F14HashedKey<int, Hasher, Equal> hashedKey{key};
+  EXPECT_NE(m.find(hashedKey), m.end());
+
+  int otherKey{1};
+  F14HashedKey<int, Hasher, Equal> hashedKeyNotFound{otherKey};
+  EXPECT_EQ(m.find(hashedKeyNotFound), m.end());
+}
+
+TEST(F14Map, findHashedKeyTransparent) {
+  testFindHashedKeyTransparent<F14ValueMap>();
+  testFindHashedKeyTransparent<F14VectorMap>();
+  testFindHashedKeyTransparent<F14NodeMap>();
+  testFindHashedKeyTransparent<F14FastMap>();
+}
+
+template <template <class...> class TMap>
+void testContainsHashedKey() {
+  TMap<std::string, int> m{};
+  std::string key{"hello"};
+  m.insert({key, 1});
+
+  F14HashedKey<std::string> hashedKey{key};
   EXPECT_TRUE(m.contains(hashedKey));
-  const auto otherKey{2};
-  const F14HashedKey<int> hashedKeyNotFound{otherKey};
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string> hashedKeyNotFound{otherKey};
   EXPECT_FALSE(m.contains(hashedKeyNotFound));
 }
 
-TEST(F14Map, containsWithPrecomputedHashKeyWrapper) {
-  testContainsWithPrecomputedHashKeyWrapper<F14ValueMap>();
-  testContainsWithPrecomputedHashKeyWrapper<F14VectorMap>();
-  testContainsWithPrecomputedHashKeyWrapper<F14NodeMap>();
-  testContainsWithPrecomputedHashKeyWrapper<F14FastMap>();
+TEST(F14Map, containsHashedKey) {
+  testContainsHashedKey<F14ValueMap>();
+  testContainsHashedKey<F14VectorMap>();
+  testContainsHashedKey<F14NodeMap>();
+  testContainsHashedKey<F14FastMap>();
 }
-#endif
+
+template <template <class...> class TMap>
+void testContainsHeterogeneousHashedKey() {
+  TMap<std::string, int> m{};
+  std::string key{"hello"};
+  m.insert({key, 1});
+
+  F14HashedKey<std::string_view> hashedKey{key};
+  EXPECT_TRUE(m.contains(hashedKey));
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string_view> hashedKeyNotFound{otherKey};
+  EXPECT_FALSE(m.contains(hashedKeyNotFound));
+}
+
+TEST(F14Map, containsHeterogeneousHashedKey) {
+  testContainsHeterogeneousHashedKey<F14ValueMap>();
+  testContainsHeterogeneousHashedKey<F14VectorMap>();
+  testContainsHeterogeneousHashedKey<F14NodeMap>();
+  testContainsHeterogeneousHashedKey<F14FastMap>();
+}
+
+template <template <class...> class TMap>
+void testInsertOrAssignHashedKey() {
+  TMap<std::string, int> m{};
+  std::string key{"hello"};
+  m.insert({key, 1});
+
+  F14HashedKey<std::string> hashedKey{key};
+  EXPECT_FALSE(m.insert_or_assign(hashedKey, 2).second);
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string> hashedKeyNotFound{otherKey};
+  EXPECT_TRUE(m.insert_or_assign(hashedKeyNotFound, 3).second);
+}
+
+TEST(F14Map, insertOrAssignHashedKey) {
+  testInsertOrAssignHashedKey<F14ValueMap>();
+  testInsertOrAssignHashedKey<F14VectorMap>();
+  testInsertOrAssignHashedKey<F14NodeMap>();
+  testInsertOrAssignHashedKey<F14FastMap>();
+}
+
+template <template <class...> class TMap>
+void testInsertOrAssignRValueHashedKey() {
+  TMap<std::string, int> m{};
+  std::string key{"hello"};
+  m.insert({key, 1});
+
+  F14HashedKey<std::string> hashedKey{key};
+  EXPECT_FALSE(m.insert_or_assign(std::move(hashedKey), 2).second);
+
+  std::string otherKey{"folly"};
+  F14HashedKey<std::string> hashedKeyNotFound{otherKey};
+  EXPECT_TRUE(m.insert_or_assign(std::move(hashedKeyNotFound), 3).second);
+}
+
+TEST(F14Map, insertOrAssignRValueHashedKey) {
+  testInsertOrAssignRValueHashedKey<F14ValueMap>();
+  testInsertOrAssignRValueHashedKey<F14VectorMap>();
+  testInsertOrAssignRValueHashedKey<F14NodeMap>();
+  testInsertOrAssignRValueHashedKey<F14FastMap>();
+}
+
+template <template <class...> class TMap>
+void testContainsWithPrecomputedHashKeyWrapperTransparent() {
+  struct Key {
+    int num{};
+    Key(double, int num_) : num{num_} {}
+  };
+  static_assert(!std::is_constructible_v<Key, int>);
+  static_assert(!std::is_constructible_v<int, Key>);
+  static_assert(!folly::is_detected_v<detect_op_eq, Key, Key>);
+  static_assert(!folly::is_detected_v<detect_op_eq, Key, int>);
+  static_assert(!folly::is_detected_v<detect_op_eq, int, Key>);
+  struct KeyHash {
+    using is_transparent = void;
+    size_t operator()(Key key) const { return key.num; }
+    size_t operator()(int key) const { return key; }
+  };
+  struct KeyEqual {
+    using is_transparent = void;
+    bool operator()(Key a, Key b) const { return a.num == b.num; }
+    bool operator()(Key a, int b) const { return a.num == b; }
+    bool operator()(int a, Key b) const { return a == b.num; }
+  };
+  using Map = TMap<Key, const char*, KeyHash, KeyEqual>;
+  using HKey = typename Map::hashed_key_type;
+  static_assert(std::is_same_v<HKey, F14HashedKey<Key, KeyHash, KeyEqual>>);
+
+  int num = 3;
+  Key key{0., num};
+  HKey hkey{key};
+
+  Map m{};
+  EXPECT_FALSE(m.count(key));
+  EXPECT_FALSE(m.count(num));
+  EXPECT_FALSE(m.count(hkey));
+
+  m.insert({key, "hello"});
+  EXPECT_TRUE(m.count(key));
+  EXPECT_TRUE(m.count(num));
+  EXPECT_TRUE(m.count(hkey));
+  EXPECT_STREQ("hello", m.find(key)->second);
+  EXPECT_STREQ("hello", m.find(num)->second);
+  EXPECT_STREQ("hello", m.find(hkey)->second);
+  m.clear();
+
+  m.insert({hkey, "world"});
+  EXPECT_TRUE(m.count(key));
+  EXPECT_TRUE(m.count(num));
+  EXPECT_TRUE(m.count(hkey));
+  EXPECT_STREQ("world", m.find(key)->second);
+  EXPECT_STREQ("world", m.find(num)->second);
+  EXPECT_STREQ("world", m.find(hkey)->second);
+  m.clear();
+}
+
+TEST(F14Map, containsWithPrecomputedHashKeyWrapperTransparent) {
+  testContainsWithPrecomputedHashKeyWrapperTransparent<F14ValueMap>();
+  testContainsWithPrecomputedHashKeyWrapperTransparent<F14VectorMap>();
+  testContainsWithPrecomputedHashKeyWrapperTransparent<F14NodeMap>();
+  testContainsWithPrecomputedHashKeyWrapperTransparent<F14FastMap>();
+}
+#endif // FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 
 template <template <class...> class TMap>
 void testEraseIf() {
@@ -2426,6 +2607,8 @@ TEST(F14Map, insertOrAssignUnchangedIfNoInsert) {
   testInsertOrAssignUnchangedIfNoInsert<F14FastMap>();
 }
 
+#if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
+
 template <typename M>
 void runSimpleShrinkToFitTest(float expectedLoadFactor) {
   using K = typename M::key_type;
@@ -2440,7 +2623,6 @@ void runSimpleShrinkToFitTest(float expectedLoadFactor) {
 }
 
 TEST(F14Map, shrinkToFit) {
-  SKIP_IF(kFallback);
   runSimpleShrinkToFitTest<F14NodeMap<int, int>>(0.5);
   runSimpleShrinkToFitTest<F14ValueMap<int, int>>(0.5);
   runSimpleShrinkToFitTest<F14VectorMap<int, int>>(0.875);
@@ -2463,7 +2645,6 @@ void runDefactoShrinkToFitTest(float expectedLoadFactor) {
 }
 
 TEST(F14Map, defactoShrinkToFit) {
-  SKIP_IF(kFallback);
   runDefactoShrinkToFitTest<F14NodeMap<int, int>>(0.5);
   runDefactoShrinkToFitTest<F14ValueMap<int, int>>(0.5);
   runDefactoShrinkToFitTest<F14VectorMap<int, int>>(0.875);
@@ -2498,7 +2679,6 @@ void runInitialReserveTest(float expectedLoadFactor) {
 }
 
 TEST(F14Map, initialReserve) {
-  SKIP_IF(kFallback);
   runInitialReserveTest<F14NodeMap<int, int>>(0.5);
   runInitialReserveTest<F14ValueMap<int, int>>(0.5);
   runInitialReserveTest<F14VectorMap<int, int>>(0.875);
@@ -2522,7 +2702,6 @@ void runReserveMoreTest(int n) {
 }
 
 TEST(F14Map, reserveMoreNeverShrinks) {
-  SKIP_IF(kFallback);
   runReserveMoreTest<F14NodeMap<int, int>>(1);
   runReserveMoreTest<F14ValueMap<int, int>>(1);
   runReserveMoreTest<F14VectorMap<int, int>>(1);
@@ -2532,7 +2711,6 @@ TEST(F14Map, reserveMoreNeverShrinks) {
 }
 
 TEST(F14Map, reserveBadAlloc) {
-  SKIP_IF(kFallback);
   SKIP_IF(
       std::numeric_limits<size_t>::max() <=
       std::numeric_limits<uint32_t>::max());
@@ -2540,4 +2718,14 @@ TEST(F14Map, reserveBadAlloc) {
       (F14VectorMap<int, int>().reserve(
           std::size_t{std::numeric_limits<uint32_t>::max()} + 1)),
       std::bad_alloc);
+}
+
+#endif
+
+TEST(F14Map, InsertOrAssignShouldNotMoveTheData) {
+  F14FastMap<int, std::vector<int>> map;
+  std::vector<int> data = {1, 2, 3};
+  map.insert_or_assign(0, data);
+  map.insert_or_assign(0, data);
+  EXPECT_EQ(data.size(), 3);
 }

@@ -19,33 +19,11 @@
 #include <cassert>
 #include <type_traits>
 
-#include <folly/CancellationToken.h>
-#include <folly/ExceptionWrapper.h>
 #include <folly/Try.h>
+#include <folly/coro/Error.h> // compat: used to be the same header
+#include <folly/result/try.h>
 
-namespace folly {
-namespace coro {
-
-class co_error final {
- public:
-  template <
-      typename... A,
-      std::enable_if_t<
-          sizeof...(A) && std::is_constructible<exception_wrapper, A...>::value,
-          int> = 0>
-  explicit co_error(A&&... a) noexcept(
-      std::is_nothrow_constructible<exception_wrapper, A...>::value)
-      : ex_(static_cast<A&&>(a)...) {
-    assert(ex_);
-  }
-
-  const exception_wrapper& exception() const { return ex_; }
-
-  exception_wrapper& exception() { return ex_; }
-
- private:
-  exception_wrapper ex_;
-};
+namespace folly::coro {
 
 template <typename T>
 class co_result final {
@@ -56,6 +34,15 @@ class co_result final {
     assert(!result_.hasException() || result_.exception());
   }
 
+#if FOLLY_HAS_RESULT
+  // Covered in `ValueOrErrorTest.cpp`, unlike the rest of this file, which is
+  // covered in `TaskTest.cpp`.
+  template <std::same_as<folly::result<T>> U> // no implicit ctors for `result`
+  explicit co_result(U result) noexcept(
+      std::is_nothrow_move_constructible<T>::value)
+      : co_result(result_to_try(std::move(result))) {}
+#endif
+
   const Try<T>& result() const { return result_; }
 
   Try<T>& result() { return result_; }
@@ -64,14 +51,9 @@ class co_result final {
   Try<T> result_;
 };
 
-class co_cancelled_t final {
- public:
-  /* implicit */ operator co_error() const {
-    return co_error(OperationCancelled{});
-  }
-};
+#if FOLLY_HAS_RESULT
+template <typename T>
+co_result(result<T>) -> co_result<T>;
+#endif
 
-inline constexpr co_cancelled_t co_cancelled{};
-
-} // namespace coro
-} // namespace folly
+} // namespace folly::coro

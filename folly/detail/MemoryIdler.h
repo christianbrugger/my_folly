@@ -72,16 +72,17 @@ struct MemoryIdler {
   static IdleTime getVariationTimeout(
       IdleTime const& idleTimeout =
           defaultIdleTimeout.load(std::memory_order_acquire),
-      float timeoutVariationFrac = 0.5) {
+      float timeoutVariationFrac = (float)0.5) {
     if (idleTimeout <= IdleTime::zero() || timeoutVariationFrac <= 0) {
       return idleTimeout;
     }
 
     // hash the pthread_t and the time to get the adjustment
     // Standard hash func isn't very good, so bit mix the result
-    uint64_t h = folly::hash::twang_mix64(folly::hash::hash_combine(
-        getCurrentThreadID(),
-        std::chrono::system_clock::now().time_since_epoch().count()));
+    uint64_t h = folly::hash::twang_mix64(
+        folly::hash::hash_combine(
+            getCurrentThreadID(),
+            std::chrono::system_clock::now().time_since_epoch().count()));
 
     // multiplying the duration by a floating point doesn't work, grr
     auto extraFrac = timeoutVariationFrac /
@@ -110,7 +111,7 @@ struct MemoryIdler {
       IdleTime const& idleTimeout =
           defaultIdleTimeout.load(std::memory_order_acquire),
       size_t stackToRetain = kDefaultStackToRetain,
-      float timeoutVariationFrac = 0.5) {
+      float timeoutVariationFrac = (float)0.5) {
     FutexResult pre;
     if (futexWaitPreIdle(
             pre,
@@ -148,7 +149,7 @@ struct MemoryIdler {
       IdleTime const& idleTimeout =
           defaultIdleTimeout.load(std::memory_order_acquire),
       size_t stackToRetain = kDefaultStackToRetain,
-      float timeoutVariationFrac = 0.5) {
+      float timeoutVariationFrac = (float)0.5) {
     FutexResult pre;
     if (futexWaitPreIdle(
             pre,

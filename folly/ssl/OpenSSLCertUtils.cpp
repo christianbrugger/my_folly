@@ -72,20 +72,17 @@ std::string getExtData(X509_EXTENSION* extension) {
   return asnValue ? asn1ToString(asnValue) : std::string();
 }
 
-} // namespace
-
-Optional<std::string> OpenSSLCertUtils::getCommonName(X509& x509) {
-  auto subject = X509_get_subject_name(&x509);
-  if (!subject) {
+Optional<std::string> commonName(X509_NAME* name) {
+  if (!name) {
     return none;
   }
 
-  auto cnLoc = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+  auto cnLoc = X509_NAME_get_index_by_NID(name, NID_commonName, -1);
   if (cnLoc < 0) {
     return none;
   }
 
-  auto cnEntry = X509_NAME_get_entry(subject, cnLoc);
+  auto cnEntry = X509_NAME_get_entry(name, cnLoc);
   if (!cnEntry) {
     return none;
   }
@@ -102,6 +99,16 @@ Optional<std::string> OpenSSLCertUtils::getCommonName(X509& x509) {
   }
 
   return Optional<std::string>(std::string(cnData, cnLen));
+}
+
+} // namespace
+
+Optional<std::string> OpenSSLCertUtils::getCommonName(X509& x509) {
+  return commonName(X509_get_subject_name(&x509));
+}
+
+Optional<std::string> OpenSSLCertUtils::getIssuerCommonName(X509& x509) {
+  return commonName(X509_get_issuer_name(&x509));
 }
 
 std::vector<std::string> OpenSSLCertUtils::getSubjectAltNames(X509& x509) {
@@ -295,6 +302,28 @@ std::unique_ptr<IOBuf> OpenSSLCertUtils::derEncode(X509& x509) {
   return buf;
 }
 
+X509UniquePtr OpenSSLCertUtils::pemDecode(ByteRange range) {
+  BioUniquePtr bio(BIO_new_mem_buf(range.data(), range.size()));
+  if (!bio) {
+    throw std::runtime_error("failed to create BIO");
+  }
+  X509UniquePtr x509(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
+  if (!x509) {
+    throw std::runtime_error("failed to read cert");
+  }
+  return x509;
+}
+
+std::string OpenSSLCertUtils::pemEncode(X509& x509) {
+  BioUniquePtr bio(BIO_new(BIO_s_mem()));
+  if (!PEM_write_bio_X509(bio.get(), &x509)) {
+    throw std::runtime_error("Failed to encode X509");
+  }
+  BUF_MEM* bptr = nullptr;
+  BIO_get_mem_ptr(bio.get(), &bptr);
+  return {bptr->data, bptr->length};
+}
+
 std::vector<X509UniquePtr> OpenSSLCertUtils::readCertsFromBuffer(
     ByteRange range) {
   BioUniquePtr b(
@@ -317,11 +346,12 @@ std::vector<X509UniquePtr> OpenSSLCertUtils::readCertsFromBuffer(
       // Reach end of buffer.
       break;
     }
-    throw std::runtime_error(folly::to<std::string>(
-        "Unable to parse cert ",
-        certs.size(),
-        ": ",
-        getOpenSSLErrorString(err)));
+    throw std::runtime_error(
+        folly::to<std::string>(
+            "Unable to parse cert ",
+            certs.size(),
+            ": ",
+            getOpenSSLErrorString(err)));
   }
   return certs;
 }
@@ -368,9 +398,10 @@ X509StoreUniquePtr OpenSSLCertUtils::readStoreFromBuffer(ByteRange certRange) {
       auto err = ERR_get_error();
       if (ERR_GET_LIB(err) != ERR_LIB_X509 ||
           ERR_GET_REASON(err) != X509_R_CERT_ALREADY_IN_HASH_TABLE) {
-        throw std::runtime_error(folly::to<std::string>(
-            "Could not insert CA certificate into store: ",
-            getOpenSSLErrorString(err)));
+        throw std::runtime_error(
+            folly::to<std::string>(
+                "Could not insert CA certificate into store: ",
+                getOpenSSLErrorString(err)));
       }
     }
   }

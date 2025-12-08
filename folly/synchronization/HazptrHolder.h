@@ -148,12 +148,14 @@ class hazptr_holder {
   template <typename T>
   FOLLY_ALWAYS_INLINE void reset_protection(const T* ptr) noexcept {
     auto p = static_cast<hazptr_obj<Atom>*>(const_cast<T*>(ptr));
-    DCHECK(hprec_); // UB if *this is empty
+    // UB if *this is empty
+    DCHECK(hprec_) << "initialize hazptr_holder with make_hazard_pointer()";
     hprec_->reset_hazptr(p);
   }
 
   FOLLY_ALWAYS_INLINE void reset_protection(std::nullptr_t = nullptr) noexcept {
-    DCHECK(hprec_); // UB if *this is empty
+    // UB if *this is empty
+    DCHECK(hprec_) << "initialize hazptr_holder with make_hazard_pointer()";
     hprec_->reset_hazptr();
   }
 
@@ -231,7 +233,7 @@ class hazptr_array {
   static_assert(M > 0, "M must be a positive integer.");
 
   aligned_hazptr_holder<Atom> raw_[M];
-  bool empty_;
+  bool empty_{true};
 
   friend hazptr_array<M, Atom> make_hazard_pointer_array<M, Atom>();
 
@@ -240,7 +242,7 @@ class hazptr_array {
 
  public:
   /** Default empty constructor */
-  FOLLY_ALWAYS_INLINE hazptr_array() noexcept : empty_(true) {
+  FOLLY_ALWAYS_INLINE hazptr_array() noexcept {
     auto h = reinterpret_cast<hazptr_holder<Atom>*>(&raw_);
     for (uint8_t i = 0; i < M; ++i) {
       new (&h[i]) hazptr_holder<Atom>();

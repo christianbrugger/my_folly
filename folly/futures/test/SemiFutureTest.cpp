@@ -30,6 +30,7 @@
 #include <folly/futures/Future.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/json/dynamic.h>
+#include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 
@@ -37,7 +38,7 @@ using namespace folly;
 
 #define EXPECT_TYPE(x, T) EXPECT_TRUE((std::is_same<decltype(x), T>::value))
 
-typedef FutureException eggs_t;
+using eggs_t = FutureException;
 static eggs_t eggs("eggs");
 
 // Future
@@ -135,7 +136,9 @@ TEST(SemiFuture, lacksPreconditionValid) {
 #define DOIT(STMT)         \
   do {                     \
     auto f = makeValid();  \
-    { STMT; }              \
+    {                      \
+      STMT;                \
+    }                      \
     copy(std::move(f));    \
     EXPECT_NO_THROW(STMT); \
   } while (false)
@@ -1317,4 +1320,38 @@ TEST(SemiFuture, deferredExecutorInlineTest) {
   EXPECT_TRUE(b);
   de->addFrom(manualExec1KA.copy(), [&](auto&&) { c = true; });
   EXPECT_TRUE(c);
+}
+
+TEST(Future, makeSemiFutureFromMoveOnlyException) {
+  using ::testing::StrEq;
+  using ::testing::ThrowsMessage;
+
+  struct MoveOnlyException : std::runtime_error {
+    using std::runtime_error::runtime_error;
+    [[noreturn]] MoveOnlyException(const MoveOnlyException& other)
+        : std::runtime_error(other) {
+      throw std::logic_error("Copy constructor is called");
+    }
+    MoveOnlyException(MoveOnlyException&&) = default;
+    MoveOnlyException& operator=(MoveOnlyException const&) {
+      throw std::logic_error("Copy assignment operator is called");
+    }
+    MoveOnlyException& operator=(MoveOnlyException&&) = default;
+  };
+
+  std::string msg = "exception message";
+
+  auto f = makeSemiFuture<int>(MoveOnlyException(msg));
+  EXPECT_THAT([&] { f.value(); }, ThrowsMessage<MoveOnlyException>(StrEq(msg)));
+}
+
+TEST(Future, makeSemiFutureFromExceptionSpecifyingBothTemplateParams) {
+  using ::testing::StrEq;
+  using ::testing::ThrowsMessage;
+
+  std::string msg = "exception message";
+
+  auto f = makeSemiFuture<int, std::runtime_error>(std::runtime_error(msg));
+  EXPECT_THAT(
+      [&] { f.value(); }, ThrowsMessage<std::runtime_error>(StrEq(msg)));
 }

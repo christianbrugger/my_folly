@@ -155,6 +155,16 @@ EventBaseBackend::~EventBaseBackend() {
   event_base_free(evb_);
 }
 
+class TestEventBaseBackend : public EventBaseBackend {
+ public:
+  explicit TestEventBaseBackend(int napiId) : napiId_(napiId) {}
+
+  int getNapiId() const override { return napiId_; }
+
+ private:
+  int napiId_;
+};
+
 } // namespace
 
 namespace folly {
@@ -295,6 +305,8 @@ EventBase::EventBase(Options options)
 }
 
 EventBase::~EventBase() {
+  DCheckRequestContextRestoredGuard dcheckRctxGuard;
+
   // Relax strict mode to allow callbacks to run in the destructor outside of
   // the main loop. Note that any methods (including driving the loop) must be
   // called before the destructor starts, so it is safe to modify the variable.
@@ -308,6 +320,7 @@ EventBase::~EventBase() {
     while (!callbacks.empty()) {
       auto& callback = callbacks.front();
       callbacks.pop_front();
+      RequestContextSaverScopeGuard rctxGuard;
       callback.runCallback();
     }
   }
@@ -336,6 +349,7 @@ EventBase::~EventBase() {
     while (!callbacks.empty()) {
       auto& callback = callbacks.front();
       callbacks.pop_front();
+      RequestContextSaverScopeGuard rctxGuard;
       callback.runCallback();
     }
   }
@@ -395,6 +409,10 @@ std::unique_ptr<EventBaseBackendBase> EventBase::getDefaultBackend() {
   return std::make_unique<EventBaseBackend>();
 }
 
+std::unique_ptr<EventBaseBackendBase> EventBase::getTestBackend(int napiId) {
+  return std::make_unique<TestEventBaseBackend>(napiId);
+}
+
 size_t EventBase::getNotificationQueueSize() const {
   return queue_->size();
 }
@@ -402,6 +420,10 @@ size_t EventBase::getNotificationQueueSize() const {
 size_t EventBase::getNumLoopCallbacks() const {
   dcheckIsInEventBaseThread();
   return loopCallbacks_.size();
+}
+
+uint32_t EventBase::getMaxReadAtOnce() const {
+  return queue_->getMaxReadAtOnce();
 }
 
 void EventBase::setMaxReadAtOnce(uint32_t maxAtOnce) {
@@ -458,8 +480,9 @@ void EventBase::resetLoadAvg(double value) {
 
 static std::chrono::milliseconds getTimeDelta(
     std::chrono::steady_clock::time_point* prev) {
-  auto result = std::chrono::steady_clock::now() - *prev;
-  *prev = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  auto result = now - *prev;
+  *prev = now;
 
   return std::chrono::duration_cast<std::chrono::milliseconds>(result);
 }
@@ -564,6 +587,8 @@ void EventBase::loopMainSetup() {
 }
 
 EventBase::LoopStatus EventBase::loopMain(int flags, LoopOptions options) {
+  DCheckRequestContextRestoredGuard dcheckRctxGuard;
+
   int res = 0;
   bool blocking = !(flags & EVLOOP_NONBLOCK);
   bool once = (flags & EVLOOP_ONCE);
@@ -649,6 +674,7 @@ EventBase::LoopStatus EventBase::loopMain(int flags, LoopOptions options) {
       maxLatencyLoopTime_.addSample(loop_time, busy);
 
       if (observer_) {
+        RequestContextSaverScopeGuard rctxGuard;
         if (++observerSampleCount_ >= observer_->getSampleRate()) {
           observerSampleCount_ = 0;
           observer_->loopSample(busy.count(), idle.count());
@@ -947,6 +973,7 @@ void EventBase::runInEventBaseThreadAndWait(Func fn) noexcept {
 
 void EventBase::runImmediatelyOrRunInEventBaseThreadAndWait(Func fn) noexcept {
   if (isInEventBaseThread()) {
+    RequestContextSaverScopeGuard rctxGuard;
     fn();
   } else {
     runInEventBaseThreadAndWait(std::move(fn));
@@ -955,6 +982,7 @@ void EventBase::runImmediatelyOrRunInEventBaseThreadAndWait(Func fn) noexcept {
 
 void EventBase::runImmediatelyOrRunInEventBaseThread(Func fn) noexcept {
   if (isInEventBaseThread()) {
+    RequestContextSaverScopeGuard rctxGuard;
     fn();
   } else {
     runInEventBaseThreadAlwaysEnqueue(std::move(fn));

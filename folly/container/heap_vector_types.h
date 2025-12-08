@@ -248,10 +248,12 @@ typename Container::difference_type distance(
   end++;
   std::function<bool(size_type, size_type)> calculateDistance =
       [&](size_type offset, size_type lb) {
-        if (offset > size)
+        if (offset > size) {
           return false;
-        for (; offset <= size; offset <<= 1)
+        }
+        for (; offset <= size; offset <<= 1) {
           ;
+        }
         offset >>= 1;
         for (; offset > lb; offset >>= 1) {
           if (offset == start) {
@@ -835,8 +837,9 @@ class heap_vector_container : growth_policy_wrapper<GrowthPolicy> {
       assert(cont_ == rawIterator.cont_);
       size_type offset0 = ptr_ - cont_->begin();
       size_type offset1 = rawIterator.ptr_ - cont_->begin();
-      if (offset1 == offset0)
+      if (offset1 == offset0) {
         return 0;
+      }
       return heap_vector_detail::distance(*cont_, offset1, offset0);
     }
 
@@ -844,8 +847,9 @@ class heap_vector_container : growth_policy_wrapper<GrowthPolicy> {
       assert(cont_ == rawIterator.cont_);
       size_type offset0 = ptr_ - cont_->begin();
       size_type offset1 = rawIterator.ptr_ - cont_->begin();
-      if (offset1 == offset0)
+      if (offset1 == offset0) {
         return 0;
+      }
       return heap_vector_detail::distance(*cont_, offset1, offset0);
     }
 
@@ -993,6 +997,22 @@ class heap_vector_container : growth_policy_wrapper<GrowthPolicy> {
   Allocator get_allocator() const { return m_.cont_.get_allocator(); }
 
   const Container& get_container() const noexcept { return m_.cont_; }
+
+  /**
+   * Directly swap the container. Similar to swap()
+   */
+  void swap_container(Container& newContainer) {
+    heap_vector_detail::as_sorted_unique(newContainer, value_comp());
+    heap_vector_detail::heapify(newContainer);
+    using std::swap;
+    swap(m_.cont_, newContainer);
+  }
+  void swap_container(sorted_unique_t, Container& newContainer) {
+    assert(heap_vector_detail::is_sorted_unique(newContainer, value_comp()));
+    heap_vector_detail::heapify(newContainer);
+    using std::swap;
+    swap(m_.cont_, newContainer);
+  }
 
   heap_vector_container& operator=(const heap_vector_container& other) =
       default;
@@ -1437,12 +1457,11 @@ template <
     class T,
     class Compare = std::less<T>,
     class GrowthPolicy = void,
-    class Container =
-        std::vector<T, folly::detail::std_pmr::polymorphic_allocator<T>>>
+    class Container = std::vector<T, std::pmr::polymorphic_allocator<T>>>
 using heap_vector_set = folly::heap_vector_set<
     T,
     Compare,
-    folly::detail::std_pmr::polymorphic_allocator<T>,
+    std::pmr::polymorphic_allocator<T>,
     GrowthPolicy,
     Container>;
 
@@ -1570,12 +1589,12 @@ template <
     class GrowthPolicy = void,
     class Container = std::vector<
         std::pair<Key, Value>,
-        folly::detail::std_pmr::polymorphic_allocator<std::pair<Key, Value>>>>
+        std::pmr::polymorphic_allocator<std::pair<Key, Value>>>>
 using heap_vector_map = folly::heap_vector_map<
     Key,
     Value,
     Compare,
-    folly::detail::std_pmr::polymorphic_allocator<std::pair<Key, Value>>,
+    std::pmr::polymorphic_allocator<std::pair<Key, Value>>,
     GrowthPolicy,
     Container>;
 
@@ -1677,8 +1696,9 @@ class small_heap_vector_map
         return offset - 1;
       }
       offset = 2 * offset + lt;
-      if (offset > size)
+      if (offset > size) {
         return size;
+      }
       cur_k = self.m_.getKey(cont[offset - 1]);
     }
     return size;

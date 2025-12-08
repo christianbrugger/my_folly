@@ -47,6 +47,45 @@
 
 namespace folly {
 
+/// SplitOptions
+///
+/// Options for controlling split() behavior. This class uses a builder pattern
+/// to allow for easy configuration and method chaining.
+class SplitOptions {
+ public:
+  struct Defaults {
+    /// preallocate
+    ///
+    /// If true, split will count the expected number of tokens first
+    /// and pre-allocate container capacity using grow_capacity_by.
+    /// This can improve performance when splitting large strings with
+    /// many tokens, but may add overhead for small strings.
+    static constexpr bool preallocate = false;
+
+    /// ignoreEmpty
+    ///
+    /// If true, adjacent delimiters are treated as one single separator
+    /// (ignoring empty tokens), otherwise empty tokens are generated.
+    static constexpr bool ignore_empty = false;
+  };
+
+  constexpr bool preallocate() const { return preallocate_; }
+  constexpr SplitOptions& preallocate(bool enable) {
+    preallocate_ = enable;
+    return *this;
+  }
+
+  constexpr bool ignore_empty() const { return ignore_empty_; }
+  constexpr SplitOptions& ignore_empty(bool enable) {
+    ignore_empty_ = enable;
+    return *this;
+  }
+
+ private:
+  bool preallocate_ = Defaults::preallocate;
+  bool ignore_empty_ = Defaults::ignore_empty;
+};
+
 /**
  * @overloadbrief C-escape a string.
  *
@@ -527,6 +566,20 @@ split(
     const bool ignoreEmpty = false);
 
 /**
+ * Split a string into a list of tokens by delimiter with options.
+ *
+ * Same as split() above but with additional options to control behavior.
+ * The SplitOptions allow enabling preallocation which can improve performance
+ * when splitting large strings with many expected tokens.
+ */
+template <class Delim, class String, class OutputType>
+std::enable_if_t<detail::IsSplitSupportedContainer<OutputType>::value> split(
+    const Delim& delimiter,
+    const String& input,
+    OutputType& out,
+    const SplitOptions& options);
+
+/**
  * split, to an output iterator
  */
 template <
@@ -595,6 +648,43 @@ typename std::enable_if<
         sizeof...(OutputTypes) >= 1,
     bool>::type
 split(const Delim& delimiter, StringPiece input, OutputTypes&... outputs);
+
+// Error type for trySplitTo(), below.
+struct SubstringConversionCode {
+  StringPiece substring;
+  ConversionCode code;
+  bool operator==(const SubstringConversionCode& other) const;
+};
+
+/**
+ * Try to split a string into a fixed number of fields by delimiter, using
+ * folly::tryTo<> for conversions. types by delimiter.
+ * - On success, all output values will be initialized and the 'Unit{}' value is
+ *   returned. Arguments are assigned in reverse order.
+ * - On failure, the first failing 'ConversionCode' is returned with its
+ *   associated substring in a 'SubstringConversionCode'.
+ * - String splitting is performed prior to each conversion; field values will
+ *   not contain the delimiter.
+ * - All custom error codes are mapped to ConversionCode::CUSTOM.
+ *
+ * Examples:
+ *
+ *  folly::StringPiece name, key, value;
+ *  if (folly::trySplitTo(line, '\t',  name, key, value))
+ *    ...
+ *
+ *  folly::StringPiece name;
+ *  double value;
+ *  int id;
+ *  if (folly::trySplitTo(line, '\t', name, value, id))
+ *    ...
+ *
+ */
+template <class Delim, class... OutputTypes>
+typename std::enable_if<
+    StrictConjunction<IsConvertible<OutputTypes>...>::value,
+    Expected<Unit, SubstringConversionCode>>::type
+trySplitTo(StringPiece input, const Delim& delimiter, OutputTypes&... outputs);
 
 /**
  * Join list of tokens.
@@ -763,8 +853,24 @@ inline bool hasSpaceOrCntrlSymbols(folly::StringPiece s) {
 }
 
 struct format_string_for_each_named_arg_fn {
+  struct options {
+    bool numeric_args_as_named = false;
+
+    options& set_numeric_args_as_named(bool value) noexcept {
+      numeric_args_as_named = value;
+      return *this;
+    }
+  };
+
   template <typename C, typename CT, typename Fn>
   constexpr void operator()(std::basic_string_view<C, CT> str, Fn fn) const
+      noexcept(noexcept(fn(str))) {
+    return operator()(options{}, str, std::ref(fn));
+  }
+
+  template <typename C, typename CT, typename Fn>
+  constexpr void operator()(
+      options const& opts, std::basic_string_view<C, CT> str, Fn fn) const
       noexcept(noexcept(fn(str))) {
     using view = std::basic_string_view<C, CT>;
     while (true) {
@@ -783,7 +889,7 @@ struct format_string_for_each_named_arg_fn {
       }
       auto const arg = str.substr(beg, end - beg);
       auto const c = arg.empty() ? 0 : arg[0];
-      if (c && !(c >= '0' && c <= '9')) {
+      if (c && (opts.numeric_args_as_named || !(c >= '0' && c <= '9'))) {
         fn(arg);
       }
       str = str.substr(end);
@@ -793,6 +899,9 @@ struct format_string_for_each_named_arg_fn {
 
 inline constexpr format_string_for_each_named_arg_fn
     format_string_for_each_named_arg{};
+
+using format_string_for_each_named_arg_options =
+    format_string_for_each_named_arg_fn::options;
 
 } // namespace folly
 

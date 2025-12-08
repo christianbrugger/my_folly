@@ -49,7 +49,7 @@ TaskIterator<invoke_result_t<
 template <typename T>
 class TaskIterator {
  public:
-  typedef T value_type;
+  using value_type = T;
 
   TaskIterator() : fm_(FiberManager::getFiberManager()) {}
 
@@ -60,6 +60,8 @@ class TaskIterator {
   // movable
   TaskIterator(TaskIterator&& other) noexcept;
   TaskIterator& operator=(TaskIterator&& other) = delete;
+
+  ~TaskIterator() = default;
 
   /**
    * Add one more task to the TaskIterator.

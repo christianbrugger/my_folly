@@ -29,7 +29,9 @@
 #include <folly/Conv.h>
 #include <folly/Likely.h>
 #include <folly/Range.h>
+#include <folly/container/span.h>
 #include <folly/lang/SafeAssert.h>
+#include <folly/lang/cstring_view.h>
 #include <folly/portability/Config.h>
 
 #if FOLLY_HAVE_ELF
@@ -49,12 +51,14 @@ namespace symbolizer {
 using ElfAddr = FOLLY_ELF_ELFW(Addr);
 using ElfEhdr = FOLLY_ELF_ELFW(Ehdr);
 using ElfOff = FOLLY_ELF_ELFW(Off);
+using ElfWord = FOLLY_ELF_ELFW(Word);
 using ElfPhdr = FOLLY_ELF_ELFW(Phdr);
 using ElfShdr = FOLLY_ELF_ELFW(Shdr);
 using ElfSym = FOLLY_ELF_ELFW(Sym);
 using ElfRel = FOLLY_ELF_ELFW(Rel);
 using ElfRela = FOLLY_ELF_ELFW(Rela);
 using ElfDyn = FOLLY_ELF_ELFW(Dyn);
+using ElfNhdr = FOLLY_ELF_ELFW(Nhdr);
 
 // ElfFileId is supposed to uniquely identify any instance of an ELF binary.
 // It does that by using the file's inode, dev ID, size and modification time
@@ -158,6 +162,8 @@ class ElfFile {
   /** Get the actual section body */
   folly::StringPiece getSectionBody(const ElfShdr& section) const noexcept;
 
+  folly::StringPiece getSegmentBody(const ElfPhdr& segment) const noexcept;
+
   /** Retrieve a string from a string table section */
   const char* getString(
       const ElfShdr& stringTable, size_t offset) const noexcept;
@@ -170,7 +176,7 @@ class ElfFile {
    */
   template <class Fn>
   const char* iterateStrings(const ElfShdr& stringTable, Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, const char*>);
+      noexcept(is_nothrow_invocable_v<Fn&, const char*>);
 
   /**
    * Iterate over program headers as long as fn(section) returns false.
@@ -179,7 +185,7 @@ class ElfFile {
    */
   template <class Fn>
   const ElfPhdr* iterateProgramHeaders(Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, ElfPhdr const&>);
+      noexcept(is_nothrow_invocable_v<Fn&, ElfPhdr const&>);
 
   /**
    * Iterate over all sections for as long as fn(section) returns false.
@@ -188,7 +194,7 @@ class ElfFile {
    */
   template <class Fn>
   const ElfShdr* iterateSections(Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, ElfShdr const&>);
+      noexcept(is_nothrow_invocable_v<Fn&, ElfShdr const&>);
 
   /**
    * Iterate over all sections with a given type. Similar to
@@ -196,7 +202,7 @@ class ElfFile {
    */
   template <class Fn>
   const ElfShdr* iterateSectionsWithType(uint32_t type, Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, ElfShdr const&>);
+      noexcept(is_nothrow_invocable_v<Fn&, ElfShdr const&>);
 
   /**
    * Iterate over all sections with a given types. Similar to
@@ -205,7 +211,7 @@ class ElfFile {
   template <class Fn>
   const ElfShdr* iterateSectionsWithTypes(
       std::initializer_list<uint32_t> types, Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, ElfShdr const&>);
+      noexcept(is_nothrow_invocable_v<Fn&, ElfShdr const&>);
 
   /**
    * Iterate over all symbols within a given section.
@@ -215,16 +221,16 @@ class ElfFile {
    */
   template <class Fn>
   const ElfSym* iterateSymbols(const ElfShdr& section, Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, ElfSym const&>);
+      noexcept(is_nothrow_invocable_v<Fn&, ElfSym const&>);
   template <class Fn>
   const ElfSym* iterateSymbolsWithType(
       const ElfShdr& section, uint32_t type, Fn fn) const
-      noexcept(is_nothrow_invocable_v<Fn, ElfSym const&>);
+      noexcept(is_nothrow_invocable_v<Fn&, ElfSym const&>);
   template <class Fn>
   const ElfSym* iterateSymbolsWithTypes(
       const ElfShdr& section,
       std::initializer_list<uint32_t> types,
-      Fn fn) const noexcept(is_nothrow_invocable_v<Fn, ElfSym const&>);
+      Fn fn) const noexcept(is_nothrow_invocable_v<Fn&, ElfSym const&>);
 
   /**
    * Iterate over entries within a given section.
@@ -244,7 +250,7 @@ class ElfFile {
    *
    * Returns {nullptr, nullptr} if not found.
    */
-  typedef std::pair<const ElfShdr*, const ElfSym*> Symbol;
+  using Symbol = std::pair<const ElfShdr*, const ElfSym*>;
   Symbol getDefinitionByAddress(uintptr_t address) const noexcept;
 
   /**
@@ -360,20 +366,186 @@ class ElfFile {
 
   const ElfFileId& getFileId() const { return fileId_; }
 
-  /**
-   * Announce an intention to access file data in a specific pattern in the
-   * future. https://man7.org/linux/man-pages/man2/posix_fadvise.2.html
+  enum class FindNoteFailureCode {
+    NoteNotFound = 1,
+    NoteUndersized,
+    NoteUnaligned,
+  };
+
+  /** Describes the reason searching for a note has failed, including an error
+   * code and a flag denoting if that error code is due to corruption in the ELF
+   * file itself.
    */
-  std::pair<const int, char const*> posixFadvise(
-      off_t offset, off_t len, int const advice) const noexcept;
-  std::pair<const int, char const*> posixFadvise(
-      int const advice) const noexcept;
+  struct FindNoteError {
+    FindNoteFailureCode failureCode;
+
+    static inline constexpr std::string_view GetNoteErrorString[] = {
+        "Note not found",
+        "Note body undersized (smaller than specified in the note header)",
+        "Note underaligned (aligned less than the note header)",
+    };
+
+    static constexpr std::string_view getErrorMessage(
+        FindNoteError& err) noexcept {
+      auto index = to_underlying(err.failureCode);
+      if (index < 1 || to_unsigned(index) > std::size(GetNoteErrorString)) {
+        return std::string_view{};
+      }
+
+      return GetNoteErrorString[index - 1];
+    }
+
+    bool isDataCorruptionError() {
+      return failureCode == FindNoteFailureCode::NoteUndersized ||
+          failureCode == FindNoteFailureCode::NoteUnaligned;
+    }
+
+    explicit FindNoteError(FindNoteFailureCode code) : failureCode(code) {}
+  };
+
+  /** Structure containing a note header and it's body */
+  struct Note {
+    folly::span<const uint8_t> note;
+    explicit Note(folly::span<const uint8_t> note_) : note(note_) {}
+
+    const ElfNhdr* header() const {
+      return reinterpret_cast<const ElfNhdr*>(note.data());
+    }
+
+    folly::span<const uint8_t> body() const {
+      return note.subspan(sizeof(*header()));
+    }
+
+    ElfWord getType() const {
+      if (!header()) {
+        return {};
+      }
+      return header()->n_type;
+    }
+
+    cstring_view getName() const {
+      if (!header()) {
+        return {};
+      }
+
+      // Subtract 1 to remove the trailing null character.
+      return cstring_view(
+          reinterpret_cast<const char*>(body().data()), header()->n_namesz - 1);
+    }
+
+    folly::span<const uint8_t> getDesc() const {
+      if (!header()) {
+        return span<const uint8_t>{};
+      }
+
+      size_t paddedNameSize = folly::align_ceil(header()->n_namesz, 4);
+      return body().subspan(paddedNameSize);
+    }
+
+    static size_t alignedBodySize(const ElfNhdr& nhdr) {
+      return folly::align_ceil(nhdr.n_namesz, 4) +
+          folly::align_ceil(nhdr.n_descsz, 4);
+    }
+
+    static size_t alignedSize(const ElfNhdr& nhdr) {
+      return sizeof(ElfNhdr) + alignedBodySize(nhdr);
+    }
+
+    /**
+     * Get the aligned size of this note. If the header is null, 0 will be
+     * returned.
+     */
+    size_t alignedSize() const { return header() ? alignedSize(*header()) : 0; }
+
+    /**
+     * Parse a note from a given set of bytes. If the supplied bytes is less
+     * than the note header, or the aligned size of the body an unexpected will
+     * be returned.
+     */
+    static folly::Expected<Note, FindNoteError> parse(
+        folly::span<const uint8_t> noteBody) {
+      if (noteBody.size() < sizeof(ElfNhdr)) {
+        return Unexpected(FindNoteError(FindNoteFailureCode::NoteUndersized));
+      }
+
+      const ElfNhdr* nhdr = reinterpret_cast<const ElfNhdr*>(noteBody.data());
+      if (alignedSize(*nhdr) > noteBody.size()) {
+        return Unexpected(FindNoteError(FindNoteFailureCode::NoteUndersized));
+      }
+
+      return Note(noteBody.subspan(0, alignedSize(*nhdr)));
+    }
+  };
+
+  /**
+   * Iterate over notes in a given section, or all sections if section is null.
+   * In the case no note is found, a pair will be returned with a nullptr for
+   * the note header and an empty span for the note body.
+   *
+   * Note that notes are not unique, and notes in sections may also
+   * be present when iterating over segments.
+   */
+  template <class Fn>
+  folly::Expected<Note, FindNoteError> iterateNotesInSections(
+      const ElfShdr* section, Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn&, const Note&>);
+
+  /**
+   * Iterate over notes in a given segment, or all segments if segment is null.
+   * In the case no note is found, a pair will be returned with a nullptr for
+   * the note header and an empty span for the note body.
+   *
+   * Note that notes are not unique, and notes in segments may also
+   * be present when iterating over sections.
+   */
+  template <class Fn>
+  folly::Expected<Note, FindNoteError> iterateNotesInSegments(
+      const ElfPhdr* segment, Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn&, const Note&>);
+
+  /**
+   * Retrieve the content of .note.gnu.build-id, if available.
+   */
+  folly::Expected<span<const uint8_t>, FindNoteError> getNoteGnuBuildId()
+      const noexcept;
+
+  /**
+   * Find a note by name in either a section or segment. If multiple
+   * notes share the same name, the first match will be returned. An error will
+   * be returned if the note is not found, or if there is underlying file
+   * corruption.
+   *
+   * Empty is a valid input, and will return when notes with an empty name are
+   * found. This can happen in ELF Cores, or other notes when the namespace
+   * unknown. Read more at https://man7.org/linux/man-pages/man5/elf.5.html
+   *
+   * Note that notes are not unique, and notes in sections may also be in
+   * segments. For this reason this method does not differentiate between
+   * segments and sections.
+   */
+  folly::Expected<Note, FindNoteError> findNoteByName(
+      std::string_view name) const noexcept;
+
+  /**
+   * Find a note by type in either a section or segment. If multiple
+   * notes share the same type, the first match will be returned. An error will
+   * be returned if the note is not found, or if there is underlying file
+   * corruption.
+   *
+   * Note that notes are not unique, and notes in sections may also be in
+   * segments. For this reason this method does not differentiate between
+   * segments and sections.
+   */
+  folly::Expected<Note, FindNoteError> findNoteByType(
+      size_t type) const noexcept;
 
  private:
   OpenResult init() noexcept;
   void reset() noexcept;
   ElfFile(const ElfFile&) = delete;
   ElfFile& operator=(const ElfFile&) = delete;
+
+  enum { CONTINUE = 0, STOP = 1 };
 
   void validateStringTable(const ElfShdr& stringTable) const noexcept;
 
@@ -428,6 +600,14 @@ class ElfFile {
 
     return (offset + sizeof(T) <= length_) ? &at<T>(offset) : nullptr;
   }
+
+  // Helper to iterate notes in a section or segment.
+  // Takes in a StringPiece of the body of the section or segment, and iterates
+  // over the notes in that body.
+  template <class Fn>
+  folly::Expected<Note, FindNoteError> iterateNotesInBodyHelper(
+      folly::StringPiece body, Fn& fn) const
+      noexcept(is_nothrow_invocable_v<Fn&, const Note&>);
 
   static constexpr size_t kFilepathMaxLen = 512;
   char filepath_[kFilepathMaxLen] = {};

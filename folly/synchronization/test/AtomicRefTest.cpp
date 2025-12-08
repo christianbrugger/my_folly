@@ -18,11 +18,13 @@
 
 #include <folly/portability/GTest.h>
 
+#ifdef __cpp_lib_atomic_ref
 struct foo {};
 static_assert(std::is_same_v<int*, std::atomic_ref<int*>::value_type>);
 static_assert(std::is_same_v<int, std::atomic_ref<int>::value_type>);
 static_assert(std::is_same_v<float, std::atomic_ref<float>::value_type>);
 static_assert(std::is_same_v<foo, std::atomic_ref<foo>::value_type>);
+#endif
 
 class AtomicRefTest : public testing::Test {};
 
@@ -167,4 +169,12 @@ TEST_F(AtomicRefTest, integer_compare_exchange_strong) {
     EXPECT_EQ(19, value);
     EXPECT_EQ(19, expected);
   }
+}
+
+TEST_F(AtomicRefTest, integer_const) {
+  long const value = 17;
+  static_assert(std::is_const_v<decltype(value)>);
+  auto ref = folly::make_atomic_ref(value);
+  static_assert(!std::is_const_v<decltype(ref)::value_type>);
+  EXPECT_EQ(17, ref.load(std::memory_order_relaxed));
 }

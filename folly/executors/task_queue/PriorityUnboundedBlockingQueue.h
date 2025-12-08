@@ -38,11 +38,11 @@ class PriorityUnboundedBlockingQueue : public BlockingQueue<T> {
   uint8_t getNumPriorities() override { return queue_.priorities(); }
 
   // Add at medium priority by default
-  BlockingQueueAddResult add(T item) override {
+  BlockingQueueAddResult add(T&& item) override {
     return addWithPriority(std::move(item), folly::Executor::MID_PRI);
   }
 
-  BlockingQueueAddResult addWithPriority(T item, int8_t priority) override {
+  BlockingQueueAddResult addWithPriority(T&& item, int8_t priority) override {
     queue_.at_priority(translatePriority(priority)).enqueue(std::move(item));
     return sem_.post();
   }
@@ -66,9 +66,7 @@ class PriorityUnboundedBlockingQueue : public BlockingQueue<T> {
     return dequeue();
   }
 
-  size_t size() override { return queue_.size(); }
-
-  size_t sizeGuess() const { return queue_.size(); }
+  size_t size() override { return sem_.valueGuess(); }
 
  private:
   size_t translatePriority(int8_t const priority) {

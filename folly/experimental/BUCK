@@ -1,18 +1,59 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target", "non_fbcode_target")
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbsource//xplat/folly:defs.bzl", "folly_xplat_library")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_library(
-    name = "elias_fano_coding",
-    headers = [
-        "EliasFanoCoding.h",
+# xplat build rules
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "event_count",
+    raw_headers = [
+        "EventCount.h",
     ],
     exported_deps = [
-        "//folly/compression/elias_fano:elias_fano_coding",
+        "//xplat/folly/synchronization:event_count",
     ],
 )
 
-cpp_library(
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "flat_combining_priority_queue",
+    raw_headers = [
+        "FlatCombiningPriorityQueue.h",
+    ],
+    deps = [
+        "//xplat/folly/concurrency/container:flat_combining_priority_queue",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "function_scheduler",
+    raw_headers = [
+        "FunctionScheduler.h",
+    ],
+    deps = [
+        "//xplat/folly/executors:function_scheduler",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "threaded_repeating_function_runner",
+    raw_headers = [
+        "ThreadedRepeatingFunctionRunner.h",
+    ],
+    deps = [
+        "//xplat/folly/executors:threaded_repeating_function_runner",
+    ],
+)
+
+# fbcode build rules
+
+fbcode_target(
+    _kind = cpp_library,
     name = "event_count",
     headers = [
         "EventCount.h",
@@ -22,7 +63,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "flat_combining_priority_queue",
     headers = [
         "FlatCombiningPriorityQueue.h",
@@ -32,17 +74,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
-    name = "relaxed_concurrent_priority_queue",
-    headers = [
-        "RelaxedConcurrentPriorityQueue.h",
-    ],
-    exported_deps = [
-        "//folly/concurrency/container:relaxed_concurrent_priority_queue",
-    ],
-)
-
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "function_scheduler",
     headers = [
         "FunctionScheduler.h",
@@ -52,17 +85,8 @@ cpp_library(
     ],
 )
 
-cpp_library(
-    name = "test_util",
-    headers = [
-        "TestUtil.h",
-    ],
-    exported_deps = [
-        "//folly/testing:test_util",
-    ],
-)
-
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "threaded_repeating_function_runner",
     headers = [
         "ThreadedRepeatingFunctionRunner.h",

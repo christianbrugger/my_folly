@@ -19,6 +19,7 @@
 #include <atomic>
 #include <thread>
 
+#include <iomanip>
 #include <folly/Singleton.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
@@ -329,9 +330,15 @@ void copy_and_move_test() {
 
 template <template <typename> class Atom = std::atomic>
 void basic_holders_test() {
-  { hazptr_holder<Atom> h = make_hazard_pointer<Atom>(); }
-  { hazptr_array<2, Atom> h = make_hazard_pointer_array<2, Atom>(); }
-  { hazptr_local<2, Atom> h; }
+  {
+    hazptr_holder<Atom> h = make_hazard_pointer<Atom>();
+  }
+  {
+    hazptr_array<2, Atom> h = make_hazard_pointer_array<2, Atom>();
+  }
+  {
+    hazptr_local<2, Atom> h;
+  }
 }
 
 template <template <typename> class Atom = std::atomic>
@@ -770,7 +777,9 @@ void cleanup_test() {
   }
   { // Cleanup after using array
     c_.clear();
-    { hazptr_array<2, Atom> h = make_hazard_pointer_array<2, Atom>(); }
+    {
+      hazptr_array<2, Atom> h = make_hazard_pointer_array<2, Atom>();
+    }
     {
       hazptr_array<2, Atom> h = make_hazard_pointer_array<2, Atom>();
       auto p0 = new Node<Atom>;
@@ -786,7 +795,9 @@ void cleanup_test() {
   }
   { // Cleanup after using local
     c_.clear();
-    { hazptr_local<2, Atom> h; }
+    {
+      hazptr_local<2, Atom> h;
+    }
     {
       hazptr_local<2, Atom> h;
       auto p0 = new Node<Atom>;
@@ -968,6 +979,7 @@ void cohort_safe_list_children_test() {
 }
 
 void fork_test() {
+#ifndef _WIN32
   folly::enable_hazptr_thread_pool_executor();
   auto trigger_reclamation = [] {
     hazptr_obj_cohort b;
@@ -998,6 +1010,7 @@ void fork_test() {
   } else {
     PLOG(FATAL) << "Failed to fork()";
   }
+#endif
 }
 
 template <template <typename> class Atom = std::atomic>
@@ -1056,7 +1069,7 @@ void swmr_test() {
 template <template <typename> class Atom = std::atomic>
 void wide_cas_test() {
   HazptrWideCAS<std::string, Atom> s;
-  std::string u = "";
+  std::string u;
   std::string v = "11112222";
   auto ret = s.cas(u, v);
   ASSERT_TRUE(ret);
@@ -1341,8 +1354,9 @@ TEST(HazptrTest, reclamationWithoutCallingCleanup) {
   for (auto& t : thr) {
     t.join();
   }
-  while (c_.dtors() == 0)
+  while (c_.dtors() == 0) {
     /* Wait for asynchronous reclamation. */;
+  }
   ASSERT_GT(c_.dtors(), 0);
 }
 

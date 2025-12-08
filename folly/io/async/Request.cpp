@@ -21,6 +21,14 @@
 #include <folly/tracing/StaticTracepoint.h>
 
 namespace folly {
+// Thread-local cache of raw RequestContext.
+// Updated by setContext() and setShallowCopyContext() to avoid calling
+// SingletonThreadLocal::get() in locations requiring async-signal-safe access.
+thread_local RequestContext* gAsyncSignalSafeRequestContextCache = nullptr;
+
+RequestContext* getCachedRequestContext() {
+  return gAsyncSignalSafeRequestContextCache;
+}
 
 RequestToken::RequestToken(const std::string& str) {
   auto& cache = getCache();
@@ -227,7 +235,7 @@ RequestContext::State::~State() {
   }
 }
 
-class FOLLY_NODISCARD RequestContext::State::LockGuard {
+class [[nodiscard]] RequestContext::State::LockGuard {
  public:
   explicit LockGuard(RequestContext::State& state)
       : state_(state), lock_(state.mutex_) {}
@@ -655,21 +663,44 @@ void RequestContext::clearContextData(const RequestToken& val) {
       staticCtx.rootId.store(0, std::memory_order_relaxed);
     }
   }
+  gAsyncSignalSafeRequestContextCache = staticCtx.requestContext.get();
+  // Notify the Watchers via the registry
+  getWatcherRegistry().invokeWatchers(prevCtx, staticCtx.requestContext);
   return prevCtx;
 }
 
-namespace {
-thread_local bool getStaticContextCalled = false;
+/* static */ RequestContext::SetContextWatcherRegistry&
+RequestContext::getWatcherRegistry() {
+  static SetContextWatcherRegistry registry;
+
+  return registry;
+}
+
+/* static */ void RequestContext::addSetContextWatcher(
+    RequestContext::SetContextWatcherSig& func) {
+  getWatcherRegistry().addWatcher(func);
+}
+
+/* static */ std::shared_ptr<RequestContext> RequestContext::saveContext() {
+  auto* staticContext = tryGetStaticContext();
+  return staticContext ? staticContext->requestContext : nullptr;
+}
+
+RequestContext::StaticContext::~StaticContext() {
+  // If there is an active request context, reset requestContext before
+  // destroying it, as RequestData destructors (or onClear()) could try to
+  // access the current request context and copy a shared_ptr while being
+  // destroyed.
+  std::ignore = std::exchange(requestContext, {});
 }
 
 /* static */ RequestContext::StaticContext& RequestContext::getStaticContext() {
-  getStaticContextCalled = true;
   return StaticContextThreadLocal::get();
 }
 
 /* static */ RequestContext::StaticContext*
 RequestContext::tryGetStaticContext() {
-  return getStaticContextCalled ? &StaticContextThreadLocal::get() : nullptr;
+  return StaticContextThreadLocal::try_get();
 }
 
 /* static */ RequestContext::StaticContextAccessor
@@ -699,16 +730,20 @@ RequestContext::setShallowCopyContext() {
   // Do not use setContext to avoid global set/unset
   // Also rootId does not change so do not bother setting it.
   std::swap(child, parent);
+  gAsyncSignalSafeRequestContextCache = parent.get();
+  getWatcherRegistry().invokeWatchers(child, parent);
   return child;
 }
 
 /* static */ RequestContext* RequestContext::get() {
-  auto& context = getStaticContext().requestContext;
-  if (!context) {
-    static RequestContext defaultContext(0);
-    return std::addressof(defaultContext);
+  if (auto* staticContext = tryGetStaticContext()) {
+    if (auto& context = staticContext->requestContext) {
+      return context.get();
+    }
   }
-  return context.get();
+
+  static RequestContext defaultContext(0);
+  return std::addressof(defaultContext);
 }
 
 /* static */ RequestContext* RequestContext::try_get() {
@@ -717,5 +752,11 @@ RequestContext::setShallowCopyContext() {
   }
   return nullptr;
 }
+
+#ifndef NDEBUG
+DCheckRequestContextRestoredGuard::~DCheckRequestContextRestoredGuard() {
+  CHECK_EQ(prev_.get(), RequestContext::try_get());
+}
+#endif
 
 } // namespace folly

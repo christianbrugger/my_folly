@@ -23,7 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include <folly/CppAttributes.h>
 #include <folly/ScopeGuard.h>
 #include <folly/portability/GTest.h>
 
@@ -47,16 +46,16 @@ namespace {
 struct T1 {}; // old-style IsRelocatable, below
 struct T2 {}; // old-style IsRelocatable, below
 struct T3 {
-  typedef std::true_type IsRelocatable;
+  using IsRelocatable = std::true_type;
 };
 struct T5 : T3 {};
 
 struct F1 {};
 struct F2 {
-  typedef int IsRelocatable;
+  using IsRelocatable = int;
 };
 struct F3 : T3 {
-  typedef std::false_type IsRelocatable;
+  using IsRelocatable = std::false_type;
 };
 struct F4 : T1 {};
 
@@ -65,6 +64,12 @@ struct A {};
 struct B {};
 
 } // namespace
+
+TEST(Traits, index_iterals) {
+  using namespace folly::literals;
+  constexpr std::integral_constant val = 17_uzic;
+  EXPECT_EQ(17, val);
+}
 
 namespace folly {
 template <>
@@ -114,7 +119,7 @@ TEST(Traits, zeroInit) {
     int i_ = 42;
   };
   struct S3 {
-    int S1::*mp_;
+    int S1::* mp_;
   };
 
   EXPECT_TRUE(IsZeroInitializable<int>::value);
@@ -153,22 +158,22 @@ TEST(Traits, conditional) {
 }
 
 TEST(Trait, logicOperators) {
-  static_assert(Conjunction<true_type>::value, "");
-  static_assert(!Conjunction<false_type>::value, "");
-  static_assert(is_same<Conjunction<true_type>::type, true_type>::value, "");
-  static_assert(is_same<Conjunction<false_type>::type, false_type>::value, "");
-  static_assert(Conjunction<true_type, true_type>::value, "");
-  static_assert(!Conjunction<true_type, false_type>::value, "");
+  static_assert(Conjunction<true_type>::value);
+  static_assert(!Conjunction<false_type>::value);
+  static_assert(is_same<Conjunction<true_type>::type, true_type>::value);
+  static_assert(is_same<Conjunction<false_type>::type, false_type>::value);
+  static_assert(Conjunction<true_type, true_type>::value);
+  static_assert(!Conjunction<true_type, false_type>::value);
 
-  static_assert(Disjunction<true_type>::value, "");
-  static_assert(!Disjunction<false_type>::value, "");
-  static_assert(is_same<Disjunction<true_type>::type, true_type>::value, "");
-  static_assert(is_same<Disjunction<false_type>::type, false_type>::value, "");
-  static_assert(Disjunction<true_type, true_type>::value, "");
-  static_assert(Disjunction<true_type, false_type>::value, "");
+  static_assert(Disjunction<true_type>::value);
+  static_assert(!Disjunction<false_type>::value);
+  static_assert(is_same<Disjunction<true_type>::type, true_type>::value);
+  static_assert(is_same<Disjunction<false_type>::type, false_type>::value);
+  static_assert(Disjunction<true_type, true_type>::value);
+  static_assert(Disjunction<true_type, false_type>::value);
 
-  static_assert(!Negation<true_type>::value, "");
-  static_assert(Negation<false_type>::value, "");
+  static_assert(!Negation<true_type>::value);
+  static_assert(Negation<false_type>::value);
 }
 
 TEST(Traits, isNegative) {
@@ -219,6 +224,13 @@ TEST(Traits, relational) {
   EXPECT_TRUE((folly::greater_than<int16_t, -1, uint16_t>(0)));
   EXPECT_TRUE((folly::greater_than<int32_t, -1, uint32_t>(0)));
   EXPECT_TRUE((folly::greater_than<int64_t, -1, uint64_t>(0)));
+}
+
+TEST(Traits, is_non_bool_integral) {
+  EXPECT_TRUE((folly::is_non_bool_integral_v<int>));
+  EXPECT_TRUE((folly::is_non_bool_integral_v<int const volatile>));
+  EXPECT_FALSE((folly::is_non_bool_integral_v<bool>));
+  EXPECT_FALSE((folly::is_non_bool_integral_v<bool const volatile>));
 }
 
 #if FOLLY_HAVE_INT128_T
@@ -673,17 +685,17 @@ TEST(Traits, intBitsLg) {
 }
 
 TEST(Traits, isAllocator) {
-  static_assert(is_allocator_v<std::allocator<int>>, "");
-  static_assert(is_allocator<std::allocator<int>>::value, "");
+  static_assert(is_allocator_v<std::allocator<int>>);
+  static_assert(is_allocator<std::allocator<int>>::value);
 
-  static_assert(is_allocator_v<std::allocator<std::string>>, "");
-  static_assert(is_allocator<std::allocator<std::string>>::value, "");
+  static_assert(is_allocator_v<std::allocator<std::string>>);
+  static_assert(is_allocator<std::allocator<std::string>>::value);
 
-  static_assert(!is_allocator_v<int>, "");
-  static_assert(!is_allocator<int>::value, "");
+  static_assert(!is_allocator_v<int>);
+  static_assert(!is_allocator<int>::value);
 
-  static_assert(!is_allocator_v<std::string>, "");
-  static_assert(!is_allocator<std::string>::value, "");
+  static_assert(!is_allocator_v<std::string>);
+  static_assert(!is_allocator<std::string>::value);
 }
 
 struct type_pack_element_test {

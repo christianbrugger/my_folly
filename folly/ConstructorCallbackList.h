@@ -20,6 +20,7 @@
 #include <iterator>
 #include <memory>
 #include <stdexcept>
+#include <fmt/format.h>
 #include <folly/detail/StaticSingletonManager.h>
 
 #include <folly/Format.h>
@@ -131,12 +132,12 @@ class ConstructorCallbackList {
    */
   static void addCallback(Callback cb) {
     // Ensure that a single callback is added at a time
-    std::lock_guard<SharedMutex> g(This::global().mutex_);
+    std::lock_guard g(This::global().mutex_);
     auto idx = This::global().numCallbacks_.load(std::memory_order_acquire);
 
     if (idx >= (This::global().callbacks_).size()) {
       throw std::length_error(
-          folly::sformat("Too many callbacks - max {}", MaxCallbacks));
+          fmt::format("Too many callbacks - max {}", MaxCallbacks));
     }
     (This::global().callbacks_)[idx] = std::move(cb);
     // Only increment numCallbacks_ after fully initializing the array

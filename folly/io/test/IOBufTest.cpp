@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <random>
+#include <unordered_map>
 
 #include <folly/Range.h>
 #include <folly/io/TypedIOBuf.h>
@@ -123,8 +124,9 @@ TEST(IOBuf, TakeOwnership) {
   uint32_t size3 = 3456;
   uint8_t* buf3 = new uint8_t[size3];
   uint32_t length3 = 48;
-  unique_ptr<IOBuf> iobuf3(IOBuf::takeOwnership(
-      buf3, size3, length3, deleteArrayBuffer, &deleteCount));
+  unique_ptr<IOBuf> iobuf3(
+      IOBuf::takeOwnership(
+          buf3, size3, length3, deleteArrayBuffer, &deleteCount));
   EXPECT_EQ(buf3, iobuf3->data());
   EXPECT_EQ(length3, iobuf3->length());
   EXPECT_EQ(buf3, iobuf3->buffer());
@@ -172,8 +174,9 @@ TEST(IOBuf, TakeOwnership) {
   uint8_t* buf6 = new uint8_t[size6];
   uint32_t offset6 = 48;
   uint32_t length6 = 48;
-  unique_ptr<IOBuf> iobuf6(IOBuf::takeOwnership(
-      buf6, size6, offset6, length6, deleteArrayBuffer, &deleteCount));
+  unique_ptr<IOBuf> iobuf6(
+      IOBuf::takeOwnership(
+          buf6, size6, offset6, length6, deleteArrayBuffer, &deleteCount));
   EXPECT_EQ(buf6 + offset6, iobuf6->data());
   EXPECT_EQ(length6, iobuf6->length());
   EXPECT_EQ(buf6, iobuf6->buffer());
@@ -217,14 +220,15 @@ TEST(IOBuf, GetUserData) {
     size_t val = 0;
     uint32_t size = 4321;
     uint8_t* data = static_cast<uint8_t*>(malloc(size));
-    unique_ptr<IOBuf> buf2(IOBuf::takeOwnership(
-        data,
-        size,
-        [](void* buf, void* userData) {
-          EXPECT_EQ(*static_cast<size_t*>(userData), 400);
-          free(buf);
-        },
-        &val));
+    unique_ptr<IOBuf> buf2(
+        IOBuf::takeOwnership(
+            data,
+            size,
+            [](void* buf, void* userData) {
+              EXPECT_EQ(*static_cast<size_t*>(userData), 400);
+              free(buf);
+            },
+            &val));
     EXPECT_EQ(buf2->getUserData(), &val);
     val = 200;
     EXPECT_EQ(*static_cast<size_t*>(buf2->getUserData()), 200);
@@ -440,8 +444,9 @@ TEST(IOBuf, Chaining) {
   uint8_t* arrayBuf = new uint8_t[arrayBufSize];
   fillBuf(arrayBuf, arrayBufSize, gen);
   uint32_t arrayBufFreeCount = 0;
-  unique_ptr<IOBuf> iob5(IOBuf::takeOwnership(
-      arrayBuf, arrayBufSize, deleteArrayBuffer, &arrayBufFreeCount));
+  unique_ptr<IOBuf> iob5(
+      IOBuf::takeOwnership(
+          arrayBuf, arrayBufSize, deleteArrayBuffer, &arrayBufFreeCount));
 
   EXPECT_FALSE(iob1->isChained());
   EXPECT_FALSE(iob2->isChained());
@@ -846,7 +851,7 @@ struct OwnershipTestClass {
   int val;
 };
 
-typedef std::function<void(OwnershipTestClass*)> CustomDeleter;
+using CustomDeleter = std::function<void(OwnershipTestClass*)>;
 
 void customDelete(OwnershipTestClass* p) {
   ++customDeleterCount;
@@ -862,11 +867,15 @@ void customDeleteArray(OwnershipTestClass* p) {
 
 TEST(IOBuf, takeOwnershipUniquePtr) {
   destructorCount = 0;
-  { std::unique_ptr<OwnershipTestClass> p(new OwnershipTestClass()); }
+  {
+    std::unique_ptr<OwnershipTestClass> p(new OwnershipTestClass());
+  }
   EXPECT_EQ(1, destructorCount);
 
   destructorCount = 0;
-  { std::unique_ptr<OwnershipTestClass[]> p(new OwnershipTestClass[2]); }
+  {
+    std::unique_ptr<OwnershipTestClass[]> p(new OwnershipTestClass[2]);
+  }
   EXPECT_EQ(2, destructorCount);
 
   destructorCount = 0;
@@ -1400,6 +1409,7 @@ TEST(IOBuf, CloneAsValue) {
     EXPECT_TRUE(copy2.isShared());
     EXPECT_TRUE(buf->isChained());
     EXPECT_TRUE(copy2.isChained());
+    EXPECT_EQ(buf->toString(), copy2.toString());
 
     copy.unshareOne();
     EXPECT_TRUE(buf->isShared());
@@ -1418,6 +1428,20 @@ TEST(IOBuf, CloneAsValue) {
 
     auto p2 = reinterpret_cast<const char*>(copy2.data());
     EXPECT_EQ("hello world goodbye", std::string(p2, copy2.length()));
+  }
+
+  {
+    // Test clones from value IOBufs.
+    auto copy = buf->cloneAsValue();
+    auto copy2 = copy.cloneAsValue();
+    EXPECT_TRUE(copy2.isShared());
+    EXPECT_TRUE(copy2.isChained());
+    EXPECT_EQ(buf->toString(), copy2.toString());
+
+    auto copy3 = copy.clone();
+    EXPECT_TRUE(copy3->isShared());
+    EXPECT_TRUE(copy3->isChained());
+    EXPECT_EQ(buf->toString(), copy3->toString());
   }
 
   EXPECT_FALSE(buf->isShared());
@@ -1700,7 +1724,9 @@ TEST(IOBuf, FreeFn) {
       [&freeVal]() { freeVal += 1; }, [&releaseVal]() { releaseVal += 1; });
 
   // no observers
-  { unique_ptr<IOBuf> iobuf(IOBuf::create(64)); }
+  {
+    unique_ptr<IOBuf> iobuf(IOBuf::create(64));
+  }
 
   // one observer
   {
@@ -1910,3 +1936,67 @@ TEST(IOBuf, FromString) {
   auto longStr = std::string(1000, '0');
   EXPECT_EQ(folly::IOBuf::fromString(longStr)->toString(), longStr);
 }
+
+#if FOLLY_HAS_MEMORY_RESOURCE
+
+TEST(IOBuf, WithMemoryResource) {
+  struct FakeMemoryResource : std::pmr::memory_resource {
+    void* do_allocate(
+        std::size_t bytes, std::size_t /*  alignment */) override {
+      auto p = malloc(bytes);
+      CHECK(active.try_emplace(p, bytes).second);
+      return p;
+    }
+
+    void do_deallocate(
+        void* p, std::size_t bytes, std::size_t /* alignment */) override {
+      auto it = active.find(p);
+      CHECK(it != active.end()) << active.size();
+      CHECK_EQ(it->second, bytes);
+      active.erase(it);
+      free(p);
+    }
+
+    bool do_is_equal(
+        const memory_resource& /* other */) const noexcept override {
+      LOG(FATAL) << "Not implemented";
+    }
+
+    std::unordered_map<void*, size_t> active;
+  };
+
+  FakeMemoryResource mr;
+  const auto makeBuf = [&](size_t size) {
+    uint8_t* data = static_cast<uint8_t*>(malloc(size));
+    return IOBuf::takeOwnership(&mr, data, size, 0, 0);
+  };
+  auto buf = makeBuf(10);
+  EXPECT_EQ(mr.active.size(), 1);
+  buf->appendToChain(makeBuf(20));
+  EXPECT_EQ(mr.active.size(), 2);
+
+  {
+    // Cloning without passing a memory_resource uses the system allocator.
+    auto clone = buf->clone();
+    EXPECT_EQ(mr.active.size(), 2);
+    clone.reset();
+    EXPECT_EQ(mr.active.size(), 2);
+  }
+
+  {
+    auto clone = buf->cloneOne(&mr);
+    EXPECT_EQ(mr.active.size(), 3);
+  }
+  EXPECT_EQ(mr.active.size(), 2);
+
+  {
+    auto clone = buf->clone(&mr);
+    EXPECT_EQ(mr.active.size(), 4);
+  }
+  EXPECT_EQ(mr.active.size(), 2);
+
+  buf.reset();
+  EXPECT_EQ(mr.active.size(), 0);
+}
+
+#endif /* FOLLY_HAS_MEMORY_RESOURCE */

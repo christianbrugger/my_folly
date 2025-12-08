@@ -29,6 +29,7 @@
 
 #include <folly/FileUtil.h>
 #include <folly/MapUtil.h>
+#include <folly/Overload.h>
 #include <folly/String.h>
 #include <folly/detail/PerfScoped.h>
 #include <folly/json/json.h>
@@ -46,7 +47,10 @@ FOLLY_GFLAGS_DEFINE_bool(benchmark, false, "Run benchmarks.");
 
 FOLLY_GFLAGS_DEFINE_bool(json, false, "Output in JSON format.");
 
-FOLLY_GFLAGS_DEFINE_bool(bm_estimate_time, false, "Estimate running time");
+FOLLY_GFLAGS_DEFINE_bool(
+    bm_estimate_time,
+    false,
+    "Estimate running time by returning the geometric mean of latency values between p25 and p75.");
 
 #if FOLLY_PERF_IS_SUPPORTED
 FOLLY_GFLAGS_DEFINE_string(
@@ -452,7 +456,8 @@ class BenchmarkResultsPrinter {
 
   void header(std::string_view file) {
     separator('=');
-    printDefaultHeaderContents(file, columns_);
+    printDefaultHeaderContents(file, columns_ - namesLength_);
+
     for (auto const& name : counterNames_) {
       printf("  %s", name.c_str());
     }
@@ -490,7 +495,8 @@ class BenchmarkResultsPrinter {
         baselineNsPerIter_ = datum.timeInNs;
         useBaseline = false;
       }
-      s.resize(columns_ - kUnitHeaders.size(), ' ');
+      s.resize(columns_ - namesLength_ - kUnitHeaders.size(), ' ');
+
       const auto nsPerIter = datum.timeInNs;
       const auto secPerIter = nsPerIter / 1E9;
       const auto itersPerSec = (secPerIter == 0)
@@ -519,21 +525,32 @@ class BenchmarkResultsPrinter {
       for (auto const& name : counterNames_) {
         if (auto ptr = folly::get_ptr(datum.counters, name)) {
           switch (ptr->type) {
+            // UserMetrics constructed as precision_values avoid the
+            // implicit cast from long to double when formatting the output
             case UserMetric::Type::TIME:
-              printf(
-                  "  %*s",
-                  int(name.length()),
-                  readableTime(ptr->value, 2).c_str());
+              folly::variant_match(ptr->value, [&](auto value) {
+                printf(
+                    "  %*s",
+                    int(name.length()),
+                    readableTime(value, 2).c_str());
+              });
               break;
             case UserMetric::Type::METRIC:
-              printf(
-                  "  %*s",
-                  int(name.length()),
-                  metricReadable(ptr->value, 2).c_str());
+              folly::variant_match(ptr->value, [&](auto value) {
+                printf(
+                    "  %*s",
+                    int(name.length()),
+                    metricReadable(value, 2).c_str());
+              });
               break;
             case UserMetric::Type::CUSTOM:
             default:
-              printf("  %*" PRId64, int(name.length()), ptr->value);
+              folly::variant_match(ptr->value, [&](auto value) {
+                printf(
+                    "  %*" PRId64,
+                    int(name.length()),
+                    static_cast<int64_t>(value));
+              });
           }
         } else {
           printf("  %*s", int(name.length()), "NaN");
@@ -574,7 +591,9 @@ void benchmarkResultsToDynamic(
       dynamic obj = dynamic::object;
       for (auto& counter : datum.counters) {
         dynamic counterInfo = dynamic::object;
-        counterInfo["value"] = counter.second.value;
+        folly::variant_match(counter.second.value, [&](auto value) {
+          counterInfo["value"] = value;
+        });
         counterInfo["type"] = static_cast<int>(counter.second.type);
         obj[counter.first] = counterInfo;
       }
@@ -693,7 +712,7 @@ void addSeparator(BenchmarksToRun& res) {
     return;
   }
   if (res.separatorsAfter.empty() ||
-      res.separatorsAfter.back() != separatorAfter) {
+      res.separatorsAfter.back() != (separatorAfter - 1)) {
     res.separatorsAfter.push_back(res.benchmarks.size() - 1);
   }
 }
@@ -804,8 +823,8 @@ runBenchmarksWithPrinterImpl(
   auto const globalSuspenderBaseline =
       runBenchmarkGetNSPerIteration(toRun.suspenderBaseline->func, 0);
 
-  BenchmarkSuspender::suspenderOverhead =
-      chrono::nanoseconds(static_cast<chrono::high_resolution_clock::rep>(
+  BenchmarkSuspender::suspenderOverhead = chrono::nanoseconds(
+      static_cast<chrono::high_resolution_clock::rep>(
           globalSuspenderBaseline.first));
 
   std::set<std::string> counterNames;
@@ -886,13 +905,14 @@ std::chrono::high_resolution_clock::duration
     BenchmarkSuspenderBase::suspenderOverhead;
 
 void BenchmarkingStateBase::addBenchmarkImpl(
-    const char* file, StringPiece name, BenchmarkFun fun, bool useCounter) {
-  std::lock_guard<std::mutex> guard(mutex_);
-  benchmarks_.push_back({file, name.str(), std::move(fun), useCounter});
+    std::string file, std::string name, BenchmarkFun fun, bool useCounter) {
+  std::lock_guard guard(mutex_);
+  benchmarks_.push_back(
+      {std::move(file), std::move(name), std::move(fun), useCounter});
 }
 
 bool BenchmarkingStateBase::useCounters() const {
-  std::lock_guard<std::mutex> guard(mutex_);
+  std::lock_guard guard(mutex_);
   return std::any_of(
       benchmarks_.begin(), benchmarks_.end(), [](const auto& bm) {
         return bm.useCounter;
@@ -938,7 +958,7 @@ PerfScoped BenchmarkingStateBase::setUpPerfScoped() const {
 template <typename Printer>
 std::pair<std::set<std::string>, std::vector<BenchmarkResult>>
 BenchmarkingStateBase::runBenchmarksWithPrinter(Printer* printer) const {
-  std::lock_guard<std::mutex> guard(mutex_);
+  std::lock_guard guard(mutex_);
   BenchmarksToRun toRun = selectBenchmarksToRun(benchmarks_);
   maybeRunWarmUpIteration(toRun);
 

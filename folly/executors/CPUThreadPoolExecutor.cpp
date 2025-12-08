@@ -46,9 +46,7 @@ CPUThreadPoolExecutor::CPUTask::CPUTask(
     std::chrono::milliseconds expiration,
     Func&& expireCallback,
     int8_t pri)
-    : Task(std::move(f), expiration, std::move(expireCallback), pri) {
-  DCHECK(func_); // Empty func reserved as poison.
-}
+    : Task(std::move(f), expiration, std::move(expireCallback), pri) {}
 
 CPUThreadPoolExecutor::CPUTask::CPUTask()
     : Task(nullptr, std::chrono::milliseconds(0), nullptr) {}
@@ -221,7 +219,10 @@ void CPUThreadPoolExecutor::add(Func func) {
 
 void CPUThreadPoolExecutor::add(
     Func func, std::chrono::milliseconds expiration, Func expireCallback) {
-  addImpl<false>(std::move(func), 0, expiration, std::move(expireCallback));
+  CPUTask task(std::move(func), expiration, std::move(expireCallback), 0);
+  addImpl(
+      [this](auto&& task) { return taskQueue_->add(std::move(task)); },
+      std::move(task));
 }
 
 void CPUThreadPoolExecutor::addWithPriority(Func func, int8_t priority) {
@@ -233,52 +234,15 @@ void CPUThreadPoolExecutor::add(
     int8_t priority,
     std::chrono::milliseconds expiration,
     Func expireCallback) {
-  addImpl<true>(
-      std::move(func), priority, expiration, std::move(expireCallback));
-}
-
-template <bool withPriority>
-void CPUThreadPoolExecutor::addImpl(
-    Func func,
-    int8_t priority,
-    std::chrono::milliseconds expiration,
-    Func expireCallback) {
-  if (!func) {
-    // Reserve empty funcs as poison by logging the error inline.
-    invokeCatchingExns("ThreadPoolExecutor: func", std::move(func));
-    return;
-  }
-
-  if (withPriority) {
-    CHECK_GT(getNumPriorities(), 0);
-  }
-
+  CHECK_GT(getNumPriorities(), 0);
   CPUTask task(
       std::move(func), expiration, std::move(expireCallback), priority);
-  if (auto queueObserver = getQueueObserver(priority)) {
-    task.queueObserverPayload_ = queueObserver->onEnqueued(task.context_.get());
-  }
-  registerTaskEnqueue(task);
-
-  // It's not safe to expect that the executor is alive after a task is added to
-  // the queue (this task could be holding the last KeepAlive and when finished
-  // - it may unblock the executor shutdown).
-  // If we need executor to be alive after adding into the queue, we have to
-  // acquire a KeepAlive.
-  bool mayNeedToAddThreads = minThreads_.load(std::memory_order_relaxed) == 0 ||
-      activeThreads_.load(std::memory_order_relaxed) <
-          maxThreads_.load(std::memory_order_relaxed);
-  folly::Executor::KeepAlive<> ka = mayNeedToAddThreads
-      ? getKeepAliveToken(this)
-      : folly::Executor::KeepAlive<>{};
-
-  auto result = withPriority
-      ? taskQueue_->addWithPriority(std::move(task), priority)
-      : taskQueue_->add(std::move(task));
-
-  if (mayNeedToAddThreads && !result.reusedThread) {
-    ensureActiveThreads();
-  }
+  addImpl(
+      [this](auto&& task) {
+        auto pri = task.priority();
+        return taskQueue_->addWithPriority(std::move(task), pri);
+      },
+      std::move(task));
 }
 
 uint8_t CPUThreadPoolExecutor::getNumPriorities() const {
@@ -298,26 +262,30 @@ CPUThreadPoolExecutor::getTaskQueue() {
   return taskQueue_.get();
 }
 
-// threadListLock_ must be writelocked.
-bool CPUThreadPoolExecutor::tryDecrToStop() {
-  auto toStop = threadsToStop_.load(std::memory_order_relaxed);
-  if (toStop <= 0) {
-    return false;
-  }
-  threadsToStop_.store(toStop - 1, std::memory_order_relaxed);
+// Does not need threadListLock_ lock.
+bool CPUThreadPoolExecutor::shouldStopThread(bool isPoison) {
+  auto threadsToStop = threadsToStop_.load(std::memory_order_relaxed);
+  do {
+    if (threadsToStop == 0 ||
+        // If we're joining, do not allow early stopping: only stop threads when
+        // a poison task is received.
+        (!isPoison && isJoin_.load(std::memory_order_acquire))) {
+      return false;
+    }
+  } while (!threadsToStop_.compare_exchange_weak(
+      threadsToStop, threadsToStop - 1, std::memory_order_relaxed));
   return true;
 }
 
-bool CPUThreadPoolExecutor::taskShouldStop(folly::Optional<CPUTask>& task) {
-  if (tryDecrToStop()) {
-    return true;
+// threadListLock_ must be writelocked.
+void CPUThreadPoolExecutor::stopThread(const ThreadPtr& thread) {
+  for (auto& o : observers_) {
+    o->threadStopped(thread.get());
   }
-  if (task) {
-    return false;
-  } else {
-    return tryTimeoutThread();
-  }
-  return true;
+  stoppedThreadProcessedTasks_ += thread->processedTasks;
+  thread->processedTasks = 0;
+  threadList_.remove(thread);
+  stoppedThreads_.add(folly::copy(thread));
 }
 
 void CPUThreadPoolExecutor::threadRun(ThreadPtr thread) {
@@ -341,21 +309,16 @@ void CPUThreadPoolExecutor::threadRun(ThreadPtr thread) {
     auto task = taskQueue_->try_take_for(
         threadTimeout_.load(std::memory_order_relaxed));
 
-    // Handle thread stopping, either by task timeout, or
-    // by 'poison' task added in join() or stop().
-    if (FOLLY_UNLIKELY(!task || !task->func_)) {
-      // Actually remove the thread from the list.
+    // Handle thread stopping, either by task timeout, or by 'poison' task added
+    // by stopThreads().
+    if (bool timeout = !task; FOLLY_UNLIKELY(timeout || !task->func_)) {
       std::unique_lock w{threadListLock_};
-      if (taskShouldStop(task)) {
-        for (auto& o : observers_) {
-          o->threadStopped(thread.get());
-        }
-        threadList_.remove(thread);
-        stoppedThreads_.add(thread);
+      if (shouldStopThread(/* isPoison */ !timeout) ||
+          (timeout && tryTimeoutThread())) {
+        stopThread(thread);
         return;
-      } else {
-        continue;
       }
+      continue;
     }
 
     if (auto queueObserver = getQueueObserver(task->priority())) {
@@ -363,13 +326,10 @@ void CPUThreadPoolExecutor::threadRun(ThreadPtr thread) {
     }
     runTask(thread, std::move(task.value()));
 
-    if (FOLLY_UNLIKELY(threadsToStop_ > 0 && !isJoin_)) {
+    if (shouldStopThread(/* isPoison */ false)) {
       std::unique_lock w{threadListLock_};
-      if (tryDecrToStop()) {
-        threadList_.remove(thread);
-        stoppedThreads_.add(thread);
-        return;
-      }
+      stopThread(thread);
+      return;
     }
   }
 }

@@ -158,7 +158,7 @@ TEST(Singleton, NamedUsage) {
   // Define two named Watchdog singletons and one unnamed singleton.
   struct Watchdog1 {};
   struct Watchdog2 {};
-  typedef detail::DefaultTag Watchdog3;
+  using Watchdog3 = detail::DefaultTag;
   SingletonNamedUsage<Watchdog, Watchdog1> watchdog1_singleton;
   EXPECT_EQ(vault.registeredSingletonCount(), 1);
   SingletonNamedUsage<Watchdog, Watchdog2> watchdog2_singleton;
@@ -1064,11 +1064,11 @@ TEST(Singleton, LeakySingletonTSAN) {
   }
 }
 
-TEST(Singleton, ShutdownTimer) {
-  // TSAN will SIGSEGV if the shutdown timer activates (it spawns a new thread,
-  // which TSAN doesn't like).
-  SKIP_IF(folly::kIsSanitizeThread);
+// TSAN will SIGSEGV if the shutdown timer activates (it spawns a new thread,
+// which TSAN doesn't like).
+#if !defined(FOLLY_SANITIZE_THREAD)
 
+TEST(Singleton, ShutdownTimer) {
   struct VaultTag {};
   struct PrivateTag {};
   struct Object {
@@ -1094,6 +1094,8 @@ TEST(Singleton, ShutdownTimer) {
   SingletonObject::try_get()->shutdownDuration = 10ms;
   vault.destroyInstancesFinal();
 }
+
+#endif
 
 TEST(Singleton, ShutdownTimerDisable) {
   struct VaultTag {};
@@ -1219,9 +1221,10 @@ namespace {
 class CancelOnDestructionSingleton {
  public:
   ~CancelOnDestructionSingleton() {
-    CHECK(SingletonVault::singleton()
-              ->getDestructionCancellationToken()
-              .isCancellationRequested());
+    CHECK(
+        SingletonVault::singleton()
+            ->getDestructionCancellationToken()
+            .isCancellationRequested());
   }
 };
 
@@ -1231,4 +1234,19 @@ auto cancelOnDestructionSingleton =
 
 TEST(Singleton, CancelOnDestruction) {
   cancelOnDestructionSingleton.try_get();
+}
+
+TEST(Singleton, CreationBeforeRegistrationCompleteAborts) {
+  struct Dummy {};
+  struct VaultTag {};
+  struct Tag {};
+
+  folly::SingletonVault* vault = folly::SingletonVault::singleton<VaultTag>();
+  std::ignore = vault;
+
+  static folly::Singleton<Dummy, Tag, VaultTag> lateSingleton;
+
+  EXPECT_DEATH(
+      { std::ignore = lateSingleton.try_get(); },
+      "singletonWarnCreateBeforeRegistrationCompleteAndAbort");
 }

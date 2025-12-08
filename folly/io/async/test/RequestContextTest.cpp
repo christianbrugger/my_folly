@@ -178,15 +178,17 @@ TEST_F(RequestContextTest, setIfAbsentTest) {
   EXPECT_TRUE(RequestContext::get() != nullptr);
 
   RequestContext::get()->setContextData("test", std::make_unique<TestData>(10));
-  EXPECT_FALSE(RequestContext::get()->setContextDataIfAbsent(
-      "test", std::make_unique<TestData>(20)));
+  EXPECT_FALSE(
+      RequestContext::get()->setContextDataIfAbsent(
+          "test", std::make_unique<TestData>(20)));
   EXPECT_EQ(
       10,
       dynamic_cast<TestData*>(RequestContext::get()->getContextData(testtoken))
           ->data_);
 
-  EXPECT_TRUE(RequestContext::get()->setContextDataIfAbsent(
-      "test2", std::make_unique<TestData>(20)));
+  EXPECT_TRUE(
+      RequestContext::get()->setContextDataIfAbsent(
+          "test2", std::make_unique<TestData>(20)));
   EXPECT_EQ(
       20,
       dynamic_cast<TestData*>(RequestContext::get()->getContextData("test2"))
@@ -545,8 +547,9 @@ TEST_F(RequestContextTest, ConcurrentDataRefRelease) {
         // Keep shared_ptr to ctx1 to pass to th2
         sp1 = folly::RequestContext::saveContext();
         step.store(1); // sp1 is ready.
-        while (step.load() < 2)
+        while (step.load() < 2) {
           /* Wait for th2 to clear reference to data0. */;
+        }
       }
       // End of g2 released shared_ptr to ctx1, switched back to ctx0
       // At this point:
@@ -558,16 +561,18 @@ TEST_F(RequestContextTest, ConcurrentDataRefRelease) {
       // End of g1 will destroy ctx0, release clear/delete counts for data0.
     });
     auto th2 = std::thread([&]() {
-      while (step.load() < 1)
+      while (step.load() < 1) {
         /* Wait for th1 to set sp1. */;
+      }
       folly::RequestContextScopeGuard g2(std::move(sp1));
       // g2 set context to ctx1.
       EXPECT_EQ(sp1.get(), nullptr);
       EXPECT_NE(&getData(), nullptr);
       clearData();
       step.store(2); // th2 cleared reference to data0 in ctx1.
-      while (step.load() < 3)
+      while (step.load() < 3) {
         /* Wait for th1 to release shared_ptr to ctx1. */;
+      }
       // End of g2 will destroy ctx1, release delete count for data0.
     });
     th1.join();
@@ -585,7 +590,7 @@ TEST_F(RequestContextTest, AccessAllThreadsDestructionGuard) {
   for (auto& thread : threads) {
     thread = std::thread([&] {
       // Force creation of thread local
-      RequestContext::get();
+      RequestContext::setContext(nullptr);
       ++count;
       // Wait for all other threads to do the same
       barrier.wait();
@@ -729,4 +734,71 @@ TEST(ImmutableRequestTest, typeTraits) {
 
   auto c2 = std::is_constructible<IRDI, int, int>::value;
   EXPECT_FALSE(c2);
+}
+
+// Static variables for test watchers
+namespace {
+int g_callCount = 0;
+std::shared_ptr<RequestContext> g_lastPrev;
+std::shared_ptr<RequestContext> g_lastCurrent;
+
+void testWatcher(
+    const std::shared_ptr<RequestContext>& prev,
+    const std::shared_ptr<RequestContext>& ctx) {
+  g_callCount++;
+  g_lastPrev = prev;
+  g_lastCurrent = ctx;
+}
+
+} // namespace
+
+TEST_F(RequestContextTest, AddSetContextWatcher) {
+  // Reset state for clean test
+  g_callCount = 0;
+  g_lastPrev.reset();
+  g_lastCurrent.reset();
+
+  // Add the watcher
+  RequestContext::addSetContextWatcher(testWatcher);
+
+  // Initially no calls
+  EXPECT_EQ(0, g_callCount);
+
+  // Create initial context
+  RequestContext::create();
+  auto ctx1 = RequestContext::saveContext();
+  EXPECT_EQ(1, g_callCount);
+  EXPECT_EQ(nullptr, g_lastPrev);
+  EXPECT_EQ(ctx1, g_lastCurrent);
+
+  // Reset call count for next test
+  g_callCount = 0;
+
+  // Create and set a new context
+  auto ctx2 = std::make_shared<RequestContext>();
+  RequestContext::setContext(ctx2);
+
+  EXPECT_EQ(1, g_callCount);
+  EXPECT_EQ(ctx1, g_lastPrev);
+  EXPECT_EQ(ctx2, g_lastCurrent);
+
+  // Reset call count for next test
+  g_callCount = 0;
+
+  // Set context to nullptr (should trigger watcher)
+  RequestContext::setContext(nullptr);
+
+  EXPECT_EQ(1, g_callCount);
+  EXPECT_EQ(ctx2, g_lastPrev);
+  EXPECT_EQ(nullptr, g_lastCurrent);
+
+  // Reset call count for next test
+  g_callCount = 0;
+
+  // Setting the same context will not trigger the watcher
+  RequestContext::setContext(nullptr);
+
+  EXPECT_EQ(0, g_callCount);
+  EXPECT_EQ(ctx2, g_lastPrev);
+  EXPECT_EQ(nullptr, g_lastCurrent);
 }

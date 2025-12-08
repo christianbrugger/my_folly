@@ -682,15 +682,13 @@ namespace detail {
 template <
     template <
         typename T,
-        template <typename>
-        class Atom,
+        template <typename> class Atom,
         bool Dynamic,
         class Allocator>
 
     class Derived,
     typename T,
-    template <typename>
-    class Atom,
+    template <typename> class Atom,
     bool Dynamic,
     class Allocator>
 class MPMCQueueBase<Derived<T, Atom, Dynamic, Allocator>> {
@@ -706,7 +704,7 @@ class MPMCQueueBase<Derived<T, Atom, Dynamic, Allocator>> {
       "T must be relocatable or have a noexcept move constructor");
 
  public:
-  typedef T value_type;
+  using value_type = T;
 
   using Slot = detail::SingleElementQueue<T, Atom>;
 

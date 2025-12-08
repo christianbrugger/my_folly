@@ -18,6 +18,7 @@
 
 #include <iostream>
 
+#include <fmt/format.h>
 #include <glog/logging.h>
 
 #include <folly/FileUtil.h>
@@ -103,7 +104,7 @@ po::options_description& NestedCommandLineApp::addCommand(
       std::move(shortHelp),
       std::move(fullHelp),
       std::move(command),
-      po::options_description(folly::sformat("Options for `{}'", name)),
+      po::options_description(fmt::format("Options for `{}'", name)),
       std::move(positionalOptions)};
 
   auto p = commands_.emplace(std::move(name), std::move(info));
@@ -219,7 +220,7 @@ auto NestedCommandLineApp::findCommand(const std::string& name) const
   if (pos == commands_.end()) {
     throw ProgramExit(
         1,
-        folly::sformat(
+        fmt::format(
             "Command '{}' not found. Run '{} {}' for help.",
             name,
             programName_,
@@ -249,7 +250,7 @@ int NestedCommandLineApp::run(const std::vector<std::string>& args) {
     fprintf(
         stderr,
         "%s",
-        folly::sformat(
+        fmt::format(
             "{}. Run '{} help' for {}.\n",
             ex.what(),
             programName_,
@@ -313,7 +314,7 @@ void NestedCommandLineApp::doRun(const std::vector<std::string>& args) {
   if (!parsed.command) {
     throw ProgramExit(
         1,
-        folly::sformat(
+        fmt::format(
             "Command not specified. Run '{} {}' for help.",
             programName_,
             kHelpCommand));
@@ -330,25 +331,39 @@ void NestedCommandLineApp::doRun(const std::vector<std::string>& args) {
   if (info.positionalOptions) {
     parser = parser.positional(*info.positionalOptions);
   }
+  try {
+    auto cmdOptions = parser.run();
 
-  auto cmdOptions = parser.run();
+    po::store(cmdOptions, vm);
+    po::notify(vm);
 
-  po::store(cmdOptions, vm);
-  po::notify(vm);
+    // If positional arguments are specified they should get mapped to a named
+    // arg and don't need to be double collected
+    auto cmdArgs = po::collect_unrecognized(
+        cmdOptions.options,
+        info.positionalOptions
+            ? po::exclude_positional
+            : po::include_positional);
 
-  // If positional arguments are specified they should get mapped to a named arg
-  // and don't need to be double collected
-  auto cmdArgs = po::collect_unrecognized(
-      cmdOptions.options,
-      info.positionalOptions ? po::exclude_positional : po::include_positional);
+    cmdArgs.insert(cmdArgs.end(), endArgs.begin(), endArgs.end());
 
-  cmdArgs.insert(cmdArgs.end(), endArgs.begin(), endArgs.end());
+    for (const auto& callback : callbackFunctions_) {
+      callback(cmd, vm, cmdArgs);
+    }
 
-  for (const auto& callback : callbackFunctions_) {
-    callback(cmd, vm, cmdArgs);
+    info.command(vm, cmdArgs);
+  } catch (const po::required_option& ex) {
+    // The top run() function won't be able to capture the command name.
+    // We include both program name and command name in the error message for
+    // better UX.
+    throw ProgramExit(
+        1,
+        fmt::format(
+            "Missing required option: '{}'. Run '{} {} --help' for help.",
+            ex.get_option_name(),
+            programName_,
+            cmd));
   }
-
-  info.command(vm, cmdArgs);
 }
 
 bool NestedCommandLineApp::isBuiltinCommand(const std::string& name) const {

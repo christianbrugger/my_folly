@@ -93,7 +93,7 @@ class ManualExecutor
   }
 
   void scheduleAt(Func&& f, TimePoint const& t) override {
-    std::lock_guard<std::mutex> lock(lock_);
+    std::lock_guard lock(lock_);
     scheduledFuncs_.emplace(t, std::move(f));
     sem_.post();
   }
@@ -117,7 +117,7 @@ class ManualExecutor
     std::priority_queue<ScheduledFunc> scheduled_funcs;
 
     {
-      std::lock_guard<std::mutex> lock(lock_);
+      std::lock_guard lock(lock_);
       funcs_.swap(funcs);
       scheduledFuncs_.swap(scheduled_funcs);
     }
@@ -131,9 +131,22 @@ class ManualExecutor
   }
 
   void keepAliveRelease() noexcept override {
-    if (keepAliveCount_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-      add([] {});
-    }
+    auto keepAliveCount = keepAliveCount_.load(std::memory_order_relaxed);
+    do {
+      DCHECK(keepAliveCount > 0);
+      if (keepAliveCount == 1) {
+        add([this] {
+          // the final count *must* be released from this executor or else if we
+          // are mid-destructor we have a data race
+          keepAliveCount_.fetch_sub(1, std::memory_order_relaxed);
+        });
+        return;
+      }
+    } while (!keepAliveCount_.compare_exchange_weak(
+        keepAliveCount,
+        keepAliveCount - 1,
+        std::memory_order_release,
+        std::memory_order_relaxed));
   }
 
  private:

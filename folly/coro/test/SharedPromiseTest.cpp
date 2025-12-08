@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
+#include <utility>
+
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/DetachOnCancel.h>
+#include <folly/coro/GtestHelpers.h>
 #include <folly/coro/SharedPromise.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
@@ -35,8 +38,8 @@ class BlockingWaitWaitInterface {
 class CPUThreadPoolWaitInterface {
  public:
   std::string waitAndGetValue(folly::coro::Future<std::string> future) {
-    return coGet(std::move(future))
-        .scheduleOn(cpuThreadPoolExecutor_.get())
+    return co_withExecutor(
+               cpuThreadPoolExecutor_.get(), coGet(std::move(future)))
         .start()
         .get();
   }
@@ -267,8 +270,9 @@ TYPED_TEST(SharedPromiseTest, CleanlyCancellableWait) {
   auto cancellationToken = cancellationSource.getToken();
 
   auto started =
-      folly::coro::co_withCancellation(cancellationToken, std::move(task))
-          .scheduleOn(fallibleExecutor.get())
+      co_withExecutor(
+          fallibleExecutor.get(),
+          folly::coro::co_withCancellation(cancellationToken, std::move(task)))
           .start();
 
   cancellationSource.requestCancellation();
@@ -302,6 +306,51 @@ TEST(SharedPromiseTest, BasicVoid) {
     promise.setValue();
     blocking_wait(promise.getFuture());
   }
+}
+
+CO_TEST(SharedPromiseTest, Swap) {
+  SharedPromise<int> p1, p2;
+  p1.setValue(42);
+  p2.setValue(43);
+  using std::swap;
+  swap(p1, p2);
+  EXPECT_EQ(co_await p1.getFuture(), 43);
+  EXPECT_EQ(co_await p2.getFuture(), 42);
+}
+
+CO_TEST(SharedPromiseTest, MoveFrom) {
+  SharedPromise<int> p1;
+  p1.setValue(42);
+  SharedPromise<int> p2;
+  p2.setValue(43);
+  p2 = std::move(p1);
+  EXPECT_EQ(co_await p2.getFuture(), 42);
+  EXPECT_FALSE(p1.isFulfilled());
+}
+
+CO_TEST(SharedPromiseTest, SelfMove) {
+  SharedPromise<int> p;
+  p.setValue(1);
+  auto& alias = p; // defeat -Wself-move
+  p = std::move(alias);
+  CO_ASSERT_TRUE(p.isFulfilled());
+  EXPECT_EQ(co_await p.getFuture(), 1);
+}
+
+TEST(SharedPromiseTest, Exchange) {
+  SharedPromise<void> p1;
+  using std::exchange;
+  SharedPromise<void> p2 = exchange(p1, {});
+}
+
+TEST(SharedPromiseTest, Poll) {
+  SharedPromise<std::string> promise;
+  EXPECT_FALSE(promise.poll().has_value());
+  const std::string value = "ynwa";
+  promise.setValue(value);
+  const auto result = promise.poll();
+  ASSERT_TRUE(result.has_value() && result->hasValue());
+  EXPECT_EQ(value, result->value());
 }
 
 #endif

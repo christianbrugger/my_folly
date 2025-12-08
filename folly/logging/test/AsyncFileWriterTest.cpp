@@ -77,6 +77,7 @@ using folly::test::TemporaryFile;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using testing::ContainsRegex;
+using testing::HasSubstr;
 
 TEST(AsyncFileWriter, noMessages) {
   TemporaryFile tmpFile{"logging_test"};
@@ -368,8 +369,9 @@ class ReadStats {
   }
 
   void messageReceived(StringPiece msg) {
-    if (msg.endsWith(" log messages discarded: "
-                     "logging faster than we can write")) {
+    if (msg.endsWith(
+            " log messages discarded: "
+            "logging faster than we can write")) {
       auto discardCount = folly::to<size_t>(msg.subpiece(0, msg.find(' ')));
       XLOG(DBG3, "received discard notification: ", discardCount);
       numDiscarded_ += discardCount;
@@ -627,14 +629,16 @@ TEST(AsyncFileWriter, discard) {
   AsyncFileWriter::setDiscardCallback(nullptr);
 }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && FOLLY_HAVE_PTHREAD_ATFORK && !FOLLY_SANITIZE_THREAD
+
 /**
  * Test that AsyncFileWriter operates correctly after a fork() in both the
  * parent and child processes.
+ *
+ * Requires pthread_atfork. Not supported for TSAN.
  */
 TEST(AsyncFileWriter, fork) {
-#if FOLLY_HAVE_PTHREAD_ATFORK
-  SKIP_IF(folly::kIsSanitizeThread) << "Not supported for TSAN";
+  static_assert(!kIsWindows && !kIsSanitizeThread);
 
   TemporaryFile tmpFile{"logging_test"};
 
@@ -650,7 +654,9 @@ TEST(AsyncFileWriter, fork) {
 
   {
     AsyncFileWriter writer{folly::File{tmpFile.fd(), false}};
-    writer.writeMessage(folly::to<std::string>("parent pid=", getpid(), "\n"));
+    writer.writeMessage(
+        folly::to<std::string>("parent pid=", getpid(), "\n"),
+        AsyncFileWriter::NEVER_DISCARD);
 
     // Start some background threads just to exercise the behavior
     // when other threads are also logging to the writer when the fork occurs
@@ -661,22 +667,30 @@ TEST(AsyncFileWriter, fork) {
         size_t iter = 0;
         while (!stop) {
           writer.writeMessage(
-              folly::to<std::string>("bgthread_", getpid(), "_", iter, "\n"));
+              folly::to<std::string>("bgthread_", getpid(), "_", iter, "\n"),
+              AsyncFileWriter::NEVER_DISCARD);
           ++iter;
+          asm_volatile_pause();
         }
       });
     }
 
     for (size_t n = 0; n < numMessages; ++n) {
-      writer.writeMessage(folly::to<std::string>("prefork", n, "\n"));
+      writer.writeMessage(
+          folly::to<std::string>("prefork", n, "\n"),
+          AsyncFileWriter::NEVER_DISCARD);
     }
 
     auto pid = fork();
     folly::checkUnixError(pid, "failed to fork");
     if (pid == 0) {
-      writer.writeMessage(folly::to<std::string>("child pid=", getpid(), "\n"));
+      writer.writeMessage(
+          folly::to<std::string>("child pid=", getpid(), "\n"),
+          AsyncFileWriter::NEVER_DISCARD);
       for (size_t n = 0; n < numMessages; ++n) {
-        writer.writeMessage(folly::to<std::string>("child", n, "\n"));
+        writer.writeMessage(
+            folly::to<std::string>("child", n, "\n"),
+            AsyncFileWriter::NEVER_DISCARD);
         std::this_thread::sleep_for(sleepDuration);
       }
 
@@ -692,7 +706,9 @@ TEST(AsyncFileWriter, fork) {
     }
 
     for (size_t n = 0; n < numMessages; ++n) {
-      writer.writeMessage(folly::to<std::string>("parent", n, "\n"));
+      writer.writeMessage(
+          folly::to<std::string>("parent", n, "\n"),
+          AsyncFileWriter::NEVER_DISCARD);
       std::this_thread::sleep_for(sleepDuration);
     }
 
@@ -719,14 +735,10 @@ TEST(AsyncFileWriter, fork) {
   // The log file should contain all of the messages we wrote, from both the
   // parent and child processes.
   for (size_t n = 0; n < numMessages; ++n) {
-    EXPECT_THAT(
-        data, ContainsRegex(folly::to<std::string>("prefork", n, "\n")));
-    EXPECT_THAT(data, ContainsRegex(folly::to<std::string>("parent", n, "\n")));
-    EXPECT_THAT(data, ContainsRegex(folly::to<std::string>("child", n, "\n")));
+    EXPECT_THAT(data, HasSubstr(folly::to<std::string>("prefork", n, "\n")));
+    EXPECT_THAT(data, HasSubstr(folly::to<std::string>("parent", n, "\n")));
+    EXPECT_THAT(data, HasSubstr(folly::to<std::string>("child", n, "\n")));
   }
-#else
-  SKIP() << "pthread_atfork() is not supported on this platform";
-#endif // FOLLY_HAVE_PTHREAD_ATFORK
 }
 
 /**
@@ -735,10 +747,11 @@ TEST(AsyncFileWriter, fork) {
  *
  * This exercises the synchronization around registration of the AtFork
  * handlers and the creation/destruction of the AsyncFileWriter I/O thread.
+ *
+ * Requires pthread_atfork. Not supported for TSAN.
  */
 TEST(AsyncFileWriter, crazyForks) {
-#if FOLLY_HAVE_PTHREAD_ATFORK
-  SKIP_IF(folly::kIsSanitizeThread) << "Not supported for TSAN";
+  static_assert(!kIsWindows && !kIsSanitizeThread);
 
   constexpr size_t numAsyncWriterThreads = 10;
   constexpr size_t numForkThreads = 5;
@@ -756,8 +769,9 @@ TEST(AsyncFileWriter, crazyForks) {
       while (!stop) {
         // Create an AsyncFileWriter, write a message to it, then destroy it.
         AsyncFileWriter writer{folly::File{tmpFile.fd(), false}};
-        writer.writeMessage(folly::to<std::string>(
-            "async thread ", folly::getOSThreadID(), "\n"));
+        writer.writeMessage(
+            folly::to<std::string>(
+                "async thread ", folly::getOSThreadID(), "\n"));
       }
     });
   }
@@ -774,7 +788,7 @@ TEST(AsyncFileWriter, crazyForks) {
       // Wait until forkStart is set just to have a better chance of all the
       // fork threads running simultaneously.
       {
-        std::unique_lock<std::mutex> l(forkStartMutex);
+        std::unique_lock l(forkStartMutex);
         forkStartCV.wait(l, [&forkStart] { return forkStart; });
       }
 
@@ -798,7 +812,7 @@ TEST(AsyncFileWriter, crazyForks) {
 
   // Kick off the fork threads
   {
-    std::unique_lock<std::mutex> l(forkStartMutex);
+    std::unique_lock l(forkStartMutex);
     forkStart = true;
   }
   forkStartCV.notify_all();
@@ -813,8 +827,7 @@ TEST(AsyncFileWriter, crazyForks) {
   for (auto& t : asyncWriterThreads) {
     t.join();
   }
-#else
-  SKIP() << "pthread_atfork() is not supported on this platform";
-#endif // FOLLY_HAVE_PTHREAD_ATFORK
 }
-#endif // !_WIN32
+
+#endif // !defined(_WIN32) && FOLLY_HAVE_PTHREAD_ATFORK &&
+       // !FOLLY_SANITIZE_THREAD

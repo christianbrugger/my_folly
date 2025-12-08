@@ -424,7 +424,7 @@ struct LockTest : testing::TestWithParam<Param> {
           std::unique_lock<mutex_type>,
           deduction_unique<
               mutex_type&,
-              std::adopt_lock_t,
+              folly::adopt_lock_state_t,
               unique_lock_state>>();
     }
 
@@ -437,7 +437,7 @@ struct LockTest : testing::TestWithParam<Param> {
           std::shared_lock<mutex_type>,
           deduction_shared<
               mutex_type&,
-              std::adopt_lock_t,
+              folly::adopt_lock_state_t,
               shared_lock_state>>();
     }
 
@@ -450,7 +450,7 @@ struct LockTest : testing::TestWithParam<Param> {
           folly::upgrade_lock<mutex_type>,
           deduction_upgrade<
               mutex_type&,
-              std::adopt_lock_t,
+              folly::adopt_lock_state_t,
               upgrade_lock_state>>();
     }
   }
@@ -1069,10 +1069,8 @@ template <
     int X,
     int S,
     int U,
-    template <typename>
-    class FromL,
-    template <typename>
-    class ToL>
+    template <typename> class FromL,
+    template <typename> class ToL>
 struct XLockTestParam {
   using unique_lock_state = std::conditional_t<X, UniqueLockState, void>;
   using shared_lock_state = std::conditional_t<S, SharedLockState, void>;

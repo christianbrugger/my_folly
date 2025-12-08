@@ -114,7 +114,7 @@ struct dynamic {
    * Object item iterators dereference as pairs of (key, value).
    */
  private:
-  typedef std::vector<dynamic> Array;
+  using Array = std::vector<dynamic>;
 
   /*
    * Violating spec, std::vector<bool>::const_reference is not bool in libcpp:
@@ -130,9 +130,9 @@ struct dynamic {
       std::vector<bool>::const_reference>;
 
  public:
-  typedef Array::iterator iterator;
-  typedef Array::const_iterator const_iterator;
-  typedef dynamic value_type;
+  using iterator = Array::iterator;
+  using const_iterator = Array::const_iterator;
+  using value_type = dynamic;
 
   struct const_key_iterator;
   struct const_value_iterator;
@@ -642,13 +642,29 @@ struct dynamic {
    * Count by key.
    *
    * If this is an object, returns whether it contains a field with
-   * the given name.  Otherwise throws TypeError.
+   * the given name.
+   * If this is an array, returns the number of elements matching
+   * the supplied value.
+   * Otherwise throws TypeError.
    *
    * @methodset Object
    */
   template <typename K>
   IfIsNonStringDynamicConvertible<K, std::size_t> count(K&&) const;
   std::size_t count(StringPiece) const;
+
+  /**
+   * Check if key exists.
+   *
+   * If this is an object, returns whether it contains a field with
+   * the given name.
+   * If this is an array, returns whether it contains a value matching
+   * the supplied value.
+   * Otherwise throws TypeError.
+   */
+  template <typename K>
+  IfIsNonStringDynamicConvertible<K, bool> contains(K&&) const;
+  bool contains(StringPiece) const;
 
  private:
   dynamic const& atImpl(dynamic const&) const&;
@@ -1162,6 +1178,24 @@ struct dynamic {
     aligned_storage_for_t<F14NodeMap<int, int>> objectBuffer;
   } u_;
 };
+
+/**
+ * Like erase(vector), since C++20.
+ */
+template <typename Val>
+size_t erase(folly::dynamic& dyn, Val const& val);
+
+/**
+ * Like erase_if(vector), erase_if(unordered_map), since C++20.
+ *
+ * If the predicate `pred` is formally invocable with `dynamic const&` then it
+ * must type-check when so invoked. If the predicate is formally invocable with
+ * `std::pair<dynamic const, dynamic> const&` then it must type-check when so
+ * invoked. A lambda taking `const auto&` may be at risk of violating this rule,
+ * so consider a lambda taking one of the two types explicitly, sans deduction.
+ */
+template <typename Pred>
+size_t erase_if(folly::dynamic& dyn, Pred pred);
 
 //////////////////////////////////////////////////////////////////////
 

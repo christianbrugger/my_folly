@@ -24,6 +24,7 @@
 #include <folly/Range.h>
 #include <folly/hash/Hash.h>
 #include <folly/json/json.h>
+#include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/test/ComparisonOperatorTestUtil.h>
 
@@ -413,6 +414,26 @@ TEST(Dynamic, ObjectHeterogeneousAccess) {
   EXPECT_EQ(obj.count(b), 0);
   EXPECT_EQ(obj.count(StringPiece{b}), 0);
   EXPECT_EQ(obj.count(StaticStrings::kBar), 0);
+
+  // contains()
+  EXPECT_TRUE(obj.contains(empty));
+  EXPECT_TRUE(obj.contains(nullptr));
+  EXPECT_TRUE(obj.contains(foo));
+
+  EXPECT_TRUE(obj.contains(a));
+  EXPECT_TRUE(obj.contains(StaticStrings::kA));
+  EXPECT_TRUE(obj.contains("a"));
+
+  EXPECT_TRUE(obj.contains(sp));
+  EXPECT_TRUE(obj.contains(StringPiece{"a"}));
+  EXPECT_TRUE(obj.contains(StaticStrings::kFoo));
+
+  EXPECT_TRUE(obj.contains(std::string{"a"}));
+  EXPECT_TRUE(obj.contains(str));
+
+  EXPECT_FALSE(obj.contains(b));
+  EXPECT_FALSE(obj.contains(StringPiece{b}));
+  EXPECT_FALSE(obj.contains(StaticStrings::kBar));
 
   // operator[]
   EXPECT_EQ(obj[empty], 456);
@@ -1268,6 +1289,76 @@ TEST(Dynamic, ObjectIteratorInterop) {
   EXPECT_EQ(cit, cit2);
 }
 
+TEST(Dynamic, EraseArray) {
+  dynamic d = dynamic::array(3, 4, 6, 5, 6, 7);
+  EXPECT_EQ(6, d.size());
+  EXPECT_EQ(2, erase(d, 6));
+  EXPECT_EQ(4, d.size());
+  EXPECT_EQ(0, erase(d, "hello"));
+}
+
+TEST(Dynamic, EraseObject) {
+  dynamic d = dynamic::object(3, false);
+  EXPECT_EQ(1, d.size());
+  EXPECT_THROW(erase(d, 3), TypeError);
+  EXPECT_EQ(1, d.size());
+}
+
+TEST(Dynamic, EraseBadType) {
+  dynamic d = "hello";
+  EXPECT_THROW(erase(d, 3), TypeError);
+  EXPECT_EQ("hello", d);
+}
+
+TEST(Dynamic, EraseIfArray) {
+  dynamic d = dynamic::array(3, 4, 5, 6, 7);
+  EXPECT_EQ(3, erase_if(d, [](dynamic const& v) { return v.asInt() % 2; }));
+  EXPECT_EQ(d, dynamic::array(4, 6));
+}
+
+TEST(Dynamic, EraseIfArrayBadPred) {
+  using item = std::pair<dynamic const, dynamic>;
+  dynamic d = dynamic::array(3, 4, 5, 6, 7);
+  EXPECT_EQ(0, erase_if(d, [](dynamic const&) { return false; }));
+  EXPECT_EQ(5, d.size());
+  EXPECT_THROW(erase_if(d, [](item const&) { return false; }), TypeError);
+  EXPECT_EQ(5, d.size());
+}
+
+TEST(Dynamic, EraseIfObject) {
+  using item = std::pair<dynamic const, dynamic>;
+  dynamic d = dynamic::object //
+      (3, false) //
+      (4, true) //
+      (5, false) //
+      (6, true) //
+      (7, false) //
+      ;
+  EXPECT_EQ(2, erase_if(d, [](item const& v) { return v.second.asBool(); }));
+  EXPECT_THAT(d.keys(), testing::UnorderedElementsAreArray({3, 5, 7}));
+}
+
+TEST(Dynamic, EraseIfObjectBadPred) {
+  using item = std::pair<dynamic const, dynamic>;
+  dynamic d = dynamic::object //
+      (3, false) //
+      (4, true) //
+      (5, false) //
+      (6, true) //
+      (7, false) //
+      ;
+  EXPECT_EQ(0, erase_if(d, [](item const&) { return false; }));
+  EXPECT_EQ(5, d.size());
+  EXPECT_THROW(erase_if(d, [](dynamic const&) { return false; }), TypeError);
+  EXPECT_EQ(5, d.size());
+}
+
+TEST(Dynamic, EraseIfBadType) {
+  dynamic d = "hello";
+  EXPECT_THROW(erase_if(d, [](auto const&) { return false; }), TypeError);
+  EXPECT_EQ("hello", d);
+}
+
 TEST(Dynamic, MergePatchWithNonObject) {
   dynamic target = dynamic::object("a", "b")("c", "d");
 
@@ -1641,6 +1732,40 @@ TEST(Dynamic, EqualNestedValues) {
   dynamic obj1 = buildNestedValues(kDepth);
   dynamic obj2 = obj1;
   EXPECT_EQ(obj1, obj2);
+}
+
+TEST(Dynamic, ArrayCountContains) {
+  // .count() and .contains() should also work on arrays
+  dynamic arr = dynamic::array(
+      1, 3, 1, "a", 1, nullptr, nullptr, 1, dynamic::array(666), 1);
+
+  EXPECT_EQ(arr.count(1), 5);
+  EXPECT_TRUE(arr.contains(1));
+
+  EXPECT_EQ(arr.count(3), 1);
+  EXPECT_TRUE(arr.contains(3));
+
+  EXPECT_EQ(arr.count("a"), 1);
+  EXPECT_TRUE(arr.contains("a"));
+
+  std::string a = "a";
+  StringPiece spa(a);
+  EXPECT_EQ(arr.count(spa), 1);
+  EXPECT_TRUE(arr.contains(spa));
+
+  EXPECT_EQ(arr.count(nullptr), 2);
+  EXPECT_TRUE(arr.contains(nullptr));
+
+  EXPECT_EQ(arr.count(dynamic::array(666)), 1);
+  EXPECT_TRUE(arr.contains(dynamic::array(666)));
+
+  EXPECT_EQ(arr.count("not in the array"), 0);
+  EXPECT_FALSE(arr.contains("not in the array"));
+
+  // Quick check that count and contains don't work for all other types
+  dynamic a_bool = true;
+  EXPECT_THROW(a_bool.contains(true), TypeError);
+  EXPECT_THROW(a_bool.count(true), TypeError);
 }
 
 } // namespace test

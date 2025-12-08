@@ -31,7 +31,6 @@
 #include <folly/memory/Malloc.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
-#include <folly/small_vector.h>
 #include <folly/sorted_vector_types.h>
 
 using folly::sorted_vector_map;
@@ -75,6 +74,11 @@ static_assert(std::is_same_v<
 static_assert(std::is_same_v<
               folly::sorted_vector_map<int, double>::const_pointer,
               const std::pair<int, double>*>);
+
+static_assert(folly::is_small_sorted_vector_map_v<
+              folly::small_sorted_vector_map<int, double, 5>>);
+static_assert(folly::is_small_sorted_vector_set_v<
+              folly::small_sorted_vector_set<int, 5>>);
 
 template <class T>
 struct less_invert {
@@ -289,7 +293,7 @@ TEST(SortedVectorTypes, SimpleSetTest) {
   EXPECT_TRUE(range.second == ubound);
   EXPECT_TRUE(range.first != cs2.end());
   EXPECT_TRUE(range.second != cs2.end());
-  EXPECT_TRUE(cs2.count(32) == 1);
+  EXPECT_TRUE(cs2.contains(32));
   EXPECT_FALSE(cs2.find(32) == cs2.end());
   EXPECT_TRUE(cs2.contains(32));
 
@@ -316,7 +320,7 @@ TEST(SortedVectorTypes, SimpleSetTest) {
   EXPECT_TRUE(cpy2 != cpy);
   EXPECT_TRUE(cpy2 != s);
   check_invariant(cpy2);
-  EXPECT_TRUE(cpy2.count(100001) == 1);
+  EXPECT_TRUE(cpy2.contains(100001));
   s.swap(cpy2);
   check_invariant(cpy2);
   check_invariant(s);
@@ -331,7 +335,7 @@ TEST(SortedVectorTypes, SimpleSetTest) {
 
   sorted_vector_set<std::string> s4;
   s4.emplace("foobar", 3);
-  EXPECT_EQ(s4.count("foo"), 1);
+  EXPECT_TRUE(s4.contains("foo"));
 }
 
 TEST(SortedVectorTypes, TransparentSetTest) {
@@ -364,11 +368,11 @@ TEST(SortedVectorTypes, TransparentSetTest) {
   }
 
   // count
-  EXPECT_EQ(0, s.count(buddy));
-  EXPECT_EQ(1, s.count(hello));
-  EXPECT_EQ(0, s.count(stake));
-  EXPECT_EQ(1, s.count(world));
-  EXPECT_EQ(0, s.count(zebra));
+  EXPECT_FALSE(s.contains(buddy));
+  EXPECT_TRUE(s.contains(hello));
+  EXPECT_FALSE(s.contains(stake));
+  EXPECT_TRUE(s.contains(world));
+  EXPECT_FALSE(s.contains(zebra));
 
   // contains
   EXPECT_FALSE(s.contains(buddy));
@@ -424,7 +428,7 @@ TEST(SortedVectorTypes, SimpleMapTest) {
 
   m[32] = 100.0;
   check_invariant(m);
-  EXPECT_TRUE(m.count(32) == 1);
+  EXPECT_TRUE(m.contains(32));
   EXPECT_DOUBLE_EQ(100.0, m.at(32));
   EXPECT_FALSE(m.find(32) == m.end());
   EXPECT_TRUE(m.contains(32));
@@ -441,7 +445,7 @@ TEST(SortedVectorTypes, SimpleMapTest) {
   EXPECT_TRUE(it == m2.end());
   m2.insert(it, std::make_pair(1 << 20, 10.0f));
   check_invariant(m2);
-  EXPECT_TRUE(m2.count(1 << 20) == 1);
+  EXPECT_TRUE(m2.contains(1 << 20));
   EXPECT_TRUE(m < m2);
   EXPECT_TRUE(m <= m2);
 
@@ -518,11 +522,11 @@ TEST(SortedVectorTypes, TransparentMapTest) {
   EXPECT_TRUE(m.end() == m.find(zebra));
 
   // count
-  EXPECT_EQ(0, m.count(buddy));
-  EXPECT_EQ(1, m.count(hello));
-  EXPECT_EQ(0, m.count(stake));
-  EXPECT_EQ(1, m.count(world));
-  EXPECT_EQ(0, m.count(zebra));
+  EXPECT_FALSE(m.contains(buddy));
+  EXPECT_TRUE(m.contains(hello));
+  EXPECT_FALSE(m.contains(stake));
+  EXPECT_TRUE(m.contains(world));
+  EXPECT_FALSE(m.contains(zebra));
 
   // lower_bound
   EXPECT_TRUE(m.find(hello) == m.lower_bound(buddy));
@@ -1012,30 +1016,17 @@ TEST(SortedVectorTypes, TestMapCreationFromVector) {
 }
 
 TEST(SortedVectorTypes, TestSetCreationFromSmallVector) {
-  using smvec = folly::small_vector<int, 5>;
-  smvec vec = {3, 1, -1, 5, 0};
-  sorted_vector_set<
-      int,
-      std::less<int>,
-      std::allocator<std::pair<int, int>>,
-      void,
-      smvec>
-      vset(std::move(vec));
+  using ssvs = folly::small_sorted_vector_set<int, 5>;
+  ssvs::container_type vec = {3, 1, -1, 5, 0};
+  ssvs vset(std::move(vec));
   check_invariant(vset);
   EXPECT_THAT(vset, testing::ElementsAreArray({-1, 0, 1, 3, 5}));
 }
 
 TEST(SortedVectorTypes, TestMapCreationFromSmallVector) {
-  using smvec = folly::small_vector<std::pair<int, int>, 5>;
-  smvec vec = {{3, 1}, {1, 5}, {-1, 2}, {5, 3}, {0, 3}};
-  sorted_vector_map<
-      int,
-      int,
-      std::less<int>,
-      std::allocator<std::pair<int, int>>,
-      void,
-      smvec>
-      vmap(std::move(vec));
+  using ssvm = folly::small_sorted_vector_map<int, int, 5>;
+  ssvm::container_type vec = {{3, 1}, {1, 5}, {-1, 2}, {5, 3}, {0, 3}};
+  ssvm vmap(std::move(vec));
   check_invariant(vmap);
   auto contents = std::vector<std::pair<int, int>>(vmap.begin(), vmap.end());
   auto expected_contents = std::vector<std::pair<int, int>>({
@@ -1133,10 +1124,10 @@ TEST(SortedVectorTypes, TestExceptionSafety) {
 
 #if FOLLY_HAS_MEMORY_RESOURCE
 
-using folly::detail::std_pmr::memory_resource;
-using folly::detail::std_pmr::new_delete_resource;
-using folly::detail::std_pmr::null_memory_resource;
-using folly::detail::std_pmr::polymorphic_allocator;
+using std::pmr::memory_resource;
+using std::pmr::new_delete_resource;
+using std::pmr::null_memory_resource;
+using std::pmr::polymorphic_allocator;
 
 namespace {
 
@@ -1182,7 +1173,7 @@ TEST(SortedVectorTypes, TestPmrCopyConstructSameAlloc) {
 
     pmr::sorted_vector_set<int> s2(s1, a2);
     EXPECT_EQ(s1.get_allocator(), s2.get_allocator());
-    EXPECT_EQ(s2.count(42), 1);
+    EXPECT_TRUE(s2.contains(42));
   }
 
   {
@@ -1210,7 +1201,7 @@ TEST(SortedVectorTypes, TestPmrCopyConstructDifferentAlloc) {
 
     pmr::sorted_vector_set<int> s2(s1, a2);
     EXPECT_NE(s1.get_allocator(), s2.get_allocator());
-    EXPECT_EQ(s2.count(42), 1);
+    EXPECT_TRUE(s2.contains(42));
   }
 
   {
@@ -1241,7 +1232,7 @@ TEST(SortedVectorTypes, TestPmrMoveConstructSameAlloc) {
     // NOLINTNEXTLINE(bugprone-use-after-move)
     EXPECT_EQ(s1.get_allocator(), s2.get_allocator());
     EXPECT_EQ(s2.data(), d);
-    EXPECT_EQ(s2.count(42), 1);
+    EXPECT_TRUE(s2.contains(42));
   }
 
   {
@@ -1275,7 +1266,7 @@ TEST(SortedVectorTypes, TestPmrMoveConstructDifferentAlloc) {
     // NOLINTNEXTLINE(bugprone-use-after-move)
     EXPECT_NE(s1.get_allocator(), s2.get_allocator());
     EXPECT_NE(s2.data(), d);
-    EXPECT_EQ(s2.count(42), 1);
+    EXPECT_TRUE(s2.contains(42));
   }
 
   {
@@ -1292,8 +1283,7 @@ TEST(SortedVectorTypes, TestPmrMoveConstructDifferentAlloc) {
 }
 
 template <typename T>
-using pmr_vector =
-    std::vector<T, folly::detail::std_pmr::polymorphic_allocator<T>>;
+using pmr_vector = std::vector<T, std::pmr::polymorphic_allocator<T>>;
 
 TEST(SortedVectorTypes, TestCreationFromPmrVector) {
   namespace pmr = folly::pmr;
@@ -1587,4 +1577,88 @@ TEST(SortedVectorTypes, TestGetContainer) {
   sorted_vector_map<int, int> map;
   EXPECT_TRUE(set.get_container().empty());
   EXPECT_TRUE(map.get_container().empty());
+}
+
+TEST(SortedVectorTypes, Comparisons) {
+  sorted_vector_set<int> set1{1, 2, 3};
+  sorted_vector_set<int> set2{1, 2, 3};
+
+  EXPECT_EQ(set1, set2);
+  EXPECT_FALSE(set1 != set2);
+  EXPECT_FALSE(set1 < set2);
+  EXPECT_TRUE(set1 <= set2);
+  EXPECT_FALSE(set1 > set2);
+  EXPECT_TRUE(set1 >= set2);
+
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_lib_three_way_comparison)
+  EXPECT_EQ(set1 <=> set2, std::strong_ordering::equal);
+#endif
+
+  set2.insert(4);
+  EXPECT_NE(set1, set2);
+  EXPECT_FALSE(set1 == set2);
+  EXPECT_TRUE(set1 < set2);
+  EXPECT_TRUE(set1 <= set2);
+  EXPECT_FALSE(set1 > set2);
+  EXPECT_FALSE(set1 >= set2);
+
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_lib_three_way_comparison)
+  EXPECT_EQ(set1 <=> set2, std::strong_ordering::less);
+  EXPECT_EQ(set2 <=> set1, std::strong_ordering::greater);
+#endif
+
+  sorted_vector_map<int, int> map1{{1, 1}, {2, 2}, {3, 3}};
+  sorted_vector_map<int, int> map2{{1, 1}, {2, 2}, {3, 3}};
+
+  EXPECT_EQ(map1, map2);
+  EXPECT_FALSE(map1 != map2);
+  EXPECT_FALSE(map1 < map2);
+  EXPECT_TRUE(map1 <= map2);
+  EXPECT_FALSE(map1 > map2);
+  EXPECT_TRUE(map1 >= map2);
+
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_lib_three_way_comparison)
+  EXPECT_EQ(map1 <=> map2, std::strong_ordering::equal);
+#endif
+  map1.insert({4, 4});
+  map2.insert({4, 5});
+
+  EXPECT_NE(map1, map2);
+  EXPECT_FALSE(map1 == map2);
+  EXPECT_TRUE(map1 < map2);
+  EXPECT_TRUE(map1 <= map2);
+  EXPECT_FALSE(map1 > map2);
+  EXPECT_FALSE(map1 >= map2);
+
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_lib_three_way_comparison)
+  EXPECT_EQ(map1 <=> map2, std::strong_ordering::less);
+  EXPECT_EQ(map2 <=> map1, std::strong_ordering::greater);
+#endif
+}
+
+TEST(SortedVectorTypes, TestSwapContainer) {
+  sorted_vector_set<int> set{1, 2, 3};
+  std::vector<int> swapped{6, 5, 4};
+  set.swap_container(swapped);
+  EXPECT_EQ(swapped, (std::vector<int>{1, 2, 3}));
+  EXPECT_EQ(set.get_container(), (std::vector<int>{4, 5, 6}));
+  swapped = {1, 3};
+  set.swap_container(folly::sorted_unique, swapped);
+  EXPECT_EQ(swapped, (std::vector<int>{4, 5, 6}));
+  EXPECT_EQ(set.get_container(), (std::vector<int>{1, 3}));
+
+  sorted_vector_map<int, int> map{{1, 1}, {2, 2}, {3, 3}};
+  std::vector<std::pair<int, int>> swappedMap{{6, 6}, {5, 5}, {4, 4}};
+  map.swap_container(swappedMap);
+  EXPECT_EQ(
+      swappedMap, (std::vector<std::pair<int, int>>{{1, 1}, {2, 2}, {3, 3}}));
+  EXPECT_EQ(
+      map.get_container(),
+      (std::vector<std::pair<int, int>>{{4, 4}, {5, 5}, {6, 6}}));
+  swappedMap = {{1, 1}, {3, 3}};
+  map.swap_container(folly::sorted_unique, swappedMap);
+  EXPECT_EQ(
+      swappedMap, (std::vector<std::pair<int, int>>{{4, 4}, {5, 5}, {6, 6}}));
+  EXPECT_EQ(
+      map.get_container(), (std::vector<std::pair<int, int>>{{1, 1}, {3, 3}}));
 }

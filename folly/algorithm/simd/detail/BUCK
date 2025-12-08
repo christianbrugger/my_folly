@@ -1,13 +1,16 @@
-######################################################################
-# Libraries
-
-load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbsource//tools/build_defs/dirsync:fb_dirsync_cpp_library.bzl", "fb_dirsync_cpp_library")
+load(
+    "../../../defs.bzl",
+    "folly_xplat_library",
+)
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "simd_any_of",
     headers = ["SimdAnyOf.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         ":simd_for_each",
         ":unroll_utils",
@@ -15,9 +18,11 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "simd_platform",
     headers = ["SimdPlatform.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         "//folly:portability",
         "//folly/algorithm/simd:ignore",
@@ -26,9 +31,11 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "simd_contains_impl",
     headers = ["ContainsImpl.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         ":simd_any_of",
         ":simd_platform",
@@ -37,9 +44,11 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "simd_for_each",
     headers = ["SimdForEach.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         ":unroll_utils",
         "//folly:c_portability",
@@ -49,9 +58,11 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "traits",
     headers = ["Traits.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         "//folly:c_portability",
         "//folly:memory",
@@ -60,9 +71,11 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "unroll_utils",
     headers = ["UnrollUtils.h"],
+    use_raw_headers = True,
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         "//folly:portability",
         "//folly:traits",

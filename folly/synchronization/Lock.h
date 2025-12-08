@@ -66,6 +66,9 @@ FOLLY_CREATE_MEMBER_INVOKER_SUITE(unlock_upgrade_and_lock_shared);
 
 } // namespace access
 
+struct adopt_lock_state_t {};
+inline constexpr adopt_lock_state_t adopt_lock_state{};
+
 namespace detail {
 
 //  A lock base class with a mostly-complete implementation suitable for either
@@ -106,37 +109,41 @@ class lock_base {
   owner_type state_{};
 
  public:
-  FOLLY_NODISCARD lock_base() = default;
-  FOLLY_NODISCARD lock_base(lock_base&& that) noexcept
+  [[nodiscard]] lock_base() = default;
+  [[nodiscard]] lock_base(lock_base&& that) noexcept
       : mutex_{std::exchange(that.mutex_, nullptr)},
         state_{std::exchange(that.state_, owner_type{})} {}
   template <typename M = mutex_type, if_<!has_state_, M>* = nullptr>
-  FOLLY_NODISCARD lock_base(type_t<M>& mutex, std::adopt_lock_t)
+  [[nodiscard]] lock_base(type_t<M>& mutex, std::adopt_lock_t)
       : mutex_{std::addressof(mutex)}, state_{owner_true_(tag<owner_type>)} {}
   template <typename M = mutex_type, if_<has_state_, M>* = nullptr>
-  FOLLY_NODISCARD lock_base(
+  [[nodiscard]] lock_base(
       type_t<M>& mutex, std::adopt_lock_t, owner_type const& state)
       : mutex_{std::addressof(mutex)}, state_{state} {
     state_ || (check_fail_<true>(), 0);
   }
-  FOLLY_NODISCARD explicit lock_base(mutex_type& mutex)
+  template <typename M = mutex_type, if_<has_state_, M>* = nullptr>
+  [[nodiscard]] lock_base(
+      type_t<M>& mutex, adopt_lock_state_t, owner_type const& state)
+      : lock_base{mutex, std::adopt_lock, state} {}
+  [[nodiscard]] explicit lock_base(mutex_type& mutex)
       : mutex_{std::addressof(mutex)} {
     lock();
   }
   lock_base(mutex_type& mutex, std::defer_lock_t) noexcept
       : mutex_{std::addressof(mutex)} {}
-  FOLLY_NODISCARD lock_base(mutex_type& mutex, std::try_to_lock_t)
+  [[nodiscard]] lock_base(mutex_type& mutex, std::try_to_lock_t)
       : mutex_{std::addressof(mutex)} {
     try_lock();
   }
   template <typename Rep, typename Period>
-  FOLLY_NODISCARD lock_base(
+  [[nodiscard]] lock_base(
       mutex_type& mutex, std::chrono::duration<Rep, Period> const& timeout)
       : mutex_{std::addressof(mutex)} {
     try_lock_for(timeout);
   }
   template <typename Clock, typename Duration>
-  FOLLY_NODISCARD lock_base(
+  [[nodiscard]] lock_base(
       mutex_type& mutex,
       std::chrono::time_point<Clock, Duration> const& deadline)
       : mutex_{std::addressof(mutex)} {
@@ -192,16 +199,16 @@ class lock_base {
   void unlock() {
     check<true>();
     if constexpr (has_state_) {
-      auto const& state = state_; // prohibit unlock to mutate state_
-      typename Policy::unlock_fn{}(*mutex_, state);
+      // prohibit unlock to mutate state_
+      typename Policy::unlock_fn{}(*mutex_, std::as_const(state_));
     } else {
       typename Policy::unlock_fn{}(*mutex_);
     }
-    state_ = decltype(state_){};
+    state_ = owner_type{};
   }
 
   mutex_type* release() noexcept {
-    state_ = {};
+    state_ = owner_type{};
     return std::exchange(mutex_, nullptr);
   }
 
@@ -264,7 +271,10 @@ class lock_guard_base
   lock_guard_base(
       mutex_type& mutex, std::adopt_lock_t, state_type_ const& state)
       : lock_{mutex, std::adopt_lock, state} {}
-
+  template <bool C = has_state_, if_<C> = 0>
+  lock_guard_base(
+      mutex_type& mutex, adopt_lock_state_t, state_type_ const& state)
+      : lock_{mutex, std::adopt_lock, state} {}
   void operator=(lock_guard_base const&) = delete;
   void operator=(lock_guard_base&&) = delete;
 
@@ -521,24 +531,21 @@ class hybrid_lock_guard
   using base::base;
 };
 
-template <typename Mutex, typename... A>
-explicit hybrid_lock_guard(Mutex&, A const&...) -> hybrid_lock_guard<Mutex>;
+template <typename Mutex, typename S>
+hybrid_lock_guard(Mutex&, adopt_lock_state_t, S) -> hybrid_lock_guard<Mutex>;
 
 } // namespace folly
 
 FOLLY_NAMESPACE_STD_BEGIN
 
-template <typename Mutex, typename LockFn = ::folly::access::lock_fn>
-unique_lock(Mutex&, adopt_lock_t, invoke_result_t<LockFn, Mutex&> const&)
-    -> unique_lock<Mutex>;
+template <typename Mutex, typename S>
+unique_lock(Mutex&, folly::adopt_lock_state_t, S) -> unique_lock<Mutex>;
 
-template <typename Mutex, typename LockFn = ::folly::access::lock_shared_fn>
-shared_lock(Mutex&, adopt_lock_t, invoke_result_t<LockFn, Mutex&> const&)
-    -> shared_lock<Mutex>;
+template <typename Mutex, typename S>
+shared_lock(Mutex&, folly::adopt_lock_state_t, S) -> shared_lock<Mutex>;
 
-template <typename Mutex, typename LockFn = ::folly::access::lock_upgrade_fn>
-lock_guard(Mutex&, adopt_lock_t, invoke_result_t<LockFn, Mutex&> const&)
-    -> lock_guard<Mutex>;
+template <typename Mutex, typename S>
+lock_guard(Mutex&, folly::adopt_lock_state_t, S) -> lock_guard<Mutex>;
 
 FOLLY_NAMESPACE_STD_END
 
@@ -597,14 +604,12 @@ auto transition_lock_0_(From& lock, Transition transition, A const&... a) {
   if constexpr (std::is_void_v<ToState>) {
     return !s ? To{} : To{mutex, std::adopt_lock};
   } else {
-    return !s ? To{} : To{mutex, std::adopt_lock, s};
+    return !s ? To{} : To{mutex, folly::adopt_lock_state, s};
   }
 }
 template <
-    template <typename>
-    class To,
-    template <typename>
-    class From,
+    template <typename> class To,
+    template <typename> class From,
     typename Mutex,
     typename Transition,
     typename... A>
@@ -661,11 +666,9 @@ struct transition_lock_policy<upgrade_lock<Mutex>, shared_lock<Mutex>> {
 //  Represents an atomic transition from the from-lock to the to-lock. Waits
 //  unboundedly for the transition to become available.
 template <
-    template <typename>
-    class ToLock,
+    template <typename> class ToLock,
     typename Mutex,
-    template <typename>
-    class FromLock>
+    template <typename> class FromLock>
 ToLock<Mutex> transition_lock(FromLock<Mutex>& lock) {
   using policy = detail::transition_lock_policy<FromLock<Mutex>, ToLock<Mutex>>;
   auto _ = typename policy::transition_fn{};
@@ -677,11 +680,9 @@ ToLock<Mutex> transition_lock(FromLock<Mutex>& lock) {
 //  Represents an atomic transition attempt from the from-lock to the to-lock.
 //  Does not wait if the transition is not immediately available.
 template <
-    template <typename>
-    class ToLock,
+    template <typename> class ToLock,
     typename Mutex,
-    template <typename>
-    class FromLock>
+    template <typename> class FromLock>
 ToLock<Mutex> try_transition_lock(FromLock<Mutex>& lock) {
   using policy = detail::transition_lock_policy<FromLock<Mutex>, ToLock<Mutex>>;
   auto _ = typename policy::try_transition_fn{};
@@ -694,11 +695,9 @@ ToLock<Mutex> try_transition_lock(FromLock<Mutex>& lock) {
 //  bounded by a timeout. Waits up to the timeout for the transition to become
 //  available.
 template <
-    template <typename>
-    class ToLock,
+    template <typename> class ToLock,
     typename Mutex,
-    template <typename>
-    class FromLock,
+    template <typename> class FromLock,
     typename Rep,
     typename Period>
 ToLock<Mutex> try_transition_lock_for(
@@ -714,11 +713,9 @@ ToLock<Mutex> try_transition_lock_for(
 //  bounded by a deadline. Waits up to the deadline for the transition to become
 //  available.
 template <
-    template <typename>
-    class ToLock,
+    template <typename> class ToLock,
     typename Mutex,
-    template <typename>
-    class FromLock,
+    template <typename> class FromLock,
     typename Clock,
     typename Duration>
 ToLock<Mutex> try_transition_lock_until(

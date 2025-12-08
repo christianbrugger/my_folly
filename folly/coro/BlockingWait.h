@@ -25,11 +25,14 @@
 #include <folly/coro/detail/Malloc.h>
 #include <folly/coro/detail/Traits.h>
 #include <folly/executors/ManualExecutor.h>
+#include <folly/executors/SequencedExecutor.h>
 #include <folly/fibers/Baton.h>
+#include <folly/lang/MustUseImmediately.h>
 #include <folly/synchronization/Baton.h>
 #include <folly/tracing/AsyncStack.h>
 
 #include <cassert>
+#include <deque>
 #include <exception>
 #include <type_traits>
 #include <utility>
@@ -136,12 +139,6 @@ class BlockingWaitPromise<T&> final : public BlockingWaitPromiseBase {
     result_->emplace(std::ref(value));
     return final_suspend();
   }
-
-#if 0
-  void return_value(T& value) noexcept {
-    result_->emplace(std::ref(value));
-  }
-#endif
 
   void return_void() {
     // This should never be reachable.
@@ -262,24 +259,6 @@ BlockingWaitPromise<void>::get_return_object() noexcept {
 template <
     typename Awaitable,
     typename Result = await_result_t<Awaitable>,
-    std::enable_if_t<!std::is_lvalue_reference<Result>::value, int> = 0>
-auto makeBlockingWaitTask(Awaitable&& awaitable)
-    -> BlockingWaitTask<detail::decay_rvalue_reference_t<Result>> {
-  co_return co_await static_cast<Awaitable&&>(awaitable);
-}
-
-template <
-    typename Awaitable,
-    typename Result = await_result_t<Awaitable>,
-    std::enable_if_t<std::is_lvalue_reference<Result>::value, int> = 0>
-auto makeBlockingWaitTask(Awaitable&& awaitable)
-    -> BlockingWaitTask<detail::decay_rvalue_reference_t<Result>> {
-  co_yield co_await static_cast<Awaitable&&>(awaitable);
-}
-
-template <
-    typename Awaitable,
-    typename Result = await_result_t<Awaitable>,
     std::enable_if_t<std::is_void<Result>::value, int> = 0>
 BlockingWaitTask<void> makeRefBlockingWaitTask(Awaitable&& awaitable) {
   co_await static_cast<Awaitable&&>(awaitable);
@@ -294,7 +273,9 @@ auto makeRefBlockingWaitTask(Awaitable&& awaitable)
   co_yield co_await static_cast<Awaitable&&>(awaitable);
 }
 
-class BlockingWaitExecutor final : public folly::DrivableExecutor {
+class BlockingWaitExecutor final
+    : public folly::DrivableExecutor,
+      public SequencedExecutor {
  public:
   ~BlockingWaitExecutor() override {
     while (keepAliveCount_.load() > 0) {
@@ -307,7 +288,8 @@ class BlockingWaitExecutor final : public folly::DrivableExecutor {
     {
       auto wQueue = queue_.wlock();
       empty = wQueue->empty();
-      wQueue->push_back(std::move(func));
+      wQueue->emplace_back(
+          std::move(func), folly::RequestContext::saveContext());
     }
     if (empty) {
       baton_.post();
@@ -319,10 +301,12 @@ class BlockingWaitExecutor final : public folly::DrivableExecutor {
     baton_.reset();
 
     folly::fibers::runInMainContext([&]() {
-      std::vector<Func> funcs;
-      queue_.swap(funcs);
-      for (auto& func : funcs) {
-        std::exchange(func, nullptr)();
+      std::deque<BlockingWaitTaskInfo> infos;
+      queue_.swap(infos);
+      RequestContextSaverScopeGuard guard;
+      for (auto& info : infos) {
+        folly::RequestContext::setContext(std::move(info.rctx));
+        std::exchange(info.func, nullptr)();
       }
     });
   }
@@ -354,7 +338,14 @@ class BlockingWaitExecutor final : public folly::DrivableExecutor {
         std::memory_order_relaxed));
   }
 
-  folly::Synchronized<std::vector<Func>> queue_;
+  struct BlockingWaitTaskInfo {
+    Func func;
+    std::shared_ptr<folly::RequestContext> rctx;
+    BlockingWaitTaskInfo(Func f, std::shared_ptr<folly::RequestContext> r)
+        : func(std::move(f)), rctx(std::move(r)) {}
+  };
+
+  folly::Synchronized<std::deque<BlockingWaitTaskInfo>> queue_;
   fibers::Baton baton_;
 
   std::atomic<ssize_t> keepAliveCount_{0};
@@ -392,7 +383,11 @@ struct blocking_wait_fn {
             .get(frame));
   }
 
-  template <typename SemiAwaitable>
+  template <
+      typename SemiAwaitable,
+      std::enable_if_t<
+          !folly::ext::must_use_immediately_v<SemiAwaitable>,
+          int> = 0>
   FOLLY_NOINLINE auto operator()(
       SemiAwaitable&& awaitable, folly::DrivableExecutor* executor) const
       -> detail::decay_rvalue_reference_t<semi_await_result_t<SemiAwaitable>> {
@@ -412,10 +407,37 @@ struct blocking_wait_fn {
                 static_cast<SemiAwaitable&&>(awaitable)))
             .getVia(executor, frame));
   }
+  template <
+      typename SemiAwaitable,
+      std::enable_if_t<folly::ext::must_use_immediately_v<SemiAwaitable>, int> =
+          0>
+  FOLLY_NOINLINE auto operator()(
+      SemiAwaitable awaitable, folly::DrivableExecutor* executor) const
+      -> detail::decay_rvalue_reference_t<semi_await_result_t<SemiAwaitable>> {
+    folly::AsyncStackFrame frame;
+    frame.setReturnAddress();
+
+    folly::AsyncStackRoot stackRoot;
+    stackRoot.setNextRoot(folly::tryGetCurrentAsyncStackRoot());
+    stackRoot.setStackFrameContext();
+    stackRoot.setTopFrame(frame);
+
+    return static_cast<
+        std::add_rvalue_reference_t<semi_await_result_t<SemiAwaitable>>>(
+        detail::makeRefBlockingWaitTask(
+            folly::coro::co_viaIfAsync(
+                folly::getKeepAliveToken(executor),
+                folly::ext::must_use_immediately_unsafe_mover(
+                    std::move(awaitable))()))
+            .getVia(executor, frame));
+  }
 
   template <
       typename SemiAwaitable,
-      std::enable_if_t<!is_awaitable_v<SemiAwaitable>, int> = 0>
+      std::enable_if_t<!is_awaitable_v<SemiAwaitable>, int> = 0,
+      std::enable_if_t<
+          !folly::ext::must_use_immediately_v<SemiAwaitable>,
+          int> = 0>
   auto operator()(SemiAwaitable&& awaitable) const
       -> detail::decay_rvalue_reference_t<semi_await_result_t<SemiAwaitable>> {
     std::exception_ptr eptr;
@@ -423,6 +445,27 @@ struct blocking_wait_fn {
       detail::BlockingWaitExecutor executor;
       try {
         return operator()(static_cast<SemiAwaitable&&>(awaitable), &executor);
+      } catch (...) {
+        eptr = current_exception();
+      }
+    }
+    std::rethrow_exception(eptr);
+  }
+  template <
+      typename SemiAwaitable,
+      std::enable_if_t<!is_awaitable_v<SemiAwaitable>, int> = 0,
+      std::enable_if_t<folly::ext::must_use_immediately_v<SemiAwaitable>, int> =
+          0>
+  auto operator()(SemiAwaitable awaitable) const
+      -> detail::decay_rvalue_reference_t<semi_await_result_t<SemiAwaitable>> {
+    std::exception_ptr eptr;
+    {
+      detail::BlockingWaitExecutor executor;
+      try {
+        return operator()(
+            folly::ext::must_use_immediately_unsafe_mover(
+                std::move(awaitable))(),
+            &executor);
       } catch (...) {
         eptr = current_exception();
       }

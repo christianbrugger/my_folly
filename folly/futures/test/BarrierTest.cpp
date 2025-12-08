@@ -20,8 +20,6 @@
 #include <condition_variable>
 #include <mutex>
 
-#include <glog/logging.h>
-
 #include <folly/Random.h>
 #include <folly/portability/GTest.h>
 
@@ -48,7 +46,7 @@ TEST(BarrierTest, Simple) {
     threads.emplace_back([&]() {
       barrier.wait()
           .thenValue([&](bool v) {
-            std::unique_lock<std::mutex> lock(mutex);
+            std::unique_lock lock(mutex);
             b1TrueSeen += uint32_t(v);
             if (++b1Passed == numThreads) {
               b1DoneCond.notify_one();
@@ -56,7 +54,7 @@ TEST(BarrierTest, Simple) {
             return barrier.wait();
           })
           .thenValue([&](bool v) {
-            std::unique_lock<std::mutex> lock(mutex);
+            std::unique_lock lock(mutex);
             b2TrueSeen += uint32_t(v);
             if (++b2Passed == numThreads) {
               b2DoneCond.notify_one();
@@ -74,7 +72,7 @@ TEST(BarrierTest, Simple) {
   b1TrueSeen += barrier.wait().get();
 
   {
-    std::unique_lock<std::mutex> lock(mutex);
+    std::unique_lock lock(mutex);
     while (b1Passed != numThreads) {
       b1DoneCond.wait(lock);
     }
@@ -89,7 +87,7 @@ TEST(BarrierTest, Simple) {
   b2TrueSeen += barrier.wait().get();
 
   {
-    std::unique_lock<std::mutex> lock(mutex);
+    std::unique_lock lock(mutex);
     while (b2Passed != numThreads) {
       b2DoneCond.wait(lock);
     }

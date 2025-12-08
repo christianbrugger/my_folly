@@ -31,11 +31,12 @@ using namespace std::literals::chrono_literals;
 using irl_clock = IntervalRateLimiter::clock;
 
 void intervalTest(uint64_t eventsPerInterval, irl_clock::duration interval) {
-  SCOPED_TRACE(folly::to<std::string>(
-      eventsPerInterval,
-      " events every ",
-      duration_cast<std::chrono::milliseconds>(interval).count(),
-      "ms"));
+  SCOPED_TRACE(
+      folly::to<std::string>(
+          eventsPerInterval,
+          " events every ",
+          duration_cast<std::chrono::milliseconds>(interval).count(),
+          "ms"));
   IntervalRateLimiter limiter{eventsPerInterval, interval};
   for (int iter = 0; iter < 4; ++iter) {
     if (iter != 0) {
@@ -86,7 +87,7 @@ TEST(RateLimiter, concurrentThreads) {
     // This hopefully gives us the best chance of having all threads start
     // at close to the same time.
     {
-      std::unique_lock<std::mutex> lock{m};
+      std::unique_lock lock{m};
       cv.wait(lock, [&go] { return go; });
     }
 
@@ -106,7 +107,7 @@ TEST(RateLimiter, concurrentThreads) {
 
   // Set go to true and notify all the threads
   {
-    std::lock_guard<std::mutex> lg(m);
+    std::lock_guard lg(m);
     go = true;
   }
   cv.notify_all();

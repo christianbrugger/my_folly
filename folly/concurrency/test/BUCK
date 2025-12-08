@@ -1,10 +1,12 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
 load("@fbcode_macros//build_defs:cpp_benchmark.bzl", "cpp_benchmark")
 load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
 load("@fbcode_macros//build_defs:cpp_unittest.bzl", "cpp_unittest")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "cache_locality_benchmark",
     srcs = ["CacheLocalityBenchmark.cpp"],
     headers = [],
@@ -18,7 +20,17 @@ cpp_binary(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_binary,
+    name = "cache_locality_init_main",
+    srcs = ["CacheLocalityInitMain.cpp"],
+    deps = [
+        "//folly/concurrency:cache_locality",
+    ],
+)
+
+fbcode_target(
+    _kind = cpp_unittest,
     name = "cache_locality_test",
     srcs = ["CacheLocalityTest.cpp"],
     headers = [],
@@ -29,13 +41,15 @@ cpp_unittest(
         "//folly/portability:sys_resource",
         "//folly/portability:unistd",
         "//folly/test:test_utils",
+        "//folly/testing:test_util",
     ],
     external_deps = [
         "glog",
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "atomic_shared_ptr_test",
     srcs = ["AtomicSharedPtrTest.cpp"],
     headers = ["AtomicSharedPtrCounted.h"],
@@ -53,7 +67,8 @@ cpp_unittest(
     ],
 )
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "atomic_shared_ptr_performance",
     srcs = ["AtomicSharedPtrPerformance.cpp"],
     deps = [
@@ -62,7 +77,8 @@ cpp_binary(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "core_cached_shared_ptr_test",
     srcs = ["CoreCachedSharedPtrTest.cpp"],
     headers = [],
@@ -75,27 +91,49 @@ cpp_unittest(
         "//folly/concurrency/memory:read_mostly_shared_ptr",
         "//folly/portability:config",
         "//folly/portability:gtest",
+        "//folly/system:hardware_concurrency",
     ],
 )
 
-cpp_benchmark(
+fbcode_target(
+    _kind = cpp_benchmark,
     name = "concurrent_hash_map_bench",
     srcs = ["ConcurrentHashMapBench.cpp"],
     headers = [],
     deps = [
+        "//folly:benchmark_util",
         "//folly/concurrency:concurrent_hash_map",
         "//folly/portability:gflags",
         "//folly/synchronization/test:barrier",
+        "//folly/system:hardware_concurrency",
     ],
 )
 
-cpp_unittest(
-    name = "concurrent_hash_map_test",
-    srcs = ["ConcurrentHashMapTest.cpp"],
+fbcode_target(
+    _kind = cpp_unittest,
+    name = "concurrent_hash_map_stress_test",
+    srcs = ["ConcurrentHashMapStressTest.cpp"],
     labels = [
+        # each test runs 2^16 threads, which is very slow and very heavyweight,
+        # and which interacts very poorly with any parallelism between tests
+        "glacial",
         "heavyweight",
+        "serialize",
         "slow",
     ],
+    supports_static_listing = False,
+    deps = [
+        "//folly:traits",
+        "//folly/concurrency:concurrent_hash_map",
+        "//folly/portability:gtest",
+        "//folly/synchronization:latch",
+    ],
+)
+
+fbcode_target(
+    _kind = cpp_unittest,
+    name = "concurrent_hash_map_test",
+    srcs = ["ConcurrentHashMapTest.cpp"],
     supports_static_listing = False,
     deps = [
         "//folly:traits",
@@ -109,13 +147,32 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
-    name = "concurrent_hash_map_test_no_simd",
-    srcs = ["ConcurrentHashMapTest.cpp"],
+fbcode_target(
+    _kind = cpp_unittest,
+    name = "concurrent_hash_map_stress_test_no_simd",
+    srcs = ["ConcurrentHashMapStressTest.cpp"],
     labels = [
+        # each test runs 2^16 threads, which is very slow and very heavyweight,
+        # and which interacts very poorly with any parallelism between tests
+        "glacial",
         "heavyweight",
+        "serialize",
         "slow",
     ],
+    preprocessor_flags = ["-DFOLLY_F14_FORCE_FALLBACK=1"],
+    supports_static_listing = False,
+    deps = [
+        "//folly:traits",
+        "//folly/concurrency:concurrent_hash_map",
+        "//folly/portability:gtest",
+        "//folly/synchronization:latch",
+    ],
+)
+
+fbcode_target(
+    _kind = cpp_unittest,
+    name = "concurrent_hash_map_test_no_simd",
+    srcs = ["ConcurrentHashMapTest.cpp"],
     preprocessor_flags = ["-DFOLLY_F14_FORCE_FALLBACK=1"],
     supports_static_listing = False,
     deps = [
@@ -130,7 +187,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "dynamic_bounded_queue_test",
     srcs = ["DynamicBoundedQueueTest.cpp"],
     headers = [],
@@ -146,7 +204,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "priority_unbounded_queue_set_test",
     srcs = ["PriorityUnboundedQueueSetTest.cpp"],
     deps = [
@@ -157,7 +216,8 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "unbounded_queue_test",
     srcs = ["UnboundedQueueTest.cpp"],
     headers = [],
@@ -175,7 +235,8 @@ cpp_unittest(
     ],
 )
 
-cpp_benchmark(
+fbcode_target(
+    _kind = cpp_benchmark,
     name = "thread_cached_synchronized_bench",
     srcs = ["ThreadCachedSynchronizedBench.cpp"],
     deps = [
@@ -186,17 +247,18 @@ cpp_benchmark(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "thread_cached_synchronized_test",
     srcs = ["ThreadCachedSynchronizedTest.cpp"],
     deps = [
         "//folly/concurrency:thread_cached_synchronized",
-        "//folly/lang:keep",
         "//folly/portability:gtest",
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "process_local_unique_id_test",
     srcs = ["ProcessLocalUniqueIdTest.cpp"],
     deps = [
@@ -206,7 +268,8 @@ cpp_unittest(
     ],
 )
 
-cpp_binary(
+fbcode_target(
+    _kind = cpp_binary,
     name = "singleton_relaxed_counter_bench",
     srcs = [
         "SingletonRelaxedCounterBench.cpp",
@@ -223,7 +286,8 @@ cpp_binary(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "singleton_relaxed_counter_test",
     srcs = [
         "SingletonRelaxedCounterTest.cpp",

@@ -25,6 +25,7 @@
 #include <type_traits>
 #include <typeinfo>
 #include <utility>
+#include <fmt/format.h>
 
 #include <folly/CPortability.h>
 #include <folly/CppAttributes.h>
@@ -126,8 +127,6 @@ class exception_wrapper final {
   template <class This, class... CatchFns>
   static void handle_(This& this_, char const* name, CatchFns&... fns);
 
-  static std::exception_ptr extract_(std::exception_ptr&&) noexcept;
-
  public:
   //! Default-constructs an empty `exception_wrapper`
   //! \post `type() == nullptr`
@@ -206,23 +205,40 @@ class exception_wrapper final {
 
   //! \return a pointer to the `std::exception` held by `*this`, if it holds
   //!     one; otherwise, returns `nullptr`.
-  std::exception* get_exception() noexcept;
-  //! \overload
+  std::exception* get_mutable_exception() const noexcept;
   std::exception const* get_exception() const noexcept;
 
   //! \returns a pointer to the `Ex` held by `*this`, if it holds an object
   //!     whose type `From` permits `std::is_convertible<From*, Ex*>`;
   //!     otherwise, returns `nullptr`.
-  template <typename Ex>
-  Ex* get_exception() noexcept;
+  //!
+  //! `folly::get_exception<Ex>(ew)` is identical, but avoids the "dependent
+  //! template" wart, and supports inspecting other types.
+  //!
+  //! This is most efficient when `Ex` matches the exact stored type, or when
+  //! the type alias `Ex::folly_get_exception_hint_types` has a good hint.
   //! \overload
+  template <typename Ex>
+  Ex* get_mutable_exception() const noexcept;
   template <typename Ex>
   Ex const* get_exception() const noexcept;
 
   //! \return A `std::exception_ptr` that references the exception held by
   //!     `*this`.
-  std::exception_ptr to_exception_ptr() const noexcept;
-  std::exception_ptr const& exception_ptr_ref() const noexcept;
+  std::exception_ptr to_exception_ptr() const& noexcept;
+  // NB: Can add this back, if a good use-case arises.
+  std::exception_ptr to_exception_ptr() && = delete;
+
+  std::exception_ptr& exception_ptr() & noexcept;
+  std::exception_ptr const& exception_ptr() const& noexcept;
+  std::exception_ptr&& exception_ptr() && noexcept;
+  std::exception_ptr const&& exception_ptr() const&& noexcept;
+
+  //! \return `true` if the wrappers point to the same exception object
+  friend inline bool operator==(
+      exception_wrapper const& lhs, exception_wrapper const& rhs) noexcept {
+    return lhs.ptr_ == rhs.ptr_;
+  }
 
   //! Returns the `typeid` of the wrapped exception object. If there is no
   //!     wrapped exception object, returns `nullptr`.
@@ -327,6 +343,16 @@ class exception_wrapper final {
   //! \overload
   template <class... CatchFns>
   void handle(CatchFns... fns) const;
+
+  // Implement the `folly::get_exception<Ex>(ew)` protocol
+  template <typename Ex>
+  Ex const* get_exception(get_exception_tag_t) const noexcept {
+    return get_exception<Ex>();
+  }
+  template <typename Ex>
+  Ex* get_mutable_exception(get_exception_tag_t) const noexcept {
+    return get_mutable_exception<Ex>();
+  }
 };
 
 /**
@@ -369,7 +395,23 @@ exception_wrapper try_and_catch(F&& fn) noexcept {
   auto x = [&] { return void(static_cast<F&&>(fn)()), std::exception_ptr{}; };
   return exception_wrapper{catch_exception(x, current_exception)};
 }
+
+/**
+ * A convenience shorthand for `exception_wrapper(current_exception())`.
+ */
+inline exception_wrapper current_exception_wrapper() noexcept {
+  return exception_wrapper{current_exception()};
+}
+
 } // namespace folly
+
+template <>
+struct fmt::formatter<folly::exception_wrapper> : formatter<folly::fbstring> {
+  template <typename Context>
+  auto format(const folly::exception_wrapper& ew, Context& ctx) const {
+    return formatter<folly::fbstring>::format(ew.what(), ctx);
+  }
+};
 
 #include <folly/ExceptionWrapper-inl.h>
 

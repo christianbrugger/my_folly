@@ -1,12 +1,14 @@
-load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbsource//tools/build_defs/dirsync:fb_dirsync_cpp_library.bzl", "fb_dirsync_cpp_library")
+load("../../defs.bzl", "folly_xplat_library")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "transport_callback_base",
     headers = [
         "TransportCallbackBase.h",
     ],
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         "//folly:portability",
         "//folly/coro:baton",
@@ -16,11 +18,12 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "transport_callbacks",
     headers = [
         "TransportCallbacks.h",
     ],
+    xplat_impl = folly_xplat_library,
     exported_deps = [
         ":transport_callback_base",
         "//folly:network_address",
@@ -32,7 +35,7 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "socket",
     srcs = [
         "ServerSocket.cpp",
@@ -42,6 +45,7 @@ cpp_library(
         "ServerSocket.h",
         "Transport.h",
     ],
+    xplat_impl = folly_xplat_library,
     deps = [
         ":transport_callbacks",
         "//folly:portability",

@@ -20,6 +20,7 @@
 #include <mutex>
 #include <random>
 
+#include <glog/logging.h>
 #include <folly/CppAttributes.h>
 #include <folly/SingletonThreadLocal.h>
 #include <folly/ThreadLocal.h>
@@ -29,10 +30,9 @@
 #include <folly/portability/Unistd.h>
 #include <folly/synchronization/RelaxedAtomic.h>
 
-#include <glog/logging.h>
-
-#ifdef _MSC_VER
+#ifdef _WIN32
 #include <wincrypt.h> // @manual
+#pragma comment(lib, "advapi32.lib")
 #else
 #include <fcntl.h>
 #endif
@@ -46,7 +46,7 @@ namespace folly {
 namespace {
 
 void readRandomDevice(void* data, size_t size) {
-#ifdef _MSC_VER
+#ifdef _WIN32
   static auto const cryptoProv = [] {
     HCRYPTPROV prov;
     if (!CryptAcquireContext(

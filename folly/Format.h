@@ -57,8 +57,6 @@ template <bool containerMode, class... Args>
 class Formatter;
 template <class... Args>
 Formatter<false, Args...> format(StringPiece fmt, Args&&... args);
-template <class C>
-std::string svformat(StringPiece fmt, C&& container);
 template <class T, class Enable = void>
 class FormatValue;
 
@@ -158,7 +156,7 @@ class BaseFormatterImpl<
   /**
    * Metadata to identify generated children of BaseFormatter
    */
-  typedef detail::FormatterTag IsFormatter;
+  using IsFormatter = detail::FormatterTag;
 
  private:
   template <typename T, typename D = typename std::decay<T>::type>
@@ -181,8 +179,7 @@ class BaseFormatterImpl<
     return static_cast<int>(static_cast<const V&>(values_).value);
   }
   void getSizeArg(int* out) const {
-    using _ = int[];
-    void(_{(out[I] = getSizeArgAt<I, Args>(IsSizeable<Args>{}))..., 0});
+    ((out[I] = getSizeArgAt<I, Args>(IsSizeable<Args>{})), ...);
   }
 
  protected:
@@ -250,8 +247,6 @@ class Formatter
       Str* out, StringPiece fmt, A&&... args);
   template <class... A>
   friend std::string sformat(StringPiece fmt, A&&... arg);
-  template <class C>
-  friend std::string svformat(StringPiece fmt, C&& container);
 };
 
 namespace detail {
@@ -288,8 +283,7 @@ template <class... Args>
 [[deprecated(
     "Use fmt::format instead of folly::format for better performance, build "
     "times and compatibility with std::format")]] //
-Formatter<false, Args...>
-format(StringPiece fmt, Args&&... args) {
+Formatter<false, Args...> format(StringPiece fmt, Args&&... args) {
   return Formatter<false, Args...>(fmt, static_cast<Args&&>(args)...);
 }
 
@@ -300,29 +294,6 @@ format(StringPiece fmt, Args&&... args) {
 template <class... Args>
 inline std::string sformat(StringPiece fmt, Args&&... args) {
   return Formatter<false, Args...>(fmt, static_cast<Args&&>(args)...).str();
-}
-
-/**
- * Create a formatter object that takes one argument (of container type)
- * and uses that container to get argument values from.
- *
- * std::map<string, string> map { {"hello", "world"}, {"answer", "42"} };
- *
- * The following are equivalent:
- * sformat("{0[hello]} {0[answer]}", map);
- *
- * svformat("{hello} {answer}", map);
- *
- * but the latter is cleaner.
- */
-template <class Container>
-[[deprecated(
-    "Use fmt::format instead of folly::svformat for better performance, build "
-    "times and compatibility with std::format")]] //
-inline std::string
-svformat(StringPiece fmt, Container&& container) {
-  return Formatter<true, Container>(fmt, static_cast<Container&&>(container))
-      .str();
 }
 
 /**

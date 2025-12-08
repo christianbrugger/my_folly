@@ -29,7 +29,7 @@ class UnboundedBlockingQueue : public BlockingQueue<T> {
       const typename Semaphore::Options& semaphoreOptions = {})
       : sem_(semaphoreOptions) {}
 
-  BlockingQueueAddResult add(T item) override {
+  BlockingQueueAddResult add(T&& item) override {
     queue_.enqueue(std::move(item));
     return sem_.post();
   }
@@ -46,7 +46,7 @@ class UnboundedBlockingQueue : public BlockingQueue<T> {
     return queue_.dequeue();
   }
 
-  size_t size() override { return queue_.size(); }
+  size_t size() override { return sem_.valueGuess(); }
 
  private:
   Semaphore sem_;

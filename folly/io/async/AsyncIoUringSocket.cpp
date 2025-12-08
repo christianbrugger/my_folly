@@ -20,6 +20,7 @@
 #include <folly/io/async/AsyncIoUringSocket.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/IoUringEventBaseLocal.h>
+#include <folly/io/async/IoUringProvidedBufferRing.h>
 #include <folly/memory/Malloc.h>
 #include <folly/portability/SysUio.h>
 
@@ -99,7 +100,7 @@ AsyncIoUringSocket::AsyncIoUringSocket(EventBase* evb, Options&& options)
     : evb_(evb), options_(std::move(options)) {
   backend_ = getBackendFromEventBase(evb);
 
-  if (!backend_->bufferProvider()) {
+  if (!backend_->hasBufferProvider()) {
     throw std::runtime_error("require a IoUringBackend with a buffer provider");
   }
   readSqe_ = ReadSqe::UniquePtr(new ReadSqe(this));
@@ -141,12 +142,17 @@ AsyncIoUringSocket::ReadSqe::ReadSqe(AsyncIoUringSocket* parent)
     : IoSqeBase(IoSqeBase::Type::Read), parent_(parent) {
   supportsMultishotRecv_ = parent->options_.multishotRecv &&
       parent->backend_->kernelSupportsRecvmsgMultishot();
+  useBundles_ = parent->options_.useBundles;
+  // If the backend for this socket has an IoUringZeroCopyBufferPool, then zero
+  // copy is enabled implicitly.
+  supportsZeroCopyRx_ = parent->backend_->zcBufferPool() != nullptr;
+  setEventBase(parent->evb_);
 }
 
 AsyncIoUringSocket::~AsyncIoUringSocket() {
   VLOG(3) << "~AsyncIoUringSocket() " << this;
 
-  // this is a bit unnecesary if we are already closed, but proper state
+  // this is a bit unnecessary if we are already closed, but proper state
   // tracking is coming later and will be easier to handle then
   closeNow();
 
@@ -198,7 +204,12 @@ bool AsyncIoUringSocket::supports(EventBase* eb) {
   if (!io) {
     io = IoUringEventBaseLocal::try_get(eb);
   }
-  return io && io->bufferProvider() != nullptr;
+  return io && io->hasBufferProvider();
+}
+
+bool AsyncIoUringSocket::supportsZcRx(EventBase* eb) {
+  IoUringBackend* io = dynamic_cast<IoUringBackend*>(eb->getBackend());
+  return io && io->zcBufferPool() != nullptr;
 }
 
 void AsyncIoUringSocket::connect(
@@ -268,9 +279,11 @@ void AsyncIoUringSocket::connect(
     // IP_BIND_ADDRESS_NO_PORT forces the OS to find a unique port relying
     // on only the local tuple. This limits the range of available ephemeral
     // ports.  Using the IP_BIND_ADDRESS_NO_PORT delays assigning a port until
-    // connect expanding the available port range.
+    // connect expanding the available port range, unless
+    // setBindAddressNoPort() is called.
     if (bindAddr.getPort() == 0) {
-      if (setSockOpt(IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, &one, sizeof(one))) {
+      if (bindAddressNoPort_ &&
+          setSockOpt(IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, &one, sizeof(one))) {
         auto errnoCopy = errno;
         callback->connectErr(AsyncSocketException(
             AsyncSocketException::NOT_OPEN,
@@ -441,7 +454,7 @@ void AsyncIoUringSocket::readEOF() {
 void AsyncIoUringSocket::readError() {
   VLOG(4) << " AsyncIoUringSocket::readError() this=" << this;
   state_ = State::Error;
-  failAllWrites();
+  shutdownFlags_ |= ShutFlags_Read | ShutFlags_Write;
 }
 
 void AsyncIoUringSocket::setReadCB(ReadCallback* callback) {
@@ -531,9 +544,8 @@ void AsyncIoUringSocket::ReadSqe::setReadCallback(
       << " inflight=" << inFlight() << " good_=" << parent_->good()
       << " submitNow=" << submitNow;
 
-  if (callback == readCallback_) {
-    // copied from AsyncSocket
-    VLOG(9) << "cb the same";
+  if (callback == readCallback_ && (!submitNow || inFlight())) {
+    VLOG(9) << "cb the same, skipping";
     return;
   }
   setReadCbCount_++;
@@ -587,6 +599,13 @@ void AsyncIoUringSocket::ReadSqe::processOldEventBaseRead() {
   }
 }
 
+bool AsyncIoUringSocket::ReadSqe::isEOF(const io_uring_cqe* cqe) noexcept {
+  if (supportsZeroCopyRx_ && useZeroCopyRx_) {
+    return cqe->res == 0 && cqe->flags == 0;
+  }
+  return cqe->res == 0;
+}
+
 void AsyncIoUringSocket::ReadSqe::callback(const io_uring_cqe* cqe) noexcept {
   auto res = cqe->res;
   auto flags = cqe->flags;
@@ -597,14 +616,13 @@ void AsyncIoUringSocket::ReadSqe::callback(const io_uring_cqe* cqe) noexcept {
           << " has_buffer=" << !!(flags & IORING_CQE_F_BUFFER)
           << " bytes_received=" << bytesReceived_;
   DestructorGuard dg(this);
-  auto buffer_guard = makeGuard([&, bp = lastUsedBufferProvider_] {
-    if (flags & IORING_CQE_F_BUFFER) {
-      DCHECK(bp);
-      if (bp) {
-        bp->unusedBuf(flags >> 16);
-      }
-    }
+  bool hasMore = (flags & IORING_CQE_F_BUF_MORE) != 0;
+  auto buffer_guard = makeGuard([&] {
+    CHECK(!(flags & IORING_CQE_F_BUFFER))
+        << "Buffer guard invoked but IORING_CQE_F_BUFFER is set! " << "flags=0x"
+        << std::hex << flags << " res=" << std::dec << res;
   });
+
   if (!readCallback_) {
     if (res == -ENOBUFS || res == -ECANCELED) {
       // ignore
@@ -615,13 +633,14 @@ void AsyncIoUringSocket::ReadSqe::callback(const io_uring_cqe* cqe) noexcept {
       }
     } else if (res > 0 && lastUsedBufferProvider_) {
       // must take the buffer
+      uint16_t bufId = flags >> IORING_CQE_BUFFER_SHIFT;
       appendReadData(
-          lastUsedBufferProvider_->getIoBuf(flags >> 16, res),
+          lastUsedBufferProvider_->getIoBuf(bufId, res, hasMore),
           queuedReceivedData_);
       buffer_guard.dismiss();
     }
   } else {
-    if (res == 0) {
+    if (isEOF(cqe)) {
       if (parent_) {
         parent_->readEOF();
       }
@@ -637,7 +656,12 @@ void AsyncIoUringSocket::ReadSqe::callback(const io_uring_cqe* cqe) noexcept {
       }
     } else if (res < 0) {
       // assume ECANCELED is not an unrecoverable error state, but we do still
-      // have to propogate to the callback as they presumably called the cancel.
+      // have to propagate to the callback as they presumably called the cancel.
+      auto callback = readCallback_;
+      if (parent_ && res != -ECANCELED) {
+        readCallback_ = nullptr;
+        parent_->readError();
+      }
       AsyncSocketException::AsyncSocketExceptionType err;
       std::string error;
       switch (res) {
@@ -655,17 +679,24 @@ void AsyncIoUringSocket::ReadSqe::callback(const io_uring_cqe* cqe) noexcept {
               ")");
           break;
       }
-      readCallback_->readErr(AsyncSocketException(err, std::move(error)));
+      callback->readErr(AsyncSocketException(err, error));
       if (parent_ && res != -ECANCELED) {
-        parent_->readError();
+        parent_->failAllWrites();
       }
     } else {
       uint64_t const cb_was = setReadCbCount_;
       bytesReceived_ += res;
-      if (lastUsedBufferProvider_) {
+      if (supportsZeroCopyRx_ && useZeroCopyRx_) {
+        const io_uring_zcrx_cqe* rcqe = (io_uring_zcrx_cqe*)(cqe + 1);
+        auto pool = parent_->backend_->zcBufferPool();
+        sendReadBuf(pool->getIoBuf(cqe, rcqe), queuedReceivedData_);
+        buffer_guard.dismiss();
+      } else if (lastUsedBufferProvider_) {
+        auto bufId = flags >> 16;
         sendReadBuf(
-            lastUsedBufferProvider_->getIoBuf(flags >> 16, res),
+            lastUsedBufferProvider_->getIoBuf(bufId, res, hasMore),
             queuedReceivedData_);
+
         buffer_guard.dismiss();
       } else {
         // slow path as must have run out of buffers
@@ -725,7 +756,10 @@ void AsyncIoUringSocket::ReadSqe::processSubmit(
     maxSize_ = tmpBuffer_->tailroom();
     ::io_uring_prep_recv(sqe, fd, tmpBuffer_->writableTail(), maxSize_, 0);
   } else {
-    if (readCallbackUseIoBufs()) {
+    if (supportsZeroCopyRx_ && useZeroCopyRx_) {
+      ::io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, fd, nullptr, 0, 0);
+      sqe->ioprio |= IORING_RECV_MULTISHOT;
+    } else if (readCallbackUseIoBufs()) {
       auto* bp = parent_->backend_->bufferProvider();
       if (bp->available()) {
         lastUsedBufferProvider_ = bp;
@@ -739,6 +773,10 @@ void AsyncIoUringSocket::ReadSqe::processSubmit(
         } else {
           ioprio_flags = 0;
           used_len = maxSize_;
+        }
+
+        if (useBundles_) {
+          ioprio_flags |= IORING_RECVSEND_BUNDLE;
         }
 
         ::io_uring_prep_recv(sqe, fd, nullptr, used_len, 0);
@@ -868,6 +906,8 @@ AsyncIoUringSocket::WriteSqe::WriteSqe(
   msg_.msg_control = nullptr;
   msg_.msg_controllen = 0;
   msg_.msg_flags = 0;
+
+  setEventBase(parent->evb_);
 }
 
 int AsyncIoUringSocket::WriteSqe::sendMsgFlags() const {
@@ -1019,8 +1059,8 @@ void AsyncIoUringSocket::attachEventBase(EventBase* evb) {
     std::move(*detachedWriteResult_)
         .via(evb)
         .thenValue(
-            [w = writeSqeActive_,
-             a = std::weak_ptr<folly::Unit>(alive_)](auto&& resFlagsPairs) {
+            [w = writeSqeActive_, a = std::weak_ptr<folly::Unit>(alive_), evb](
+                auto&& resFlagsPairs) {
               VLOG(5) << "attached write done, " << resFlagsPairs.size();
               if (!a.lock()) {
                 return;
@@ -1031,6 +1071,7 @@ void AsyncIoUringSocket::attachEventBase(EventBase* evb) {
                 cqe.res = res;
                 cqe.flags = flags;
 
+                evb->bumpHandlingTime();
                 if (w->cancelled()) {
                   w->callbackCancelled(&cqe);
                 } else {
@@ -1138,6 +1179,10 @@ void AsyncIoUringSocket::detachEventBase() {
   }
   readSqe_ = ReadSqe::UniquePtr(new ReadSqe(this));
   readSqe_->setReadCallback(oldReadCallback, false);
+  readSqe_->setEventBase(nullptr);
+  SocketAddress remoteAddr;
+  getPeerAddress(&remoteAddr);
+  readSqe_->setUseZeroCopyRx(!remoteAddr.isLoopbackAddress());
 
   unregisterFd();
   if (!drc) {
@@ -1151,16 +1196,17 @@ void AsyncIoUringSocket::detachEventBase() {
     auto res = drc->prom.getSemiFuture();
     if (previous) {
       VLOG(4) << "Setting promise from previous and this one";
-      readSqe_->setOldEventBaseRead(std::move(*previous).deferValue(
-          [r = std::move(res)](
-              std::unique_ptr<folly::IOBuf>&& prevRes) mutable {
-            return std::move(r).deferValue(
-                [p = std::move(prevRes)](
-                    std::unique_ptr<folly::IOBuf>&& nextRes) mutable {
-                  p->appendToChain(std::move(nextRes));
-                  return std::move(p);
-                });
-          }));
+      readSqe_->setOldEventBaseRead(
+          std::move(*previous).deferValue(
+              [r = std::move(res)](
+                  std::unique_ptr<folly::IOBuf>&& prevRes) mutable {
+                return std::move(r).deferValue(
+                    [p = std::move(prevRes)](
+                        std::unique_ptr<folly::IOBuf>&& nextRes) mutable {
+                      p->appendToChain(std::move(nextRes));
+                      return std::move(p);
+                    });
+              }));
     } else {
       VLOG(4) << "Setting promise from this one";
       readSqe_->setOldEventBaseRead(std::move(res));
@@ -1178,6 +1224,7 @@ folly::Optional<folly::SemiFuture<std::unique_ptr<IOBuf>>>
 AsyncIoUringSocket::ReadSqe::detachEventBase() {
   alive_ = nullptr;
   parent_ = nullptr;
+  setEventBase(nullptr);
   return std::move(oldEventBaseRead_);
 }
 
@@ -1193,6 +1240,7 @@ void AsyncIoUringSocket::ReadSqe::attachEventBase() {
     return;
   }
   auto* evb = parent_->evb_;
+  setEventBase(evb);
   alive_ = std::make_shared<folly::Unit>();
   folly::Func deferred =
       [p = parent_, a = std::weak_ptr<folly::Unit>(alive_)]() {
@@ -1219,6 +1267,7 @@ AsyncIoUringSocket::FastOpenSqe::FastOpenSqe(
       parent_(parent),
       initialWrite(std::move(i)) {
   addrLen_ = addr.getAddress(&addrStorage);
+  setEventBase(parent->evb_);
 }
 
 void AsyncIoUringSocket::FastOpenSqe::cleanupMsg() noexcept {
@@ -1244,7 +1293,7 @@ void AsyncIoUringSocket::processWriteQueue() noexcept {
     shutdownWriteNow();
     return;
   }
-  if (state_ != State::Established) {
+  if (state_ != State::Established && !connecting()) {
     failAllWrites();
     return;
   }
@@ -1311,6 +1360,7 @@ AsyncIoUringSocket::WriteSqe::detachEventBase() {
   newSqe->refs_ = refs_;
 
   parent_ = nullptr;
+  setEventBase(nullptr);
   detachedSignal_ =
       [prom = std::move(promise),
        ret = std::vector<std::pair<int, uint32_t>>{},
@@ -1763,7 +1813,7 @@ int AsyncIoUringSocket::setSockOpt(
   return ::setsockopt(fd_.toFd(), level, optname, optval, optsize);
 }
 
-bool AsyncIoUringSocket::getTFOSucceded() const {
+bool AsyncIoUringSocket::getTFOSucceeded() const {
   return detail::tfo_succeeded(fd_);
 }
 
@@ -1790,20 +1840,24 @@ void AsyncIoUringSocket::registerFd() {
 void AsyncIoUringSocket::setFd(NetworkSocket ns) {
   fd_ = ns;
   try {
-    if (!backend_->kernelHasNonBlockWriteFixes()) {
-      // If the kernel doesnt have the fixes we have to disable the nonblock
-      // flag It will still be NONBLOCK as long as it goes through io_uring, but
-      // if we leave the flag then IO_URING will spin on some ops.
-      int flags =
-          ensureSocketReturnCode(fcntl(ns.toFd(), F_GETFL, 0), "get flags");
-      flags = flags & ~O_NONBLOCK;
-      ensureSocketReturnCode(fcntl(ns.toFd(), F_SETFL, flags), "set flags");
-    }
+    int flags =
+        ensureSocketReturnCode(fcntl(ns.toFd(), F_GETFL, 0), "get flags");
+    flags = flags & ~O_NONBLOCK;
+    ensureSocketReturnCode(fcntl(ns.toFd(), F_SETFL, flags), "set flags");
     registerFd();
   } catch (std::exception const& e) {
     LOG(ERROR) << "unable to setFd " << ns.toFd() << " : " << e.what();
     fileops::close(ns.toFd());
     throw;
+  }
+  // Only actually enable zero copy receive if the socket is not from loopback.
+  // There is no 'zero copy' for loopback anyway, and issuing recvzc requests
+  // for a loopback socket will always hit the inefficient copy fallback path.
+  // Better to simply issue normal multishot recv.
+  if (readSqe_) {
+    SocketAddress remoteAddr;
+    getPeerAddress(&remoteAddr);
+    readSqe_->setUseZeroCopyRx(!remoteAddr.isLoopbackAddress());
   }
 }
 

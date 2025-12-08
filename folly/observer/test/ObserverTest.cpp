@@ -20,6 +20,7 @@
 #include <thread>
 
 #include <utility>
+#include <folly/Demangle.h>
 #include <folly/Singleton.h>
 #include <folly/fibers/FiberManager.h>
 #include <folly/fibers/FiberManagerMap.h>
@@ -29,22 +30,52 @@
 #include <folly/observer/ReadMostlyTLObserver.h>
 #include <folly/observer/SimpleObservable.h>
 #include <folly/observer/WithJitter.h>
+#include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/AsymmetricThreadFence.h>
+#include <folly/synchronization/AtomicUtil.h>
 #include <folly/synchronization/Baton.h>
 
 using namespace std::literals;
-using namespace folly::observer;
+using ::testing::StartsWith;
 
 namespace {
 
 template <typename T>
-struct AltAtomic : std::atomic<T> {};
+struct AltAtomic : std::atomic<T> {
+  using std::atomic<T>::atomic;
+  using std::atomic<T>::operator=;
+};
 
+template <typename F>
+struct NamedCreator {
+  std::string name;
+  F creator;
+
+  NamedCreator(std::string nameP, F&& creatorP)
+      : name(std::move(nameP)), creator(std::forward<F>(creatorP)) {}
+
+  const std::string& getName() const { return name; }
+
+  auto operator()() const { return creator(); }
+};
 } // namespace
+
+template <>
+struct folly::atomic_thread_fence_traits<AltAtomic>
+    : folly::atomic_thread_fence_traits<std::atomic> {};
+
+template <>
+struct folly::asymmetric_thread_fence_traits<AltAtomic>
+    : folly::asymmetric_thread_fence_traits<std::atomic> {};
+
+namespace folly {
+namespace observer {
 
 TEST(Observer, Observable) {
   SimpleObservable<int> observable(42);
   auto observer = observable.getObserver();
+  auto snapshot1 = observer.getSnapshot();
 
   EXPECT_EQ(42, **observer);
 
@@ -61,6 +92,8 @@ TEST(Observer, Observable) {
   EXPECT_TRUE(baton.try_wait_for(std::chrono::seconds{1}));
 
   EXPECT_EQ(24, **observer);
+  const auto snapshot2 = observer.getSnapshot();
+  EXPECT_GT(snapshot2.getTimeCreated(), snapshot1.getTimeCreated());
 }
 
 TEST(Observer, MakeObserver) {
@@ -1087,7 +1120,7 @@ TEST(Observer, ObservableLockInversion) {
     using element_type = size_t;
 
     std::shared_ptr<const size_t> get() {
-      std::lock_guard<std::mutex> lg(lockingObservableLock);
+      std::lock_guard lg(lockingObservableLock);
       return std::make_shared<const size_t>(lockingObservableValue.load());
     }
 
@@ -1113,7 +1146,7 @@ TEST(Observer, ObservableLockInversion) {
   });
 
   while (true) {
-    std::lock_guard<std::mutex> lg(lockingObservableLock);
+    std::lock_guard lg(lockingObservableLock);
     if (**makeObserver([o = observer] { return **o; }) == kNumIters) {
       break;
     }
@@ -1181,7 +1214,7 @@ TEST(Observer, ReenableSingletons) {
     for (size_t i = 1; i <= kMaxValue; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds{1});
       {
-        std::lock_guard<std::mutex> lg(forkMutex);
+        std::lock_guard lg(forkMutex);
         observable.setValue(i);
       }
     }
@@ -1191,7 +1224,7 @@ TEST(Observer, ReenableSingletons) {
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     folly::SingletonVault::singleton()->destroyInstances();
     {
-      std::lock_guard<std::mutex> lg(forkMutex);
+      std::lock_guard lg(forkMutex);
       folly::SingletonVault::singleton()->reenableInstances();
     }
     folly::observer_detail::ObserverManager::vivify();
@@ -1209,3 +1242,153 @@ TEST(Observer, ReenableSingletonWithPendingUpdate) {
   std::this_thread::sleep_for(std::chrono::milliseconds{100});
   EXPECT_EQ(42, **observer);
 }
+
+TEST(Observer, TestMakeObserverWithTypeInfo) {
+  const std::string prefix =
+      "folly::observer::Observer_TestMakeObserverWithTypeInfo_Test";
+  {
+    auto observer = folly::observer::makeObserver([] { return 42; });
+    EXPECT_EQ(42, **observer);
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+        StartsWith(prefix));
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorInvokeResultTypeInfo())
+            .toStdString(),
+        "int");
+  }
+  {
+    auto observer = folly::observer::makeObserver([] {
+      return std::make_shared<int>(42);
+    });
+    EXPECT_EQ(42, **observer);
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+        StartsWith(prefix));
+    EXPECT_EQ(
+        *observer.getCreatorInvokeResultTypeInfo(),
+        typeid(std::shared_ptr<int>));
+  }
+  {
+    auto observer1 = folly::observer::makeObserver([] { return 1; });
+    auto observer = folly::observer::makeObserver([observer1] {
+      return observer1;
+    });
+    EXPECT_EQ(1, **observer);
+    EXPECT_THAT(
+        folly::demangle(*observer1.getCreatorTypeInfo()).toStdString(),
+        StartsWith(prefix));
+    EXPECT_THAT(
+        folly::demangle(*observer1.getCreatorInvokeResultTypeInfo())
+            .toStdString(),
+        "int");
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+        StartsWith("folly::observer::unwrap"));
+    EXPECT_EQ(
+        *observer.getCreatorInvokeResultTypeInfo(),
+        typeid(std::shared_ptr<int const>));
+  }
+}
+
+TEST(Observer, TestMakeValueObserverWithTypeInfo) {
+  const std::string prefix =
+      "folly::observer::Observer_TestMakeValueObserverWithTypeInfo_Test";
+  {
+    auto observer = folly::observer::makeValueObserver([] { return 42; });
+    EXPECT_EQ(42, **observer);
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+        StartsWith(prefix));
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorInvokeResultTypeInfo())
+            .toStdString(),
+        "int");
+  }
+  {
+    auto observer = folly::observer::makeValueObserver([] {
+      return std::make_shared<int>(42);
+    });
+    EXPECT_EQ(42, **observer);
+
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+        StartsWith(prefix));
+    EXPECT_EQ(
+        *observer.getCreatorInvokeResultTypeInfo(),
+        typeid(std::shared_ptr<int>));
+  }
+  {
+    auto observer1 = folly::observer::makeValueObserver([] { return 1; });
+    auto observer = folly::observer::makeValueObserver([observer1] {
+      return observer1;
+    });
+    EXPECT_EQ(1, **observer);
+    EXPECT_THAT(
+        folly::demangle(*observer1.getCreatorTypeInfo()).toStdString(),
+        StartsWith(prefix));
+    EXPECT_THAT(
+        folly::demangle(*observer1.getCreatorInvokeResultTypeInfo())
+            .toStdString(),
+        "int");
+    EXPECT_THAT(
+        folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+        StartsWith("folly::observer::unwrap"));
+    EXPECT_EQ(
+        *observer.getCreatorInvokeResultTypeInfo(),
+        typeid(std::shared_ptr<int const>));
+  }
+}
+
+TEST(Observer, TestSimpleObservableWithTypeInfo) {
+  const std::string prefix = "folly::observer::ObserverCreator";
+  folly::observer::SimpleObservable<int> observable{42};
+  auto observer = observable.getObserver();
+  EXPECT_EQ(42, **observer);
+  EXPECT_THAT(
+      folly::demangle(*observer.getCreatorTypeInfo()).toStdString(),
+      StartsWith(prefix));
+  EXPECT_EQ(
+      *observer.getCreatorInvokeResultTypeInfo(),
+      typeid(std::shared_ptr<int const>));
+}
+
+TEST(Observer, TestObserverWithNamedCreator) {
+  {
+    auto observer =
+        folly::observer::makeObserver(NamedCreator("foo", [] { return 42; }));
+    EXPECT_EQ(42, **observer);
+    EXPECT_EQ(observer.getCreatorName(), "foo");
+  }
+  {
+    auto observer = folly::observer::makeValueObserver(NamedCreator("foo", [] {
+      return 42;
+    }));
+    EXPECT_EQ(42, **observer);
+    EXPECT_EQ(observer.getCreatorName(), "foo");
+  }
+}
+
+TEST(Observer, TestObservableGetName) {
+  struct Observable {};
+
+  struct Traits {
+    using element_type = int;
+    static std::shared_ptr<const int> get(Observable&) {
+      return std::make_shared<const int>(42);
+    }
+
+    static void subscribe(Observable&, std::function<void()>) {}
+
+    static void unsubscribe(Observable&) {}
+
+    static std::string_view getName(Observable&) { return "MyName"; }
+  };
+
+  auto observer =
+      folly::observer::ObserverCreator<Observable, Traits>().getObserver();
+  EXPECT_EQ(**observer, 42);
+  EXPECT_EQ(observer.getCreatorName(), "MyName");
+}
+} // namespace observer
+} // namespace folly

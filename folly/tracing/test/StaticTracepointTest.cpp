@@ -23,17 +23,23 @@
 #include <string>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <folly/Conv.h>
 #include <folly/Format.h>
 #include <folly/Random.h>
 #include <folly/String.h>
 #include <folly/Subprocess.h>
-#include <folly/experimental/symbolizer/detail/Debug.h>
+#include <folly/debugging/symbolizer/detail/Debug.h>
 #include <folly/lang/Bits.h>
 #include <folly/portability/Filesystem.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/Unistd.h>
 #include <folly/tracing/test/StaticTracepointTestModule.h>
+
+#if FOLLY_HAVE_ELF
+#include <link.h>
+#endif
 
 #if FOLLY_HAVE_SDT
 
@@ -89,7 +95,7 @@ static std::string getStr(
 }
 
 static std::string getExe() {
-  auto path = folly::sformat("/proc/{}/exe", getpid());
+  auto path = fmt::format("/proc/{}/exe", getpid());
   return folly::fs::read_symlink(path).string();
 }
 
@@ -118,7 +124,7 @@ static std::vector<uint8_t> readNote(const std::string& fileName) {
       "Contents of section .note." + kUSDTSubsectionName + ":";
   auto pos = rawContent.find(contentStart);
   CHECK_NE(pos, std::string::npos);
-  pos = rawContent.find("\n", pos + 1);
+  pos = rawContent.find('\n', pos + 1);
   CHECK_NE(pos, std::string::npos);
   rawContent = rawContent.substr(pos + 1);
   std::vector<std::string> lines;
@@ -154,7 +160,7 @@ static void checkTracepointArguments(
   EXPECT_EQ(expectedSize.size(), args.size());
   for (size_t i = 0; i < args.size(); i++) {
     EXPECT_FALSE(args[i].empty());
-    auto pos = args[i].find("@");
+    auto pos = args[i].find('@');
     EXPECT_NE(pos, std::string::npos);
     EXPECT_LT(pos, args[i].size() - 1);
     std::string argSize = args[i].substr(0, pos);

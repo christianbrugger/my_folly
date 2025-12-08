@@ -25,6 +25,7 @@
 #include <folly/coro/Invoke.h>
 #include <folly/coro/Sleep.h>
 #include <folly/coro/Task.h>
+#include <folly/coro/ValueOrError.h>
 #include <folly/coro/WithCancellation.h>
 #include <folly/futures/Future.h>
 
@@ -37,6 +38,30 @@
 #include <tuple>
 
 #if FOLLY_HAS_COROUTINES
+
+constexpr bool check_for_size_regressions() {
+  using namespace folly::coro;
+  namespace detail = folly::coro::detail;
+
+  static_assert(sizeof(AsyncGenerator<int&>) == sizeof(void*));
+
+  // Prevent size regressions due to member or base ordering
+  constexpr size_t promiseSize =
+      // From AsyncGeneratorPromise:
+      sizeof(ExtendedCoroutineHandle) + sizeof(folly::AsyncStackFrame) +
+      sizeof(folly::Executor::KeepAlive<>) + sizeof(folly::CancellationToken) +
+      // The value/error union
+      sizeof(folly::exception_wrapper) +
+      // state_, hasCancelTokenOverride_ and bypassExceptionThrowing_ together:
+      sizeof(void*) +
+      // From ExtendedCoroutinePromiseCrtp:
+      sizeof(ExtendedCoroutineHandle::PromiseBase);
+  static_assert(
+      sizeof(detail::AsyncGeneratorPromise<int&, int>) == promiseSize);
+
+  return true;
+}
+static_assert(check_for_size_regressions());
 
 class AsyncGeneratorTest : public testing::Test {};
 
@@ -394,7 +419,7 @@ TEST_F(AsyncGeneratorTest, InvokeLambda) {
     auto ptr = std::make_unique<int>(123);
     auto gen = folly::coro::co_invoke(
         [p = std::move(ptr), str = std::string("test")]() mutable
-        -> folly::coro::AsyncGenerator<std::unique_ptr<int>&&> {
+            -> folly::coro::AsyncGenerator<std::unique_ptr<int>&&> {
           SCOPE_EXIT {
             CHECK_EQ(str, "test");
           };
@@ -414,7 +439,7 @@ TEST_F(AsyncGeneratorTest, InvokeLambdaRequiresCleanup) {
     auto ptr = std::make_unique<int>(123);
     auto gen = folly::coro::co_invoke(
         [p = std::move(ptr), str = std::string("test")]() mutable
-        -> folly::coro::CleanableAsyncGenerator<std::unique_ptr<int>&&> {
+            -> folly::coro::CleanableAsyncGenerator<std::unique_ptr<int>&&> {
           SCOPE_EXIT {
             CHECK_EQ(str, "test");
           };
@@ -658,6 +683,27 @@ TEST(AsyncGeneraor, CoAwaitTry) {
     auto item3 = co_await folly::coro::co_awaitTry(gen.next());
     CHECK(item3.hasException());
     CHECK(item3.exception().is_compatible_with<SomeError>());
+  }());
+}
+
+TEST(AsyncGeneraor, CoAwaitValueOrError) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto gen = []() -> folly::coro::AsyncGenerator<std::string> {
+      co_yield "foo";
+      co_yield "bar";
+      co_yield folly::coro::co_error(SomeError{});
+      CHECK(false);
+    }();
+
+    auto item1 = co_await folly::coro::value_or_error_or_stopped(gen.next());
+    CHECK(item1.has_value());
+    CHECK(*item1.value_or_throw() == "foo");
+    auto item2 = co_await folly::coro::value_or_error_or_stopped(gen.next());
+    CHECK(item2.has_value());
+    CHECK(*item2.value_or_throw() == "bar");
+    auto item3 = co_await folly::coro::value_or_error_or_stopped(gen.next());
+    CHECK(!item3.has_value() && !item3.has_stopped());
+    CHECK(folly::get_exception<SomeError>(item3));
   }());
 }
 

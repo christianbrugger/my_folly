@@ -64,9 +64,17 @@ TEST_F(BridgeFromGoogleLoggingTest, bridge) {
   LOG(INFO) << "testing: " << 1 << 2 << 3;
   ASSERT_EQ(1, messages.size());
   EXPECT_EQ("testing: 123", messages[0].first.getMessage());
-  EXPECT_TRUE(messages[0].first.getFileName().endsWith(
-      "BridgeFromGoogleLoggingTest.cpp"))
+  EXPECT_TRUE(
+      messages[0].first.getFileName().endsWith(
+          "BridgeFromGoogleLoggingTest.cpp"))
       << "unexpected file name: " << messages[0].first.getFileName();
   EXPECT_EQ(LogLevel::INFO, messages[0].first.getLevel());
   messages.clear();
+}
+
+TEST_F(BridgeFromGoogleLoggingTest, bridgeFatal) {
+  auto handler = make_shared<TestLogHandler>();
+  logging::BridgeFromGoogleLogging test_bridge{};
+  LoggerDB::get().getCategory("")->addHandler(handler);
+  ASSERT_DEATH([] { LOG(FATAL) << "test crash"; }(), "");
 }

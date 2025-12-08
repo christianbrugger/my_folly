@@ -151,7 +151,7 @@ void rawOverAlignedImpl(Alloc const& alloc, size_t n, void*& raw) {
       typename AllocTraits::template rebind_traits<BaseType>;
   using BaseAlloc = typename BaseAllocTraits::allocator_type;
   static_assert(
-      sizeof(BaseType) == kBaseAlign && alignof(BaseType) == kBaseAlign, "");
+      sizeof(BaseType) == kBaseAlign && alignof(BaseType) == kBaseAlign);
 
 #if defined(__cpp_sized_deallocation)
   if (kCanBypass && kAlign == kBaseAlign) {
@@ -335,6 +335,14 @@ std::shared_ptr<U> to_shared_ptr_aliasing(std::shared_ptr<T> const& r, U* ptr) {
 }
 
 /**
+ *  to_shared_ptr_non_owning
+ */
+template <typename U>
+std::shared_ptr<U> to_shared_ptr_non_owning(U* ptr) {
+  return std::shared_ptr<U>(std::shared_ptr<void>{}, ptr);
+}
+
+/**
  *  to_weak_ptr
  *
  *  Make a weak_ptr and return it from a shared_ptr without specifying the
@@ -361,7 +369,7 @@ std::weak_ptr<T> to_weak_ptr(const std::shared_ptr<T>& ptr) {
 namespace detail {
 void weak_ptr_set_stored_ptr(std::weak_ptr<void>& w, void* ptr);
 
-template <typename Tag, void* std::__weak_ptr<void>::*WeakPtr_Ptr_Field>
+template <typename Tag, void* std::__weak_ptr<void>::* WeakPtr_Ptr_Field>
 struct GenerateWeakPtrInternalsAccessor {
   friend void weak_ptr_set_stored_ptr(std::weak_ptr<void>& w, void* ptr) {
     w.*WeakPtr_Ptr_Field = ptr;
@@ -409,6 +417,50 @@ std::weak_ptr<U> to_weak_ptr_aliasing(const std::shared_ptr<T>& r, U* ptr) {
 }
 
 /**
+ * fmap_shared_ptr_aliasing
+ *
+ * This is a helper method that allows one to get aliased shared_ptr to an inner
+ * object inside another shared_ptr. For example, if you have an object of type
+ * T that contains field of type U, you can use this method to get a shared
+ * pointer to the field U by calling `fmap_shared_ptr_aliasing(ptrToT, getU)`
+ * where `getU` is a function that returns a pointer to that field.
+ * @param getU a function that returns a const pointer to the field of type U by
+ * taking a `const T*` as an argument.
+ * @return a shared_ptr to the field U or nullptr if the owner is
+ * nullptr or getU returns nullptr.
+ */
+template <
+    typename T,
+    typename GetU,
+    typename U = std::remove_pointer_t<std::invoke_result_t<GetU&, const T*>>>
+std::shared_ptr<U> fmap_shared_ptr_aliasing(
+    const std::shared_ptr<T>& owner, GetU getU) {
+  if (auto* tPtr = owner.get()) {
+    if (auto* uPtr = getU(tPtr)) {
+      return to_shared_ptr_aliasing(owner, uPtr);
+    }
+  }
+  return nullptr;
+}
+
+template <
+    typename T,
+    typename GetU,
+    typename U = std::remove_pointer_t<std::invoke_result_t<GetU&, const T*>>>
+std::shared_ptr<U> fmap_shared_ptr_aliasing(
+    std::shared_ptr<T>&& owner, GetU getU) {
+  if (auto* tPtr = owner.get()) {
+    if (auto* uPtr = getU(tPtr)) {
+      return to_shared_ptr_aliasing(owner, uPtr);
+    }
+  }
+  return nullptr;
+}
+
+template <typename GetU>
+auto fmap_shared_ptr_aliasing(std::nullptr_t owner, GetU&& getU) = delete;
+
+/**
  *  copy_to_unique_ptr
  *
  *  Move or copy the argument to the heap and return it owned by a unique_ptr.
@@ -443,6 +495,19 @@ std::unique_ptr<T> copy_through_unique_ptr(const std::unique_ptr<T>& t) {
       !std::is_polymorphic<T>::value || std::is_final<T>::value,
       "possibly slicing");
   return t ? std::make_unique<T>(*t) : nullptr;
+}
+
+/**
+ *  copy_through_shared_ptr
+ *
+ *  If the argument is nonnull, allocates a copy of its pointee.
+ */
+template <typename T>
+std::shared_ptr<T> copy_through_shared_ptr(const std::shared_ptr<T>& t) {
+  static_assert(
+      !std::is_polymorphic<T>::value || std::is_final<T>::value,
+      "possibly slicing");
+  return t ? std::make_shared<T>(*t) : nullptr;
 }
 
 //  erased_unique_ptr
@@ -593,8 +658,8 @@ class AlignedSysAllocator : private Align {
   constexpr Align const& align() const { return *this; }
 
  public:
-  static_assert(std::is_nothrow_copy_constructible<Align>::value, "");
-  static_assert(is_nothrow_invocable_r_v<std::size_t, Align>, "");
+  static_assert(std::is_nothrow_copy_constructible<Align>::value);
+  static_assert(is_nothrow_invocable_r_v<std::size_t, Align>);
 
   using value_type = T;
 

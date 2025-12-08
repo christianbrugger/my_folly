@@ -19,8 +19,11 @@
 #include <folly/coro/AsyncGenerator.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Collect.h>
+#include <folly/coro/Promise.h>
 #include <folly/coro/Sleep.h>
 #include <folly/coro/Timeout.h>
+#include <folly/coro/safe/Captures.h>
+#include <folly/coro/safe/NowTask.h>
 #include <folly/futures/Future.h>
 #include <folly/io/async/Request.h>
 #include <folly/portability/GTest.h>
@@ -32,6 +35,52 @@
 
 using namespace std::chrono_literals;
 using namespace folly;
+
+#if FOLLY_HAS_IMMOVABLE_COROUTINES
+
+namespace folly::coro {
+
+// timeout(now_task) -> now_task
+static_assert(std::is_same_v<
+              now_task<int>,
+              decltype(timeout(FOLLY_DECLVAL(now_task<int>), 1s))>);
+static_assert(
+    std::is_same_v<
+        now_task<int>,
+        decltype(timeout(FOLLY_DECLVAL(now_task_with_executor<int>), 1s))>);
+
+// timeout(value_task or coro::Future) -> value_task
+static_assert(std::is_same_v<
+              value_task<int>,
+              decltype(timeout(FOLLY_DECLVAL(value_task<int>), 1s))>);
+static_assert(
+    std::is_same_v<
+        value_task<int>,
+        decltype(timeout(
+            FOLLY_DECLVAL(
+                safe_task_with_executor<safe_alias::maybe_value, int>),
+            1s))>);
+static_assert(std::is_same_v<
+              value_task<int>,
+              decltype(timeout(FOLLY_DECLVAL(coro::Future<int>), 1s))>);
+
+// Passing a `Timekeeper` pointer changes the safety
+static_assert(
+    std::is_same_v<
+        Task<int>,
+        decltype(timeout(
+            FOLLY_DECLVAL(value_task<int>), 1s, FOLLY_DECLVAL(Timekeeper*)))>);
+static_assert(
+    std::is_same_v<
+        co_cleanup_safe_task<int>,
+        decltype(timeout(
+            FOLLY_DECLVAL(value_task<int>),
+            1s,
+            FOLLY_DECLVAL(capture<Timekeeper&>)))>);
+
+} // namespace folly::coro
+
+#endif
 
 struct Timeout {
   template <typename... Arg>
@@ -135,14 +184,15 @@ TEST(TimeoutNoDiscard, ResultOnTimeout) {
     EXPECT_EQ(42, result);
 
     struct sentinel : public std::exception {};
-    auto tryResult = co_await coro::co_awaitTry(coro::timeoutNoDiscard(
-        [&]() -> coro::Task<int> {
-          co_await coro::sleepReturnEarlyOnCancel(10s);
-          EXPECT_TRUE((co_await coro::co_current_cancellation_token)
-                          .isCancellationRequested());
-          throw sentinel{};
-        }(),
-        1ms));
+    auto tryResult = co_await coro::co_awaitTry(
+        coro::timeoutNoDiscard(
+            [&]() -> coro::Task<int> {
+              co_await coro::sleepReturnEarlyOnCancel(10s);
+              EXPECT_TRUE((co_await coro::co_current_cancellation_token)
+                              .isCancellationRequested());
+              throw sentinel{};
+            }(),
+            1ms));
     EXPECT_TRUE(tryResult.template hasException<sentinel>());
   }());
 }
@@ -266,6 +316,31 @@ TYPED_TEST(TimeoutFixture, RequestContextInCancellationCallback) {
         5ms));
   }());
   ASSERT_TRUE(cancelled);
+}
+
+TYPED_TEST(TimeoutFixture, TimeoutTaskType) {
+  coro::blockingWait([&fn = this->fn]() -> coro::Task<> {
+    // timeout(Task) -> Task
+    auto five = []() -> coro::Task<int> { co_return 5; };
+    static_assert(std::is_same_v<decltype(fn(five(), 1s)), coro::Task<int>>);
+    EXPECT_EQ(5, co_await fn(five(), 1s));
+
+    // timeout(now_task) -> now_task
+    auto now_two = []() -> coro::now_task<int> { co_return 2; };
+    auto timeout_now_two = [&]() {
+      // Can't use `fn` here because it's set up with perfect forwarding
+      // instead of pass-by-value.  Not worth refactoring for 1 test.
+      if constexpr (std::is_same_v<TypeParam, TimeoutNoDiscard>) {
+        return coro::timeoutNoDiscard(now_two(), 1s);
+      } else {
+        static_assert(std::is_same_v<TypeParam, Timeout>);
+        return coro::timeout(now_two(), 1s);
+      }
+    };
+    static_assert(
+        std::is_same_v<decltype(timeout_now_two()), coro::now_task<int>>);
+    EXPECT_EQ(2, co_await timeout_now_two());
+  }());
 }
 
 #endif // FOLLY_HAS_COROUTINES

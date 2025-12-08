@@ -14,26 +14,32 @@
  * limitations under the License.
  */
 
-#include <folly/experimental/symbolizer/Elf.h>
+#include <folly/debugging/symbolizer/Elf.h>
 
+#include <gmock/gmock.h>
+#include <folly/CppAttributes.h>
 #include <folly/FileUtil.h>
-#include <folly/experimental/symbolizer/detail/Debug.h>
+#include <folly/String.h>
+#include <folly/debugging/symbolizer/detail/Debug.h>
 #include <folly/portability/GTest.h>
 #include <folly/testing/TestUtil.h>
 
 #if FOLLY_HAVE_ELF
 
 using folly::symbolizer::ElfFile;
+using folly::symbolizer::ElfNhdr;
 
 // Add some symbols for testing. Note that we have to be careful with type
 // signatures here to prevent name mangling
-uint64_t kIntegerValue = 1234567890ULL;
-const char* kStringValue = "coconuts";
 extern "C" {
-int sum_func(int lhs, int rhs) {
+[[gnu::used, FOLLY_ATTR_GNU_RETAIN]] uint64_t kIntegerValue = 1234567890ULL;
+[[gnu::used, FOLLY_ATTR_GNU_RETAIN]] const char* kStringValue = "coconuts";
+[[gnu::noinline, gnu::used, FOLLY_ATTR_GNU_RETAIN]] int sum_func(
+    int lhs, int rhs) {
   return lhs + rhs;
 }
-int sub_func(int lhs, int rhs) {
+[[gnu::noinline, gnu::used, FOLLY_ATTR_GNU_RETAIN]] int sub_func(
+    int lhs, int rhs) {
   return lhs - rhs;
 }
 }
@@ -137,6 +143,8 @@ TEST_F(ElfTest, iterateProgramHeaders) {
   });
   EXPECT_NE(nullptr, phdr);
   EXPECT_GE(phdr->p_filesz, 0);
+  auto body = elfFile_.getSegmentBody(*phdr);
+  EXPECT_EQ(body.size(), phdr->p_filesz);
 }
 
 TEST_F(ElfTest, TinyNonElfFile) {
@@ -176,44 +184,208 @@ TEST_F(ElfTest, FailToOpenLargeFilename) {
   EXPECT_EQ(ElfFile::kSuccess, elfFile->openNoThrow(kDefaultElf));
 }
 
-TEST_F(ElfTest, PosixFadvise) {
-  auto res = elfFile_.posixFadvise(POSIX_FADV_DONTNEED);
-  EXPECT_EQ(0, res.first);
-  EXPECT_STREQ("", res.second);
+TEST(TestGetNoteGnuBuildId, SimpleElf) {
+  auto const file =
+      folly::test::find_resource("folly/debugging/symbolizer/test/simple_elf");
+  ASSERT_TRUE(std::filesystem::exists(file.c_str())) << file.c_str();
+  ElfFile elfFile = ElfFile(file.c_str());
+  auto noteMaybe = elfFile.getNoteGnuBuildId();
+  ASSERT_TRUE(([&]() {
+    return noteMaybe.hasError()
+        ? testing::AssertionFailure()
+            << ElfFile::FindNoteError::getErrorMessage(noteMaybe.error())
+        : testing::AssertionSuccess();
+  })());
+
+  auto note = noteMaybe.value();
+  EXPECT_EQ(4, note.size());
+  EXPECT_THAT(note, ::testing::ElementsAreArray({0xDE, 0xAD, 0xBE, 0xEF}));
 }
 
-TEST_F(ElfTest, PosixFadviseOffSetAndLen) {
-  auto posixFadviseCalled = false;
-  elfFile_.iterateSections(
-      [&](const folly::symbolizer::ElfShdr& section) -> bool {
-        if (section.sh_type == SHT_SYMTAB) {
-          posixFadviseCalled = true;
-          auto res = elfFile_.posixFadvise(
-              section.sh_offset, section.sh_size, POSIX_FADV_DONTNEED);
-          EXPECT_EQ(0, res.first);
-          EXPECT_STREQ("", res.second);
+TEST(TestNoteSectionIteration, SimpleElf) {
+  auto const file =
+      folly::test::find_resource("folly/debugging/symbolizer/test/simple_elf");
+  EXPECT_TRUE(std::filesystem::exists(file.c_str())) << file.c_str();
+  ElfFile elfFile = ElfFile(file.c_str());
+  const auto* shdr = elfFile.getSectionByName(".note.gnu.build-id");
+  EXPECT_NE(nullptr, shdr);
+
+  std::vector<folly::Expected<ElfFile::Note, ElfFile::FindNoteError>>
+      noteMaybes;
+  noteMaybes.emplace_back(
+      elfFile.iterateNotesInSections(shdr, [](const ElfFile::Note& note) {
+        if (note.header()->n_type != NT_GNU_BUILD_ID) {
+          return false;
         }
-        return false;
+
+        auto expectedSize = folly::align_ceil(note.header()->n_namesz, 4) +
+            folly::align_ceil(note.header()->n_descsz, 4);
+        return note.body().size() == expectedSize;
+      }));
+
+  noteMaybes.emplace_back(
+      elfFile.iterateNotesInSections(nullptr, [](const ElfFile::Note& note) {
+        if (note.header()->n_type != NT_GNU_BUILD_ID) {
+          return false;
+        }
+
+        auto expectedSize = folly::align_ceil(note.header()->n_namesz, 4) +
+            folly::align_ceil(note.header()->n_descsz, 4);
+        return note.body().size() == expectedSize;
+      }));
+
+  for (auto& noteMaybe : noteMaybes) {
+    ASSERT_TRUE(([&]() {
+      return noteMaybe.hasError()
+          ? testing::AssertionFailure()
+              << ElfFile::FindNoteError::getErrorMessage(noteMaybe.error())
+          : testing::AssertionSuccess();
+    })());
+
+    ElfFile::Note note = *noteMaybe;
+    ASSERT_NE(nullptr, note.header());
+    EXPECT_EQ(note.getName(), "GNU");
+    EXPECT_THAT(
+        note.getDesc(), ::testing::ElementsAreArray({0xDE, 0xAD, 0xBE, 0xEF}));
+  }
+}
+
+TEST(TestNoteSegmentIteration, SimpleElf) {
+  auto const file =
+      folly::test::find_resource("folly/debugging/symbolizer/test/simple_elf");
+  EXPECT_TRUE(std::filesystem::exists(file.c_str())) << file.c_str();
+  ElfFile elfFile = ElfFile(file.c_str());
+
+  // PRStatus should always be in the segments
+  auto noteMaybe =
+      elfFile.iterateNotesInSegments(nullptr, [](const ElfFile::Note& note) {
+        return note.header()->n_type == NT_PRSTATUS;
       });
-  EXPECT_TRUE(posixFadviseCalled);
+
+  ASSERT_TRUE(([&]() {
+    return noteMaybe.hasError()
+        ? testing::AssertionFailure()
+            << ElfFile::FindNoteError::getErrorMessage(noteMaybe.error())
+        : testing::AssertionSuccess();
+  })());
+
+  auto note = *noteMaybe;
+  ASSERT_NE(nullptr, note.header());
+  EXPECT_EQ(note.getName(), "GNU");
+  EXPECT_NE(0, note.getDesc().size());
 }
 
-TEST_F(ElfTest, PosixFadviseNotOpen) {
-  folly::test::TemporaryFile tmpFile;
-  const static folly::StringPiece contents = "!";
-  folly::writeFull(tmpFile.fd(), contents.data(), contents.size());
+TEST(TestNoteMultipleNoteSections, SimpleElf) {
+  auto const file =
+      folly::test::find_resource("folly/debugging/symbolizer/test/simple_elf");
+  EXPECT_TRUE(std::filesystem::exists(file.c_str())) << file.c_str();
+  ElfFile elfFile = ElfFile(file.c_str());
+  std::vector<ElfFile::Note> notes;
+  elfFile.iterateNotesInSections(nullptr, [&](const ElfFile::Note& note) {
+    notes.push_back(note);
+    return false;
+  });
 
-  ElfFile elfFile;
-  elfFile.openNoThrow(tmpFile.path().c_str());
-  auto res = elfFile.posixFadvise(POSIX_FADV_DONTNEED);
-  EXPECT_EQ(1, res.first);
-  EXPECT_STREQ("file not open", res.second);
+  EXPECT_NE(0, notes.size());
+  for (const auto& noteEntry : notes) {
+    EXPECT_NE(nullptr, noteEntry.header());
+    EXPECT_NE(0, noteEntry.body().size());
+    EXPECT_NE("", noteEntry.getName());
+    EXPECT_NE(0, noteEntry.getDesc().size());
+  }
 }
 
-TEST_F(ElfTest, PosixFadviseBadAdvice) {
-  auto res = elfFile_.posixFadvise(10000);
-  EXPECT_NE(0, res.first);
-  EXPECT_STREQ("posix_fadvise failed for file", res.second);
+TEST(TestNoteParsing, SimpleElf) {
+  uint8_t headerOnly[sizeof(ElfNhdr)];
+  ElfNhdr header;
+  header.n_namesz = 8;
+  header.n_descsz = 4;
+  memcpy(&headerOnly, &header, sizeof(ElfNhdr));
+  auto noteMaybe = ElfFile::Note::parse(
+      folly::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(&headerOnly), sizeof(ElfNhdr)));
+  EXPECT_TRUE(([&]() {
+    return noteMaybe.hasError()
+        ? testing::AssertionSuccess()
+        : testing::AssertionFailure();
+  })());
+  auto& err = noteMaybe.error();
+  EXPECT_TRUE(err.isDataCorruptionError());
+  EXPECT_EQ(err.failureCode, ElfFile::FindNoteFailureCode::NoteUndersized);
+
+  uint8_t smallerThanHeader[6];
+  noteMaybe = ElfFile::Note::parse(
+      folly::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(&smallerThanHeader), 6));
+  EXPECT_TRUE(([&]() {
+    return noteMaybe.hasError()
+        ? testing::AssertionSuccess()
+        : testing::AssertionFailure();
+  })());
+  err = noteMaybe.error();
+  EXPECT_TRUE(err.isDataCorruptionError());
+  EXPECT_EQ(err.failureCode, ElfFile::FindNoteFailureCode::NoteUndersized);
+}
+
+TEST(TestFindNote, SimpleElf) {
+  auto const file =
+      folly::test::find_resource("folly/debugging/symbolizer/test/simple_elf");
+
+  EXPECT_TRUE(std::filesystem::exists(file.c_str())) << file.c_str();
+  ElfFile elfFile = ElfFile(file.c_str());
+  const auto* shdr = elfFile.getSectionByName(".note.gnu.build-id");
+  EXPECT_NE(nullptr, shdr);
+
+  // There are multiple notes whose names are "GNU"
+  // to avoid flakiness we just check the name. But below when we iterate
+  // by type, we check the type and the name.
+  std::string noteName = "GNU";
+  {
+    auto noteMaybe = elfFile.findNoteByName(noteName);
+    ASSERT_TRUE(([&]() {
+      return noteMaybe.hasError()
+          ? testing::AssertionFailure()
+              << ElfFile::FindNoteError::getErrorMessage(noteMaybe.error())
+          : testing::AssertionSuccess();
+    })());
+
+    EXPECT_EQ(noteName, noteMaybe->getName());
+  }
+  {
+    auto noteMaybe = elfFile.findNoteByType(NT_GNU_BUILD_ID);
+    ASSERT_TRUE(([&]() {
+      return noteMaybe.hasError()
+          ? testing::AssertionFailure()
+              << ElfFile::FindNoteError::getErrorMessage(noteMaybe.error())
+          : testing::AssertionSuccess();
+    })());
+
+    EXPECT_EQ(noteName, noteMaybe->getName());
+    EXPECT_EQ(NT_GNU_BUILD_ID, noteMaybe->header()->n_type);
+  }
+  {
+    auto noteMaybe = elfFile.findNoteByType(NT_PRSTATUS);
+    ASSERT_TRUE(([&]() {
+      return noteMaybe.hasError()
+          ? testing::AssertionFailure()
+              << ElfFile::FindNoteError::getErrorMessage(noteMaybe.error())
+          : testing::AssertionSuccess();
+    })());
+
+    EXPECT_EQ(noteName, noteMaybe->getName());
+    EXPECT_EQ(NT_PRSTATUS, noteMaybe->header()->n_type);
+  }
+  {
+    auto noteMaybe =
+        elfFile.findNoteByType(std::numeric_limits<uint32_t>::max());
+    EXPECT_TRUE(noteMaybe.hasError());
+    EXPECT_FALSE(noteMaybe.error().isDataCorruptionError());
+  }
+  {
+    auto noteMaybe = elfFile.findNoteByName("NOT_A_NOTE");
+    EXPECT_TRUE(noteMaybe.hasError());
+    EXPECT_FALSE(noteMaybe.error().isDataCorruptionError());
+  }
 }
 
 #endif

@@ -17,7 +17,7 @@
 #include <folly/hash/Checksum.h>
 
 #include <algorithm>
-#include <stdexcept>
+#include <stdexcept> // IWYU pragma: keep
 
 #include <boost/crc.hpp>
 
@@ -25,13 +25,13 @@
 #include <folly/detail/TrapOnAvx512.h>
 #include <folly/external/fast-crc32/avx512_crc32c_v8s3x4.h> // @manual
 #include <folly/external/fast-crc32/neon_crc32c_v3s4x2e_v2.h> // @manual
+#include <folly/external/fast-crc32/neon_eor3_crc32_v9s3x2e_s3.h> // @manual
 #include <folly/external/fast-crc32/neon_eor3_crc32c_v8s2x4_s3.h> // @manual
 #include <folly/external/fast-crc32/sse_crc32c_v8s3x3.h> // @manual
 #include <folly/hash/detail/ChecksumDetail.h>
 
-#if FOLLY_SSE_PREREQ(4, 2)
+#if FOLLY_X64 && FOLLY_SSE_PREREQ(4, 2)
 #include <emmintrin.h>
-#include <nmmintrin.h>
 #endif
 
 namespace folly {
@@ -40,7 +40,7 @@ namespace detail {
 
 uint32_t crc32c_sw(
     const uint8_t* data, size_t nbytes, uint32_t startingChecksum);
-#if FOLLY_SSE_PREREQ(4, 2)
+#if FOLLY_X64 && FOLLY_SSE_PREREQ(4, 2)
 
 uint32_t crc32_sw(
     const uint8_t* data, size_t nbytes, uint32_t startingChecksum);
@@ -100,6 +100,10 @@ bool crc32c_hw_supported_neon_eor3_sha3() {
   return false;
 }
 
+bool crc32_hw_supported_neon_eor3_sha3() {
+  return false;
+}
+
 #elif FOLLY_ARM_FEATURE_CRC32
 
 // crc32_hw is defined in folly/external/nvidia/hash/Checksum.cpp
@@ -119,6 +123,11 @@ bool crc32c_hw_supported_avx512() {
 bool crc32c_hw_supported_neon() {
   static bool has_neon = has_neon_crc32c_v3s4x2e_v2();
   return has_neon;
+}
+
+bool crc32_hw_supported_neon_eor3_sha3() {
+  static bool has_neon_eor3 = has_neon_eor3_crc32_v9s3x2e_s3();
+  return has_neon_eor3;
 }
 
 bool crc32c_hw_supported_neon_eor3_sha3() {
@@ -156,6 +165,10 @@ bool crc32_hw_supported() {
 }
 
 bool crc32c_hw_supported_neon() {
+  return false;
+}
+
+bool crc32_hw_supported_neon_eor3_sha3() {
   return false;
 }
 
@@ -230,6 +243,12 @@ uint32_t crc32c(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
 }
 
 uint32_t crc32(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+#if FOLLY_AARCH64
+  if (nbytes >= 2048 && detail::crc32_hw_supported_neon_eor3_sha3()) {
+    return detail::neon_eor3_crc32_v9s3x2e_s3(data, nbytes, startingChecksum);
+  }
+#endif
+
   if (detail::crc32_hw_supported()) {
     return detail::crc32_hw(data, nbytes, startingChecksum);
   } else {
@@ -270,6 +289,29 @@ uint32_t crc32c_combine(uint32_t crc1, uint32_t crc2, size_t crc2len) {
   } else {
     return detail::crc32c_combine_sw(crc1, crc2, crc2len - len);
   }
+}
+
+uint32_t crc32c_combine_seed(
+    uint32_t crc1, uint32_t crc2, size_t crc2len, uint32_t startingChecksum) {
+  if (startingChecksum == 0U) {
+    return crc32c_combine(crc1, crc2, crc2len);
+  }
+
+  crc1 ^= startingChecksum;
+  crc2 ^= startingChecksum;
+
+  // Append up to 32 bits of zeroes in the normal way
+  uint8_t data[4] = {0, 0, 0, 0};
+  auto len = crc2len & 3;
+  if (len) {
+    crc1 = crc32c(data, len, crc1);
+  }
+
+  auto result = detail::crc32c_hw_supported()
+      ? detail::crc32c_combine_hw(crc1, crc2, crc2len - len)
+      : detail::crc32c_combine_sw(crc1, crc2, crc2len - len);
+  result ^= startingChecksum;
+  return result;
 }
 
 } // namespace folly

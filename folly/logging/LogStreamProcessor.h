@@ -85,7 +85,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      AppendType,
+      AppendType /*unused*/,
       Args&&... args) noexcept
       : LogStreamProcessor(
             category,
@@ -112,7 +112,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      FormatType,
+      FormatType /*unused*/,
       folly::StringPiece fmt,
       Args&&... args) noexcept
       : LogStreamProcessor(
@@ -151,7 +151,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      AppendType,
+      AppendType /*unused*/,
       Args&&... args) noexcept
       : LogStreamProcessor(
             categoryInfo,
@@ -172,7 +172,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      FormatType,
+      FormatType /*unused*/,
       folly::StringPiece fmt,
       Args&&... args) noexcept
       : LogStreamProcessor(
@@ -211,7 +211,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      AppendType) noexcept
+      AppendType /*unused*/) noexcept
       : LogStreamProcessor(
             fileScopeInfo, level, filename, lineNumber, functionName, APPEND) {}
   template <typename... Args>
@@ -223,7 +223,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      AppendType,
+      AppendType /*unused*/,
       Args&&... args) noexcept
       : LogStreamProcessor(
             fileScopeInfo,
@@ -242,7 +242,7 @@ class LogStreamProcessor {
       folly::StringPiece filename,
       unsigned int lineNumber,
       folly::StringPiece functionName,
-      FormatType,
+      FormatType /*unused*/,
       folly::StringPiece fmt,
       Args&&... args) noexcept
       : LogStreamProcessor(
@@ -305,6 +305,19 @@ class LogStreamProcessor {
 
   std::string extractMessageString(LogStream& stream) noexcept;
 
+  [[FOLLY_ATTR_GNU_COLD]] static std::string createLogStringCatch() {
+    // This most likely means there was some error converting the
+    // arguments to strings.  Handle the exception here, rather than
+    // letting it propagate up, since callers generally do not expect log
+    // statements to throw.
+    //
+    // Just log an error message letting indicating that something went
+    // wrong formatting the log message.
+    return folly::to<std::string>(
+        "error constructing log message: ",
+        exceptionStr(std::current_exception()));
+  }
+
   /**
    * Construct a log message string using folly::to<std::string>()
    *
@@ -315,28 +328,18 @@ class LogStreamProcessor {
    */
   template <typename... Args>
   FOLLY_NOINLINE std::string createLogString(Args&&... args) noexcept {
-    return folly::catch_exception<const std::exception&>(
+    return folly::catch_exception(
         [&] { return folly::to<std::string>(std::forward<Args>(args)...); },
-        [&](const std::exception& ex) {
-          // This most likely means there was some error converting the
-          // arguments to strings.  Handle the exception here, rather than
-          // letting it propagate up, since callers generally do not expect log
-          // statements to throw.
-          //
-          // Just log an error message letting indicating that something went
-          // wrong formatting the log message.
-          return folly::to<std::string>(
-              "error constructing log message: ", exceptionStr(ex));
-        });
+        &createLogStringCatch);
   }
 
-  FOLLY_NOINLINE std::string vformatLogString(
+  static FOLLY_NOINLINE std::string vformatLogString(
       folly::StringPiece fmt, fmt::format_args args, bool& failed) noexcept {
-    return folly::catch_exception<const std::exception&>(
+    return folly::catch_exception(
         [&] {
           return fmt::vformat(fmt::string_view(fmt.data(), fmt.size()), args);
         },
-        [&](const std::exception& ex) {
+        [&]() {
           // This most likely means that the caller had a bug in their format
           // string/arguments.  Handle the exception here, rather than letting
           // it propagate up, since callers generally do not expect log
@@ -347,7 +350,7 @@ class LogStreamProcessor {
           failed = true;
           std::string result;
           result.append("error formatting log message: ");
-          result.append(exceptionStr(ex).c_str());
+          result.append(exceptionStr(std::current_exception()).c_str());
           result.append("; format string: \"");
           result.append(fmt.data(), fmt.size());
           result.append("\", arguments: ");
@@ -424,7 +427,7 @@ class LogStreamVoidify {
    * eliminated by the compiler, leaving only the LogStreamProcessor destructor
    * invocation, which cannot be eliminated.
    */
-  void operator&(std::ostream&) noexcept {}
+  void operator&(std::ostream& /*unused*/) noexcept {}
 };
 
 template <>
@@ -461,7 +464,7 @@ class LogStreamVoidify<true> {
  * out how to format it.
  */
 // clang-format off
-inline void logDisabledHelper(std::false_type) noexcept {}
+inline void logDisabledHelper(std::false_type /*unused*/) noexcept {}
 [[noreturn]] void logDisabledHelper(std::true_type) noexcept;
 // clang-format on
 } // namespace folly

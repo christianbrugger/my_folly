@@ -18,9 +18,9 @@
 
 #include <atomic>
 
-#include <folly/Executor.h>
-#include <folly/Memory.h>
+#include <folly/Function.h>
 #include <folly/Portability.h>
+#include <folly/concurrency/container/atomic_grow_array.h>
 #include <folly/container/F14Set.h>
 #include <folly/synchronization/AsymmetricThreadFence.h>
 #include <folly/synchronization/Hazptr-fwd.h>
@@ -34,8 +34,6 @@
 
 namespace folly {
 
-class Executor;
-
 namespace detail {
 
 /** Threshold for the number of retired objects to trigger
@@ -44,7 +42,7 @@ constexpr int hazptr_domain_rcount_threshold() {
   return 1000;
 }
 
-folly::Executor::KeepAlive<> hazptr_get_default_executor();
+void hazptr_inline_executor_add(folly::Function<void()> func);
 
 } // namespace detail
 
@@ -104,7 +102,16 @@ class hazptr_domain {
   using ObjList = hazptr_obj_list<Atom>;
   using RetiredList = hazptr_detail::shared_head_only_list<Obj, Atom>;
   using Set = folly::F14FastSet<const void*>;
-  using ExecFn = folly::Executor::KeepAlive<> (*)();
+  using Func = folly::Function<void()>;
+  using ExecutorFn = bool (*)(Func&&);
+
+  struct HazptrRecArrayPolicy : atomic_grow_array_policy_default<Rec, Atom> {
+    hazptr_domain* domain_{};
+    /* implicit */ HazptrRecArrayPolicy(hazptr_domain* domain) noexcept
+        : domain_{domain} {}
+    Rec make() const noexcept { return Rec{domain_}; }
+  };
+  using HazptrRecArray = atomic_grow_array<Rec, HazptrRecArrayPolicy>;
 
   static constexpr int kThreshold = detail::hazptr_domain_rcount_threshold();
   static constexpr int kMultiplier = 2;
@@ -119,7 +126,7 @@ class hazptr_domain {
   static_assert(
       (kNumShards & kShardMask) == 0, "kNumShards must be a power of 2");
 
-  Atom<Rec*> hazptrs_{nullptr};
+  Atom<HazptrRecArray*> hprecs_{nullptr};
   Atom<uintptr_t> avail_{reinterpret_cast<uintptr_t>(nullptr)};
   Atom<uint64_t> sync_time_{0};
   /* Using signed int for rcount_ because it may transiently be negative.
@@ -132,7 +139,7 @@ class hazptr_domain {
   RetiredList tagged_[kNumShards];
   Atom<int> count_{0};
   Atom<uint64_t> due_time_{0};
-  Atom<ExecFn> exec_fn_{nullptr};
+  Atom<ExecutorFn> exec_fn_{&no_executor};
   Atom<int> exec_backlog_{0};
 
  public:
@@ -156,11 +163,13 @@ class hazptr_domain {
   hazptr_domain& operator=(const hazptr_domain&) = delete;
   hazptr_domain& operator=(hazptr_domain&&) = delete;
 
-  void set_executor(ExecFn exfn) {
+  void set_executor(ExecutorFn exfn) {
     exec_fn_.store(exfn, std::memory_order_release);
   }
 
-  void clear_executor() { exec_fn_.store(nullptr, std::memory_order_release); }
+  void clear_executor() {
+    exec_fn_.store(&no_executor, std::memory_order_release);
+  }
 
   /** retire - nonintrusive - allocates memory */
   template <typename T, typename D = std::default_delete<T>>
@@ -191,14 +200,7 @@ class hazptr_domain {
     // Call cleanup() to ensure that there is no lagging concurrent
     // asynchronous reclamation in progress.
     cleanup();
-    Rec* rec = head();
-    while (rec) {
-      auto next = rec->next();
-      rec->~Rec();
-      hazptr_rec_alloc{}.deallocate(rec, 1);
-      rec = next;
-    }
-    hazptrs_.store(nullptr);
+    delete hprecs_.exchange(nullptr);
     hcount_.store(0);
     avail_.store(reinterpret_cast<uintptr_t>(nullptr));
   }
@@ -229,8 +231,6 @@ class hazptr_domain {
   }
 
  private:
-  using hazptr_rec_alloc = AlignedSysAllocator<Rec, FixedAlign<alignof(Rec)>>;
-
   friend void hazptr_domain_push_retired<Atom>(
       hazptr_obj_list<Atom>&, hazptr_domain<Atom>&) noexcept;
   friend hazptr_holder<Atom> make_hazard_pointer<Atom>(hazptr_domain<Atom>&);
@@ -242,6 +242,8 @@ class hazptr_domain {
 #if FOLLY_HAZPTR_THR_LOCAL
   friend class hazptr_tc<Atom>;
 #endif
+
+  static bool no_executor(Func&&) { return false; }
 
   int load_count() { return count_.load(std::memory_order_acquire); }
 
@@ -298,10 +300,7 @@ class hazptr_domain {
   /** acquire_hprecs */
   Rec* acquire_hprecs(uint8_t num) {
     DCHECK_GE(num, 1);
-    // C++17: auto [n, head] = try_pop_available_hprecs(num);
-    uint8_t n;
-    Rec* head;
-    std::tie(n, head) = try_pop_available_hprecs(num);
+    auto [n, head] = try_pop_available_hprecs(num);
     for (; n < num; ++n) {
       Rec* rec = create_new_hprec();
       DCHECK(rec->next_avail() == nullptr);
@@ -349,7 +348,8 @@ class hazptr_domain {
   /** threshold */
   int threshold() {
     auto thresh = kThreshold;
-    return std::max(thresh, kMultiplier * hcount());
+    auto hcount = hcount_.load(std::memory_order_relaxed);
+    return std::max(thresh, kMultiplier * hcount);
   }
 
   /** check_threshold_and_reclaim */
@@ -357,13 +357,12 @@ class hazptr_domain {
     int rcount = check_count_threshold();
     if (rcount == 0) {
       rcount = check_due_time();
-      if (rcount == 0)
+      if (rcount == 0) {
         return;
+      }
     }
     inc_num_bulk_reclaims();
-    if (!invoke_reclamation_in_executor(rcount)) {
-      do_reclamation(rcount);
-    }
+    schedule_reclamation(rcount);
   }
 
   /** calc_shard */
@@ -385,8 +384,9 @@ class hazptr_domain {
             std::chrono::steady_clock::now().time_since_epoch())
             .count();
     auto due = load_due_time();
-    if (time < due || !cas_due_time(due, time + kSyncTimePeriod))
+    if (time < due || !cas_due_time(due, time + kSyncTimePeriod)) {
       return 0;
+    }
     int rcount = exchange_count(0);
     if (rcount < 0) {
       add_count(rcount);
@@ -410,8 +410,9 @@ class hazptr_domain {
   /** tagged_empty */
   bool tagged_empty() {
     for (int s = 0; s < kNumShards; ++s) {
-      if (!tagged_[s].empty())
+      if (!tagged_[s].empty()) {
         return false;
+      }
     }
     return true;
   }
@@ -419,8 +420,9 @@ class hazptr_domain {
   /** untagged_empty */
   bool untagged_empty() {
     for (int s = 0; s < kNumShards; ++s) {
-      if (!untagged_[s].empty())
+      if (!untagged_[s].empty()) {
         return false;
+      }
     }
     return true;
   }
@@ -457,9 +459,13 @@ class hazptr_domain {
   /** load_hazptr_vals */
   Set load_hazptr_vals() {
     Set hs;
-    auto hprec = hazptrs_.load(std::memory_order_acquire);
-    for (; hprec; hprec = hprec->next()) {
-      hs.insert(hprec->hazptr());
+    auto sz = std::max(0, hcount_.load(std::memory_order_relaxed));
+    if (auto* hprecs = hprecs_.load(std::memory_order_acquire)) {
+      for (auto hprec : hprecs->as_ptr_span(size_t(sz))) {
+        if (auto ptr = hprec->hazptr()) {
+          hs.insert(ptr);
+        }
+      }
     }
     return hs;
   }
@@ -532,8 +538,9 @@ class hazptr_domain {
         add_count(rcount);
       }
       rcount = check_count_threshold();
-      if (rcount == 0 && done)
+      if (rcount == 0 && done) {
         break;
+      }
     }
     dec_num_bulk_reclaims();
   }
@@ -572,14 +579,6 @@ class hazptr_domain {
     }
   }
 
-  Rec* head() const noexcept {
-    return hazptrs_.load(std::memory_order_acquire);
-  }
-
-  int hcount() const noexcept {
-    return hcount_.load(std::memory_order_acquire);
-  }
-
   void reclaim_all_objects() {
     for (int s = 0; s < kNumShards; ++s) {
       Obj* head = untagged_[s].pop_all(RetiredList::kDontLock);
@@ -601,13 +600,7 @@ class hazptr_domain {
     if (this == &default_hazptr_domain<Atom>()) {
       return;
     }
-    auto rec = head();
-    while (rec) {
-      auto next = rec->next();
-      rec->~Rec();
-      hazptr_rec_alloc{}.deallocate(rec, 1);
-      rec = next;
-    }
+    delete hprecs_.load(std::memory_order_acquire);
   }
 
   void wait_for_zero_bulk_reclaims() {
@@ -699,60 +692,68 @@ class hazptr_domain {
     DCHECK(connected);
   }
 
-  Rec* create_new_hprec() {
-    auto rec = hazptr_rec_alloc{}.allocate(1);
-    new (rec) Rec();
-    rec->set_domain(this);
-    while (true) {
-      auto h = head();
-      rec->set_next(h);
-      if (hazptrs_.compare_exchange_weak(
-              h, rec, std::memory_order_release, std::memory_order_acquire)) {
-        break;
-      }
+  HazptrRecArray& get_or_create_hprecs() {
+    HazptrRecArray* hprecs = hprecs_.load(std::memory_order_acquire);
+    return FOLLY_LIKELY(!!hprecs) ? *hprecs : get_or_create_hprecs_slow();
+  }
+  FOLLY_NOINLINE HazptrRecArray& get_or_create_hprecs_slow() {
+    auto* instance = new HazptrRecArray(this);
+    HazptrRecArray* expected = nullptr;
+
+    if (!hprecs_.compare_exchange_strong(
+            expected,
+            instance,
+            std::memory_order_release,
+            std::memory_order_acquire)) {
+      delete std::exchange(instance, expected);
     }
-    hcount_.fetch_add(1);
-    return rec;
+    return *instance;
   }
 
-  bool invoke_reclamation_in_executor(int rcount) {
-    if (!std::is_same<Atom<int>, std::atomic<int>>{} ||
-        this != &default_hazptr_domain<Atom>() || !hazptr_use_executor()) {
-      return false;
-    }
-    auto fn = exec_fn_.load(std::memory_order_acquire);
-    folly::Executor::KeepAlive<> ex =
-        fn ? fn() : detail::hazptr_get_default_executor();
-    if (!ex) {
-      return false;
-    }
+  Rec* create_new_hprec() {
+    auto& hprecs = get_or_create_hprecs();
+    //  As explanation, this increment happens-before the load-relaxed in any
+    //  call to load_hazptr_vals where this newly-created hprec would need to be
+    //  seen. May ccur in some calls to make_hazard_pointer, which precede the
+    //  fence-light-seq-cst in try_protect using the created hprecs, which
+    //  synchronize-with the fence-heavy-seq-cst in do_reclamation, which
+    //  precedes the load-relaxed in load_hazptr_vals. The fences provide the
+    //  required ordering.
+    auto const idx = hcount_.fetch_add(1, std::memory_order_relaxed);
+    return &hprecs[idx];
+  }
+
+  void schedule_reclamation(int rcount) {
     auto backlog = exec_backlog_.fetch_add(1, std::memory_order_relaxed);
-    auto recl_fn = [this, rcount, ka = ex] {
-      exec_backlog_.store(0, std::memory_order_relaxed);
-      do_reclamation(rcount);
-    };
-    if (ex.get() == detail::hazptr_get_default_executor().get()) {
-      invoke_reclamation_may_deadlock(ex, recl_fn);
-    } else {
-      ex->add(recl_fn);
-    }
     if (backlog >= 10) {
       hazptr_warning_executor_backlog(backlog);
     }
-    return true;
+
+    Func recl_fn = [this, rcount] {
+      exec_backlog_.store(0, std::memory_order_relaxed);
+      do_reclamation(rcount);
+    };
+
+    bool canUseExecutor = std::is_same<Atom<int>, std::atomic<int>>{} &&
+        this == &default_hazptr_domain<Atom>() && hazptr_use_executor();
+    if (canUseExecutor) {
+      auto fn = exec_fn_.load(std::memory_order_acquire);
+      if (fn(std::move(recl_fn))) {
+        return;
+      }
+    }
+
+    invoke_reclamation_may_deadlock(std::move(recl_fn));
   }
 
-  template <typename Func>
-  void invoke_reclamation_may_deadlock(
-      folly::Executor::KeepAlive<> ex, Func recl_fn) {
-    ex->add(recl_fn);
-    // This program is using the default executor, which is an
-    // inline executor. This is not necessarily a problem. But if this
-    // program encounters deadlock, then this may be the cause. Most
-    // likely this program did not call
-    // folly::enable_hazptr_thread_pool_executor (which is normally
-    // called by folly::init). If this is a problem check if your
-    // program is missing a call to folly::init or an alternative.
+  void invoke_reclamation_may_deadlock(Func recl_fn) {
+    // Reclamation is not being delegated to an executor, and being executed
+    // inline instead. This is not necessarily a problem. But if this program
+    // encounters deadlock, then this may be the cause. Most likely this program
+    // did not call folly::enable_hazptr_thread_pool_executor (which is normally
+    // called by folly::init). If this is a problem check if your program is
+    // missing a call to folly::init or an alternative.
+    detail::hazptr_inline_executor_add(std::move(recl_fn));
   }
 
   FOLLY_EXPORT FOLLY_NOINLINE void hazptr_warning_list_too_large(

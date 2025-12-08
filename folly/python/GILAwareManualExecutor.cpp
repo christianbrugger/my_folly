@@ -16,23 +16,30 @@
 
 #include <folly/python/GILAwareManualExecutor.h>
 
-#include <Python.h>
+#include <folly/python/Weak.h>
 
 #include <folly/ScopeGuard.h>
 
 namespace folly {
 namespace python {
 
+GILAwareManualExecutor::~GILAwareManualExecutor() {
+  while (keepAliveCount_.load(std::memory_order_relaxed)) {
+    drive();
+  }
+  driveImpl();
+}
+
 void GILAwareManualExecutor::add(Func callback) {
   {
-    std::lock_guard<std::mutex> lock(lock_);
+    std::lock_guard lock(lock_);
     funcs_.emplace(std::move(callback));
   }
   cv_.notify_one();
 }
 
 void GILAwareManualExecutor::waitBeforeDrive() {
-  std::unique_lock<std::mutex> lock(lock_);
+  std::unique_lock lock(lock_);
   if (!funcs_.empty()) {
     return;
   }
@@ -52,7 +59,7 @@ void GILAwareManualExecutor::driveImpl() {
   Func func;
   while (true) {
     {
-      std::lock_guard<std::mutex> lock(lock_);
+      std::lock_guard lock(lock_);
       if (funcs_.empty()) {
         break;
       }
@@ -61,6 +68,7 @@ void GILAwareManualExecutor::driveImpl() {
       funcs_.pop();
     }
     func();
+    func = nullptr;
   }
 }
 

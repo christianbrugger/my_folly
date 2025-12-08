@@ -21,27 +21,19 @@
 #include <glog/logging.h>
 
 #include <folly/Singleton.h>
+#include <folly/experimental/symbolizer/SignalHandler.h>
 #include <folly/init/Phase.h>
 #include <folly/logging/Init.h>
 #include <folly/portability/Config.h>
-#include <folly/synchronization/HazptrThreadPoolExecutor.h>
-
-#if !defined(_WIN32)
-#include <folly/experimental/symbolizer/SignalHandler.h> // @manual
-#endif
 #include <folly/portability/GFlags.h>
+#include <folly/synchronization/HazptrThreadPoolExecutor.h>
 
 FOLLY_GFLAGS_DEFINE_string(logging, "", "Logging configuration");
 
 namespace folly {
-const unsigned long kAllFatalSignals =
-#if !defined(_WIN32)
-    symbolizer::kAllFatalSignals;
-#else
-    0;
-#endif
 
-InitOptions::InitOptions() noexcept : fatal_signals(kAllFatalSignals) {}
+InitOptions::InitOptions() noexcept
+    : fatal_signals(symbolizer::kAllFatalSignals) {}
 
 namespace {
 
@@ -57,8 +49,7 @@ __attribute__((noreturn))
 #else
 [[noreturn]]
 #endif
-static void
-wrapped_abort() {
+static void wrapped_abort() {
   abort();
 }
 #endif
@@ -120,11 +111,11 @@ Init::~Init() {
   SingletonVault::singleton()->destroyInstancesFinal();
 }
 
-void init(int* argc, char*** argv, bool removeFlags) {
+void unsafe_unscoped_init(int* argc, char*** argv, bool removeFlags) {
   initImpl(argc, argv, InitOptions{}.removeFlags(removeFlags));
 }
 
-void init(int* argc, char*** argv, InitOptions options) {
+void unsafe_unscoped_init(int* argc, char*** argv, InitOptions options) {
   initImpl(argc, argv, options);
 }
 

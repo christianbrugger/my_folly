@@ -57,12 +57,11 @@ Task<semi_await_result_t<Awaitable>> detachOnCancel(Awaitable awaitable) {
              awaitable)]() mutable -> Task<semi_await_result_t<Awaitable>> {
           co_return co_await std::move(awaitable_2);
         });
-    std::move(t)
-        .scheduleOn(co_await co_current_executor)
+    co_withExecutor(co_await co_current_executor, std::move(t))
         .startInlineUnsafe(
             [postedPtr = posted.get(), &baton, &result](auto&& r) {
               std::unique_ptr<std::atomic<bool>> p(postedPtr);
-              if (!p->exchange(true, std::memory_order_relaxed)) {
+              if (!p->exchange(true, std::memory_order_acq_rel)) {
                 p.release();
                 tryAssign(result, std::move(r));
                 baton.post();
@@ -74,7 +73,7 @@ Task<semi_await_result_t<Awaitable>> detachOnCancel(Awaitable awaitable) {
   {
     CancellationCallback cancelCallback(
         co_await co_current_cancellation_token, [&posted, &baton, &result] {
-          if (!posted->exchange(true, std::memory_order_relaxed)) {
+          if (!posted->exchange(true, std::memory_order_acq_rel)) {
             posted.release();
             result.emplaceException(folly::OperationCancelled{});
             baton.post();

@@ -30,34 +30,27 @@ namespace folly {
 /**
  * A Thread pool for CPU bound tasks.
  *
- * @note A single queue backed by folly/LifoSem and folly/MPMC queue.
- * Because of this contention can be quite high,
- * since all the worker threads and all the producer threads hit
- * the same queue. MPMC queue excels in this situation but dictates a max queue
- * size.
+ * @note A single queue backed by:
+ * - An efficient semaphore, such as:
+ *   - folly::LifoSem
+ *   - folly::ThrottledlifoSem
+ * * An efficient unbounded concurrent queue, such as:
+ *   - folly::UMPMCQueue
+ * Therefore, this thread pool scales to very high levels of concurrent access.
  *
- * @note The default queue throws when full (folly::QueueBehaviorIfFull::THROW),
- * so add() can fail. Furthermore, join() can also fail if the queue is full,
- * because it enqueues numThreads poison tasks to stop the threads. If join() is
- * needed to be guaranteed to succeed PriorityLifoSemMPMCQueue can be used
- * instead, initializing the lowest priority's (LO_PRI) capacity to at least
- * numThreads. Poisons use LO_PRI so if that priority is not used for any user
- * task join() is guaranteed not to encounter a full queue.
- *
- * @note If a blocking queue (folly::QueueBehaviorIfFull::BLOCK) is used, and
+ * @note If a bounded queue (folly::QueueBehaviorIfFull::BLOCK) is used, and
  * tasks executing on a given thread pool schedule more tasks, deadlock is
- * possible if the queue becomes full.  Deadlock is also possible if there is
+ * possible if the queue becomes full. Deadlock is also possible if there is
  * a circular dependency among multiple thread pools with blocking queues.
- * To avoid this situation, use non-blocking queue(s), or schedule tasks only
- * from threads not belonging to the given thread pool(s), or use
- * folly::IOThreadPoolExecutor.
+ * To avoid this situation, either use non-blocking queue(s) only (default and
+ * recommended), or schedule tasks only from threads not belonging to the given
+ * thread pool(s).
  *
- * @note LifoSem wakes up threads in Lifo order - i.e. there are only few
- * threads as necessary running, and we always try to reuse the same few threads
- * for better cache locality.
- * Inactive threads have their stack madvised away. This works quite well in
- * combination with Lifosem - it almost doesn't matter if more threads than are
- * necessary are specified at startup.
+ * @note LifoSem and ThrottledLifoSem wake up threads in LIFO order - i.e. there
+ * are only ever as few threads as necessary actually running, and we always try
+ * to reuse the same few threads for better cache locality. The other threads
+ * are be suspended continuously until they are needed to handle spikes in work,
+ * and their stacks would be madvised away while the threads are suspended.
  *
  * @note Supports priorities - priorities are implemented as multiple queues -
  * each worker thread checks the highest priority queue first. Threads
@@ -185,6 +178,9 @@ class CPUThreadPoolExecutor
 
  protected:
   BlockingQueue<CPUTask>* FOLLY_NONNULL getTaskQueue();
+  template <typename EnqueueTask>
+  void addImpl(EnqueueTask&& enqueueTask, CPUTask&& task);
+
   std::unique_ptr<ThreadIdWorkerProvider> threadIdCollector_{
       std::make_unique<ThreadIdWorkerProvider>()};
 
@@ -193,15 +189,8 @@ class CPUThreadPoolExecutor
   void stopThreads(size_t n) override;
   size_t getPendingTaskCountImpl() const override final;
 
-  bool tryDecrToStop();
-  bool taskShouldStop(folly::Optional<CPUTask>&);
-
-  template <bool withPriority>
-  void addImpl(
-      Func func,
-      int8_t priority,
-      std::chrono::milliseconds expiration,
-      Func expireCallback);
+  bool shouldStopThread(bool isPoison);
+  void stopThread(const ThreadPtr& thread);
 
   std::unique_ptr<folly::QueueObserverFactory> createQueueObserverFactory();
   QueueObserver* FOLLY_NULLABLE getQueueObserver(int8_t pri);
@@ -211,8 +200,40 @@ class CPUThreadPoolExecutor
   std::array<std::atomic<folly::QueueObserver*>, UCHAR_MAX + 1> queueObservers_;
   std::unique_ptr<folly::QueueObserverFactory> queueObserverFactory_{
       createQueueObserverFactory()};
-  std::atomic<ssize_t> threadsToStop_{0};
+  std::atomic<size_t> threadsToStop_{0};
   Options::Blocking prohibitBlockingOnThreadPools_ = Options::Blocking::allow;
 };
+
+template <typename EnqueueTask>
+void CPUThreadPoolExecutor::addImpl(EnqueueTask&& enqueueTask, CPUTask&& task) {
+  if (!task.func_) {
+    // Reserve empty funcs as poison by logging the error inline.
+    invokeCatchingExns("ThreadPoolExecutor: func", std::move(task.func_));
+    return;
+  }
+
+  if (auto queueObserver = getQueueObserver(task.priority())) {
+    task.queueObserverPayload_ = queueObserver->onEnqueued(task.context_.get());
+  }
+  registerTaskEnqueue(task);
+
+  // It's not safe to expect that the executor is alive after a task is added to
+  // the queue (this task could be holding the last KeepAlive and when finished
+  // - it may unblock the executor shutdown).
+  // If we need executor to be alive after adding into the queue, we have to
+  // acquire a KeepAlive.
+  bool mayNeedToAddThreads = minThreads_.load(std::memory_order_relaxed) == 0 ||
+      activeThreads_.load(std::memory_order_relaxed) <
+          maxThreads_.load(std::memory_order_relaxed);
+  folly::Executor::KeepAlive<> ka = mayNeedToAddThreads
+      ? getKeepAliveToken(this)
+      : folly::Executor::KeepAlive<>{};
+
+  auto result = enqueueTask(std::move(task));
+
+  if (mayNeedToAddThreads && !result.reusedThread) {
+    ensureActiveThreads();
+  }
+}
 
 } // namespace folly

@@ -32,11 +32,11 @@
 
 namespace folly {
 
-static_assert(IsConvertible<float>::value, "");
-static_assert(IsConvertible<int>::value, "");
-static_assert(IsConvertible<bool>::value, "");
-static_assert(IsConvertible<int>::value, "");
-static_assert(!IsConvertible<std::vector<int>>::value, "");
+static_assert(IsConvertible<float>::value);
+static_assert(IsConvertible<int>::value);
+static_assert(IsConvertible<bool>::value);
+static_assert(IsConvertible<int>::value);
+static_assert(!IsConvertible<std::vector<int>>::value);
 
 namespace detail {
 
@@ -191,10 +191,11 @@ void stringAppendfImpl(std::string& output, const char* format, va_list args) {
   int bytes_used = stringAppendfImplHelper(
       inline_buffer.data(), inline_buffer.size(), format, args);
   if (bytes_used < 0) {
-    throw std::runtime_error(to<std::string>(
-        "Invalid format string; snprintf returned negative "
-        "with format string: ",
-        format));
+    throw std::runtime_error(
+        to<std::string>(
+            "Invalid format string; snprintf returned negative "
+            "with format string: ",
+            format));
   }
 
   if (static_cast<size_t>(bytes_used) < inline_buffer.size()) {
@@ -436,8 +437,9 @@ double prettyToDouble(
     }
   }
   if (bestPrefixId == -1) { // No valid suffix rule found
-    throw std::invalid_argument(folly::to<std::string>(
-        "Unable to parse suffix \"", *prettyString, "\""));
+    throw std::invalid_argument(
+        folly::to<std::string>(
+            "Unable to parse suffix \"", *prettyString, "\""));
   }
   prettyString->advance(size_t(longestPrefixLen));
   return suffixes[bestPrefixId].val != 0.
@@ -722,7 +724,7 @@ size_t hexDumpLine(
 
 std::string stripLeftMargin(std::string s) {
   std::vector<StringPiece> pieces;
-  split("\n", s, pieces);
+  split('\n', s, pieces);
   auto piecer = range(pieces);
 
   auto piece = (piecer.end() - 1);
@@ -763,6 +765,63 @@ std::string stripLeftMargin(std::string s) {
   }
   return join("\n", piecer);
 }
+
+bool SubstringConversionCode::operator==(
+    const SubstringConversionCode& other) const {
+  return this->code == other.code && this->substring == other.substring;
+}
+
+namespace detail {
+
+// Template implementation that both concrete overloads delegate to
+template <class DelimT>
+size_t delimCountTokensImpl(DelimT delim, StringPiece sp, bool ignoreEmpty) {
+  assert(sp.empty() || sp.start() != nullptr);
+
+  const char* s = sp.start();
+  const size_t strSize = sp.size();
+  const size_t dSize = delimSize(delim);
+
+  if (dSize > strSize || dSize == 0) {
+    return (!ignoreEmpty || strSize > 0) ? 1 : 0;
+  }
+
+  size_t tokenCount = 0;
+  size_t tokenStartPos = 0;
+  size_t tokenSize = 0;
+
+  for (size_t i = 0; i <= strSize - dSize; ++i) {
+    if (atDelim(&s[i], delim)) {
+      if (!ignoreEmpty || tokenSize > 0) {
+        ++tokenCount;
+      }
+      tokenStartPos = i + dSize;
+      tokenSize = 0;
+      i += dSize - 1;
+    } else {
+      ++tokenSize;
+    }
+  }
+
+  // Count the final token
+  tokenSize = strSize - tokenStartPos;
+  if (!ignoreEmpty || tokenSize > 0) {
+    ++tokenCount;
+  }
+
+  return tokenCount;
+}
+
+// Concrete overloads that delegate to the template implementation
+size_t delimCountTokens(char delim, StringPiece sp, bool ignoreEmpty) {
+  return delimCountTokensImpl(delim, sp, ignoreEmpty);
+}
+
+size_t delimCountTokens(StringPiece delim, StringPiece sp, bool ignoreEmpty) {
+  return delimCountTokensImpl(delim, sp, ignoreEmpty);
+}
+
+} // namespace detail
 
 } // namespace folly
 

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <folly/ssl/OpenSSLHash.h>
 
 #include <folly/Format.h>
@@ -23,8 +24,9 @@ namespace ssl {
 
 [[noreturn]] void OpenSSLHash::check_out_size_throw(
     size_t size, MutableByteRange out) {
-  throw std::invalid_argument(folly::sformat(
-      "expected out of size {} but was of size {}", size, out.size()));
+  throw std::invalid_argument(
+      fmt::format(
+          "expected out of size {} but was of size {}", size, out.size()));
 }
 
 } // namespace ssl

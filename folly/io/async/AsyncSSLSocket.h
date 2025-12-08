@@ -75,7 +75,7 @@ class AsyncSSLSocketConnector;
  */
 class AsyncSSLSocket : public AsyncSocket {
  public:
-  typedef std::unique_ptr<AsyncSSLSocket, Destructor> UniquePtr;
+  using UniquePtr = std::unique_ptr<AsyncSSLSocket, Destructor>;
   using X509_deleter = folly::static_function_deleter<X509, &X509_free>;
 
   class HandshakeCB {
@@ -198,10 +198,12 @@ class AsyncSSLSocket : public AsyncSocket {
    * Struct to consolidate constructor arguments.
    */
   struct Options {
-    // If this verifier is set, it's used during the TLS handshake. It will be
-    // invoked to verify the peer's end-entity leaf certificate after OpenSSL's
-    // chain validation and after calling the HandshakeCB's handshakeVer() and
-    // only if these are successful.
+    // If this verifier is set, it's used during the TLS handshake. First,
+    // verifyContext() is called during OpenSSL's certificate verification
+    // callback for each certificate in the chain, after HandshakeCB's
+    // handshakeVer() if set. Then, verifyLeaf() is invoked to verify the
+    // peer's end-entity leaf certificate, but only if OpenSSL's chain
+    // validation, handshakeVer(), and verifyContext() all succeeded.
     std::shared_ptr<CertificateIdentityVerifier> verifier;
     bool deferSecurityNegotiation{};
     bool isServer{};
@@ -397,7 +399,7 @@ class AsyncSSLSocket : public AsyncSocket {
       const std::vector<std::string>& supportedProtocols);
 
   std::string getSecurityProtocol() const override {
-    if (sslState_ == STATE_UNENCRYPTED) {
+    if (sslState_ == SSLStateEnum::STATE_UNENCRYPTED) {
       return "";
     }
     return "TLS";
@@ -873,7 +875,7 @@ class AsyncSSLSocket : public AsyncSocket {
   // Only enable if security negotiation is deferred
   // zero copy is not supported by openssl.
   bool setZeroCopy(bool enable) override {
-    if (sslState_ == STATE_UNENCRYPTED) {
+    if (sslState_ == SSLStateEnum::STATE_UNENCRYPTED) {
       return AsyncSocket::setZeroCopy(enable);
     }
     return false;
@@ -988,7 +990,7 @@ class AsyncSSLSocket : public AsyncSocket {
   // to disable client-initiated renegotiation.
   bool handshakeComplete_{false};
   bool renegotiateAttempted_{false};
-  SSLStateEnum sslState_{STATE_UNINIT};
+  SSLStateEnum sslState_{SSLStateEnum::STATE_UNINIT};
   std::shared_ptr<const folly::SSLContext> ctx_;
   // Callback for SSL_accept() or SSL_connect()
   HandshakeCB* handshakeCallback_{nullptr};

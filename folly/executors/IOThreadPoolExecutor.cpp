@@ -26,6 +26,11 @@ FOLLY_GFLAGS_DEFINE_bool(
     true,
     "IOThreadPoolExecutor will dynamically create threads");
 
+FOLLY_GFLAGS_DEFINE_int32(
+    folly_iothreadpoolexecutor_max_read_at_once,
+    -1,
+    "IOThreadPoolExecutor will use this value as default for maxReadAtOnce in its event bases, valid values are [0, inf)");
+
 namespace folly {
 
 namespace {
@@ -61,9 +66,11 @@ class MemoryIdlerTimeout : public AsyncTimeout, public EventBase::LoopCallback {
 
         idleTimeout = MemoryIdler::getVariationTimeout(idleTimeout);
 
-        scheduleTimeout(static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout)
-                .count()));
+        scheduleTimeout(
+            static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    idleTimeout)
+                    .count()));
       } else {
         num_++;
       }
@@ -117,7 +124,8 @@ IOThreadPoolExecutor::IOThreadPoolExecutor(
           maxThreads, minThreads, std::move(threadFactory)),
       isWaitForAll_(options.waitForAll),
       nextThread_(0),
-      eventBaseManager_(ebm) {
+      eventBaseManager_(ebm),
+      maxReadAtOnce_(options.maxReadAtOnce) {
   setNumThreads(maxThreads);
   registerThreadPoolExecutor(this);
   if (options.enableThreadIdCollection) {
@@ -217,6 +225,9 @@ void IOThreadPoolExecutor::threadRun(ThreadPtr thread) {
   const auto& ioThread = *thisThread_ =
       std::static_pointer_cast<IOThread>(thread);
   ioThread->eventBase = eventBaseManager_->getEventBase();
+  if (maxReadAtOnce_) {
+    ioThread->eventBase->setMaxReadAtOnce(*maxReadAtOnce_);
+  }
 
   auto tid = folly::getOSThreadID();
   if (threadIdCollector_) {
@@ -253,7 +264,7 @@ void IOThreadPoolExecutor::threadRun(ThreadPtr thread) {
     }
   }
 
-  std::lock_guard<std::mutex> guard(ioThread->eventBaseShutdownMutex_);
+  std::lock_guard guard(ioThread->eventBaseShutdownMutex_);
   ioThread->eventBase = nullptr;
   eventBaseManager_->clearEventBase();
 }
@@ -271,13 +282,15 @@ void IOThreadPoolExecutor::stopThreads(size_t n) {
     }
     ioThread->shouldRun = false;
     stoppedThreads.push_back(ioThread);
-    std::lock_guard<std::mutex> guard(ioThread->eventBaseShutdownMutex_);
+    std::lock_guard guard(ioThread->eventBaseShutdownMutex_);
     if (ioThread->eventBase) {
       ioThread->eventBase->terminateLoopSoon();
     }
   }
   for (const auto& thread : stoppedThreads) {
-    stoppedThreads_.add(thread);
+    stoppedThreadProcessedTasks_ += thread->processedTasks;
+    thread->processedTasks = 0;
+    stoppedThreads_.add(folly::copy(thread));
     threadList_.remove(thread);
   }
 }

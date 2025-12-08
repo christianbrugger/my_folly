@@ -27,6 +27,7 @@ struct io_uring_cqe;
 namespace folly {
 
 class IoUringBackend;
+class EventBase;
 
 struct IoSqeBase
     : boost::intrusive::list_base_hook<
@@ -57,6 +58,7 @@ struct IoSqeBase
   bool inFlight() const { return inFlight_; }
   bool cancelled() const { return cancelled_; }
   void markCancelled() { cancelled_ = true; }
+  void setEventBase(EventBase* evb) { evb_ = evb; }
 
  protected:
   // This is used if you want to prepare this sqe for reuse, but will manage the
@@ -72,44 +74,8 @@ struct IoSqeBase
 
   bool inFlight_ = false;
   bool cancelled_ = false;
+  EventBase* evb_ = nullptr;
   Type type_;
-};
-
-class IoUringBufferProviderBase {
- protected:
-  uint16_t const gid_;
-  size_t const sizePerBuffer_;
-
- public:
-  struct Deleter {
-    void operator()(IoUringBufferProviderBase* base) {
-      if (base) {
-        base->destroy();
-      }
-    }
-  };
-
-  using UniquePtr = std::unique_ptr<IoUringBufferProviderBase, Deleter>;
-  explicit IoUringBufferProviderBase(uint16_t gid, size_t sizePerBuffer)
-      : gid_(gid), sizePerBuffer_(sizePerBuffer) {}
-  virtual ~IoUringBufferProviderBase() = default;
-
-  IoUringBufferProviderBase(IoUringBufferProviderBase&&) = delete;
-  IoUringBufferProviderBase(IoUringBufferProviderBase const&) = delete;
-  IoUringBufferProviderBase& operator=(IoUringBufferProviderBase&&) = delete;
-  IoUringBufferProviderBase& operator=(IoUringBufferProviderBase const&) =
-      delete;
-
-  size_t sizePerBuffer() const { return sizePerBuffer_; }
-  uint16_t gid() const { return gid_; }
-
-  virtual uint32_t count() const noexcept = 0;
-  virtual void unusedBuf(uint16_t i) noexcept = 0;
-  virtual std::unique_ptr<IOBuf> getIoBuf(
-      uint16_t i, size_t length) noexcept = 0;
-  virtual void enobuf() noexcept = 0;
-  virtual bool available() const noexcept = 0;
-  virtual void destroy() noexcept = 0;
 };
 
 struct IoUringFdRegistrationRecord

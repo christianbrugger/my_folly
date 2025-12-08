@@ -489,6 +489,8 @@ struct DispatchSmallTrivial {
         break;
       case Op::HEAP:
         break;
+      default: /* unexpected */
+        abort();
     }
     return 0U;
   }
@@ -524,6 +526,8 @@ struct DispatchBigTrivial {
         break;
       case Op::HEAP:
         break;
+      default: /* unexpected */
+        abort();
     }
     return src->bigt.size;
   }
@@ -554,14 +558,17 @@ struct DispatchSmall {
   static std::size_t exec(Op o, Data* src, Data* dst) noexcept {
     switch (o) {
       case Op::MOVE:
-        ::new (static_cast<void*>(&dst->tiny)) Fun(static_cast<Fun&&>(
-            *static_cast<Fun*>(static_cast<void*>(&src->tiny))));
+        ::new (static_cast<void*>(&dst->tiny))
+            Fun(static_cast<Fun&&>(
+                *static_cast<Fun*>(static_cast<void*>(&src->tiny))));
         [[fallthrough]];
       case Op::NUKE:
         static_cast<Fun*>(static_cast<void*>(&src->tiny))->~Fun();
         break;
       case Op::HEAP:
         break;
+      default: /* unexpected */
+        abort();
     }
     return 0U;
   }
@@ -583,6 +590,8 @@ struct DispatchBig {
         break;
       case Op::HEAP:
         break;
+      default: /* unexpected */
+        abort();
     }
     return sizeof(Fun);
   }
@@ -681,7 +690,7 @@ class Function final : private detail::function::FunctionTraits<FunctionType> {
   template <class ReturnType, class... Args>
   /*implicit*/ Function(ReturnType (^objCBlock)(Args... args))
       : Function([blockCopy = (ReturnType(^)(Args...))[objCBlock copy]](
-                     Args... args) { return blockCopy(args...); }){};
+                     Args... args) { return blockCopy(args...); }) {}
 #endif
 
   /**
@@ -780,7 +789,7 @@ class Function final : private detail::function::FunctionTraits<FunctionType> {
       // Prevent this overload from being selected when `ptr` is not a
       // compatible member function pointer.
       typename = decltype(Function(std::mem_fn((Member Class::*)0)))>
-  /* implicit */ Function(Member Class::*ptr) noexcept {
+  /* implicit */ Function(Member Class::* ptr) noexcept {
     if (ptr) {
       *this = std::mem_fn(ptr);
     }
@@ -868,7 +877,7 @@ class Function final : private detail::function::FunctionTraits<FunctionType> {
    * operator is equivalent to `*this = std::mem_fn(ptr)`.
    */
   template <typename Member, typename Class>
-  auto operator=(Member Class::*ptr) noexcept
+  auto operator=(Member Class::* ptr) noexcept
       // Prevent this overload from being selected when `ptr` is not a
       // compatible member function pointer.
       -> decltype(operator=(std::mem_fn(ptr))) {

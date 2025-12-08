@@ -18,6 +18,7 @@
 
 #include <folly/CppAttributes.h>
 #include <folly/Function.h>
+#include <folly/OperationCancelled.h>
 
 #include <atomic>
 #include <memory>
@@ -28,11 +29,7 @@ namespace folly {
 
 class CancellationCallback;
 class CancellationSource;
-struct OperationCancelled : public std::exception {
-  const char* what() const noexcept override {
-    return "coroutine operation cancelled";
-  }
-};
+struct cancellation_token_merge_fn;
 
 namespace detail {
 class CancellationState;
@@ -111,18 +108,6 @@ class CancellationToken {
   bool canBeCancelled() const noexcept;
 
   /**
-   * Obtain a CancellationToken linked to any number of other
-   * CancellationTokens.
-   *
-   * This token will have cancellation requested when any of the passed-in
-   * tokens do.
-   * This token is cancellable if any of the passed-in tokens are at the time of
-   * construction.
-   */
-  template <typename... Ts>
-  static CancellationToken merge(Ts&&... tokens);
-
-  /**
    * Swaps the underlying state of the cancellation token with the token that is
    * passed-in.
    */
@@ -134,6 +119,7 @@ class CancellationToken {
  private:
   friend class CancellationCallback;
   friend class CancellationSource;
+  friend struct cancellation_token_merge_fn;
 
   explicit CancellationToken(detail::CancellationStateTokenPtr state) noexcept;
 
@@ -359,6 +345,25 @@ class CancellationCallback {
   // thread and it is now safe to exit the destructor.
   std::atomic<bool> callbackCompleted_;
 };
+
+/**
+ * Obtain a CancellationToken linked to any number of other
+ * CancellationTokens.
+ *
+ * This token will have cancellation requested when any of the passed-in
+ * tokens do.
+ * This token is cancellable if any of the passed-in tokens are at the time of
+ * construction.
+ *
+ * Example:
+ *   CancellationSource a,b;
+ *   auto c = cancellation_token_merge(a.getToken(), b.getToken());
+ */
+struct cancellation_token_merge_fn {
+  template <typename... Ts>
+  CancellationToken operator()(Ts&&... tokens) const;
+};
+inline constexpr cancellation_token_merge_fn cancellation_token_merge{};
 
 } // namespace folly
 

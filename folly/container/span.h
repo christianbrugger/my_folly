@@ -180,10 +180,10 @@ class span {
   constexpr iterator begin() const noexcept { return data_; }
   constexpr iterator end() const noexcept { return data_ + size(); }
   constexpr reverse_iterator rbegin() const noexcept {
-    return std::make_reverse_iterator(begin());
+    return std::make_reverse_iterator(end());
   }
   constexpr reverse_iterator rend() const noexcept {
-    return std::make_reverse_iterator(end());
+    return std::make_reverse_iterator(begin());
   }
 
   constexpr reference front() const {
@@ -262,7 +262,7 @@ span(const std::array<T, N>&) -> span<const T, N>;
 
 template <typename R>
 span(R&&) -> span<std::remove_reference_t<
-              iterator_reference_t<decltype(std::begin(std::declval<R&>()))>>>;
+    iterator_reference_t<decltype(std::begin(std::declval<R&>()))>>>;
 
 } // namespace fallback_span
 
@@ -284,8 +284,7 @@ namespace detail {
 
 struct span_cast_impl_fn {
   template <
-      template <typename, std::size_t>
-      class Span,
+      template <typename, std::size_t> class Span,
       typename U,
       typename T,
       std::size_t Extent>

@@ -172,7 +172,7 @@ class SenderCancellationCallback : public IChannelCallback {
   void consume(ChannelBridgeBase*) override {
     cancelSource_.requestCancellation();
     executor_->add([this]() {
-      CHECK(!callbackToFire_.second.isReady());
+      CHECK(!callbackToFire_.first.isFulfilled());
       callbackToFire_.first.setValue(CallbackToFire::Consume);
     });
   }
@@ -184,7 +184,7 @@ class SenderCancellationCallback : public IChannelCallback {
   void canceled(ChannelBridgeBase*) override {
     cancelSource_.requestCancellation();
     executor_->add([this]() {
-      CHECK(!callbackToFire_.second.isReady());
+      CHECK(!callbackToFire_.first.isFulfilled());
       callbackToFire_.first.setValue(CallbackToFire::Canceled);
     });
   }
@@ -256,27 +256,29 @@ void runOperationWithSenderCancellation(
     // (indicating that the channel callback already ran).
     channelCallbackToRestore = nullptr;
   }
-  folly::coro::co_invoke(
-      [&sender,
-       executor,
-       channelCallbackToRestore,
-       token = std::move(token),
-       operation = std::move(operation)]() mutable -> folly::coro::Task<void> {
-        auto senderCancellationCallback = SenderCancellationCallback(
-            sender, executor, channelCallbackToRestore);
-        auto result =
-            co_await folly::coro::co_awaitTry(folly::coro::co_withCancellation(
-                senderCancellationCallback.getCancellationToken(),
-                std::move(operation)));
-        if (result.hasException()) {
-          LOG(FATAL) << fmt::format(
-              "Unexpected exception when running coroutine operation with "
-              "sender cancellation: {}",
-              result.exception().what());
-        }
-        co_await senderCancellationCallback.onTaskCompleted();
-      })
-      .scheduleOn(executor)
+  co_withExecutor(
+      executor,
+      folly::coro::co_invoke(
+          [&sender,
+           executor,
+           channelCallbackToRestore,
+           token = std::move(token),
+           operation =
+               std::move(operation)]() mutable -> folly::coro::Task<void> {
+            auto senderCancellationCallback = SenderCancellationCallback(
+                sender, executor, channelCallbackToRestore);
+            auto result = co_await folly::coro::co_awaitTry(
+                folly::coro::co_withCancellation(
+                    senderCancellationCallback.getCancellationToken(),
+                    std::move(operation)));
+            if (result.hasException()) {
+              LOG(FATAL) << fmt::format(
+                  "Unexpected exception when running coroutine operation with "
+                  "sender cancellation: {}",
+                  result.exception().what());
+            }
+            co_await senderCancellationCallback.onTaskCompleted();
+          }))
       .start();
 }
 } // namespace detail

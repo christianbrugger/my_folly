@@ -338,7 +338,10 @@ TEST_F(ExceptionTest, exception_ptr_vmi) {
   using A0 = Virt<0>;
   using A1 = Virt<1>;
   using A2 = Virt<2>;
-  struct B0 : virtual A1, virtual A2 {};
+  struct C;
+  struct B0 : virtual A1, virtual A2 {
+    using folly_get_exception_hint_types = folly::tag_t<B0, C>;
+  };
   struct B1 : virtual A2, virtual A0 {};
   struct B2 : virtual A0, virtual A1 {};
   struct C : B0, B1, B2 {
@@ -385,6 +388,10 @@ TEST_F(ExceptionTest, exception_ptr_vmi) {
   EXPECT_EQ(
       folly::exception_ptr_get_object<C>(ptr),
       folly::exception_ptr_get_object_hint<A0>(ptr, folly::tag<B1, C, B2>));
+  EXPECT_EQ(
+      folly::exception_ptr_get_object<B0>(ptr),
+      // Uses `C::folly_get_exception_hint_types`, put `void` in list to confirm
+      folly::exception_ptr_get_object_hint<B0>(ptr));
 }
 
 TEST_F(ExceptionTest, make_exception_ptr_with_invocable_fail) {
@@ -414,29 +421,205 @@ TEST_F(ExceptionTest, make_exception_ptr_with_in_place) {
   EXPECT_EQ(17, *folly::exception_ptr_get_object<int>(ptr));
 }
 
-TEST_F(ExceptionTest, exception_shared_string) {
-  constexpr auto c = "hello, world!";
+TEST_F(ExceptionTest, get_exception_from_std_exception_ptr) {
+  using folly::get_exception;
+  using folly::get_mutable_exception;
 
-  auto s0 = folly::exception_shared_string(c);
-  auto s1 = s0;
-  auto s2 = s1;
-  EXPECT_STREQ(c, s2.what());
+  static_assert(
+      std::is_invocable_v<
+          folly::get_exception_fn<std::exception>,
+          const std::exception_ptr&>);
+  static_assert(
+      std::is_invocable_v<
+          folly::get_mutable_exception_fn<std::exception>,
+          std::exception_ptr&>);
+  static_assert(
+      !std::is_invocable_v<
+          folly::get_mutable_exception_fn<std::exception>,
+          const std::exception_ptr&>);
 
-  EXPECT_STREQ(c, folly::exception_shared_string(std::string_view(c)).what());
-  EXPECT_STREQ(c, folly::exception_shared_string(std::string(c)).what());
+  // Unsafe to extract a pointer out of rvalues
+  static_assert(
+      !std::is_invocable_v<
+          folly::get_exception_fn<std::exception>,
+          std::exception_ptr&&>);
+  static_assert(
+      !std::is_invocable_v<
+          folly::get_exception_fn<std::exception>,
+          const std::exception_ptr&&>);
+  static_assert(
+      !std::is_invocable_v<
+          folly::get_mutable_exception_fn<std::exception>,
+          std::exception_ptr&&>);
+  static_assert(
+      !std::is_invocable_v<
+          folly::get_mutable_exception_fn<std::exception>,
+          const std::exception_ptr&&>);
+
+#if 0 // manual test for "clang:lifetimebound"
+  const std::exception* ex = []() {
+    auto ep = folly::make_exception_ptr_with([]() {
+      return std::runtime_error{"foo"};
+    });
+    return get_exception<>(ep);
+  }();
+  EXPECT_EQ("foo", ex->what());
+#endif
+
+  auto eptr = folly::make_exception_ptr_with([]() {
+    return std::runtime_error{"foo"};
+  });
+
+  EXPECT_EQ(nullptr, get_exception<std::system_error>(eptr));
+
+  EXPECT_STREQ("foo", get_exception<std::exception>(eptr)->what());
+  EXPECT_STREQ(
+      "foo", get_exception<std::exception>(std::as_const(eptr))->what());
+  EXPECT_STREQ("foo", get_mutable_exception<std::exception>(eptr)->what());
+
+  EXPECT_STREQ("foo", get_exception<const std::exception>(eptr)->what());
+  EXPECT_STREQ(
+      "foo", get_exception<const std::exception>(std::as_const(eptr))->what());
+  // While this is a very silly kind of usage, it does work.
+  EXPECT_STREQ(
+      "foo", get_mutable_exception<const std::exception>(eptr)->what());
+
+  EXPECT_STREQ("foo", get_exception<>(eptr)->what());
+  EXPECT_STREQ("foo", get_exception<>(std::as_const(eptr))->what());
+  EXPECT_STREQ("foo", get_mutable_exception<>(eptr)->what());
+
+  EXPECT_STREQ("foo", get_exception<std::runtime_error>(eptr)->what());
+  EXPECT_STREQ(
+      "foo", get_exception<std::runtime_error>(std::as_const(eptr))->what());
+  EXPECT_STREQ("foo", get_mutable_exception<std::runtime_error>(eptr)->what());
+
+  auto* expected_p = folly::exception_ptr_get_object<std::runtime_error>(eptr);
+  EXPECT_EQ(expected_p, get_exception<std::runtime_error>(eptr));
+  EXPECT_EQ(expected_p, get_exception<std::runtime_error>(std::as_const(eptr)));
+
+  static_assert(
+      std::is_same_v<
+          const std::runtime_error*,
+          decltype(get_exception<std::runtime_error>(eptr))>);
+  static_assert(
+      std::is_same_v<
+          const std::runtime_error*,
+          decltype(get_exception<const std::runtime_error>(eptr))>);
+  static_assert(
+      std::is_same_v<
+          const std::runtime_error*,
+          decltype(get_exception<std::runtime_error>(std::as_const(eptr)))>);
+  static_assert(
+      std::is_same_v<
+          std::runtime_error*,
+          decltype(get_mutable_exception<std::runtime_error>(eptr))>);
+}
+
+template <typename String>
+void test_exception_shared_string_construct(const char* c, String s0) {
+  EXPECT_STREQ(c, s0.what());
+  {
+    static_assert(std::is_copy_constructible_v<String>);
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    auto s1 = s0;
+    EXPECT_STREQ(c, s1.what());
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    auto s2 = s1;
+    EXPECT_STREQ(c, s2.what());
+  }
+#if FOLLY_CPLUSPLUS >= 202002
+  {
+    static_assert(std::is_move_constructible_v<String>);
+    auto s1 = std::move(s0);
+    EXPECT_STREQ(c, s1.what());
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    EXPECT_STREQ("", s0.what());
+  }
+#endif
+}
+
+template <typename String>
+void test_exception_shared_string_assign(const char* c, String s0) {
+  {
+    static_assert(std::is_copy_assignable_v<String>);
+    String s1{"original", 8};
+    s1 = s0;
+    EXPECT_STREQ(c, s1.what());
+    s1 = std::as_const(std::as_const(s1));
+    EXPECT_STREQ(c, s1.what());
+  }
+#if FOLLY_CPLUSPLUS >= 202002
+  {
+    static_assert(std::is_move_assignable_v<String>);
+
+    String s1{"original", 8};
+    s1 = std::move(s0);
+    EXPECT_STREQ(c, s1.what());
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    EXPECT_STREQ("", s0.what());
+
+    s1 = std::move(s1);
+    EXPECT_STREQ(c, s1.what());
+  }
+#endif
+}
+
+TEST_F(ExceptionTest, exception_shared_string_construct_cstr) {
+  test_exception_shared_string_construct(
+      "msg", folly::exception_shared_string("msg", strlen("msg")));
+}
+
+TEST_F(ExceptionTest, exception_shared_string_assign_cstr) {
+  test_exception_shared_string_assign(
+      "msg", folly::exception_shared_string("msg", strlen("msg")));
+}
+
+TEST_F(ExceptionTest, exception_shared_string_construct_string_view) {
+  test_exception_shared_string_construct(
+      "msg", folly::exception_shared_string(std::string_view("msg")));
+}
+
+TEST_F(ExceptionTest, exception_shared_string_assign_string_view) {
+  test_exception_shared_string_assign(
+      "msg", folly::exception_shared_string(std::string_view("msg")));
+}
+
+TEST_F(ExceptionTest, exception_shared_string_construct_string) {
+  test_exception_shared_string_construct(
+      "msg", folly::exception_shared_string(std::string("msg")));
+}
+
+TEST_F(ExceptionTest, exception_shared_string_assign_string) {
+  test_exception_shared_string_assign(
+      "msg", folly::exception_shared_string(std::string("msg")));
 }
 
 #if FOLLY_CPLUSPLUS >= 202002
 
-TEST_F(ExceptionTest, exception_shared_string_literal) {
-  using namespace folly::string_literals;
-  auto s0 = folly::exception_shared_string("hello, world!"_litv);
-  auto s1 = s0;
-  auto s2 = s1;
-  EXPECT_STREQ("hello, world!", s2.what());
+TEST_F(ExceptionTest, exception_shared_string_literal_consteval) {
+  constexpr const char* c = "hello, world!";
+  {
+    folly::exception_shared_string s0{c};
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    auto s1 = s0;
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    auto s2 = s1;
+    EXPECT_STREQ(c, s2.what());
+  }
+  // Same, but `constexpr`.  Future: need C++20 `std::is_constant_evaluated` to
+  // make the copy ctor `constexpr` as well.
+  {
+    constexpr folly::exception_shared_string s0{c};
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    auto s1 = s0;
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    auto s2 = s1;
+    EXPECT_STREQ(c, s2.what());
+  }
 }
 
-#endif
+#endif // FOLLY_CPLUSPLUS >= 202002
+
 // example of how to do the in-place formatting efficiently
 struct format_param_fn {
   template <typename A>
@@ -461,4 +644,35 @@ TEST_F(ExceptionTest, exception_shared_string_format) {
       [](auto p) { return folly::exception_shared_string(p.first, p.second); },
       format_param("a number {} and a string {}", 217, "flobber"s));
   EXPECT_STREQ("a number 217 and a string flobber", s.what());
+}
+
+TEST_F(ExceptionTest, exception_ptr_use_count_empty) {
+  auto ptr = std::exception_ptr();
+  EXPECT_EQ(0, folly::exception_ptr_use_count(ptr));
+  EXPECT_FALSE(folly::exception_ptr_unique(ptr));
+}
+
+TEST_F(ExceptionTest, exception_ptr_use_count_single) {
+  auto ptr = std::make_exception_ptr(42);
+  EXPECT_EQ(1, folly::exception_ptr_use_count(ptr));
+  EXPECT_TRUE(folly::exception_ptr_unique(ptr));
+}
+
+TEST_F(ExceptionTest, exception_ptr_use_count_copied) {
+  auto ptr1 = std::make_exception_ptr(42);
+  auto ptr2 = ptr1;
+  EXPECT_EQ(2, folly::exception_ptr_use_count(ptr1));
+  EXPECT_EQ(2, folly::exception_ptr_use_count(ptr2));
+  EXPECT_FALSE(folly::exception_ptr_unique(ptr1));
+  EXPECT_FALSE(folly::exception_ptr_unique(ptr2));
+}
+
+TEST_F(ExceptionTest, exception_ptr_use_count_after_reset) {
+  auto ptr1 = std::make_exception_ptr(42);
+  auto ptr2 = ptr1;
+  EXPECT_EQ(2, folly::exception_ptr_use_count(ptr1));
+  ptr2 = std::exception_ptr();
+  EXPECT_EQ(1, folly::exception_ptr_use_count(ptr1));
+  EXPECT_TRUE(folly::exception_ptr_unique(ptr1));
+  EXPECT_EQ(0, folly::exception_ptr_use_count(ptr2));
 }

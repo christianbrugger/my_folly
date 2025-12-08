@@ -32,7 +32,7 @@ struct MergingCancellationStateTag {};
 // Internal cancellation state object.
 class CancellationState {
  public:
-  FOLLY_NODISCARD static CancellationStateSourcePtr create();
+  [[nodiscard]] static CancellationStateSourcePtr create();
 
  protected:
   // Constructed initially with a CancellationSource reference count of 1.
@@ -49,9 +49,9 @@ class CancellationState {
   void removeSourceReference() noexcept;
 
  public:
-  FOLLY_NODISCARD CancellationStateTokenPtr addTokenReference() noexcept;
+  [[nodiscard]] CancellationStateTokenPtr addTokenReference() noexcept;
 
-  FOLLY_NODISCARD CancellationStateSourcePtr addSourceReference() noexcept;
+  [[nodiscard]] CancellationStateSourcePtr addSourceReference() noexcept;
 
   bool tryAddCallback(
       CancellationCallback* callback,
@@ -112,7 +112,7 @@ class CancellationStateWithData : public CancellationState {
 
  public:
   template <typename... Args>
-  FOLLY_NODISCARD static std::
+  [[nodiscard]] static std::
       pair<CancellationStateSourcePtr, std::tuple<Data...>*>
       create(Args&&... data);
 
@@ -442,7 +442,8 @@ std::pair<CancellationSource, std::tuple<Data...>*> CancellationSource::create(
 }
 
 template <typename... Ts>
-inline CancellationToken CancellationToken::merge(Ts&&... tokens) {
+CancellationToken cancellation_token_merge_fn::operator()(
+    Ts&&... tokens) const {
   if constexpr (sizeof...(Ts) == 0) {
     return CancellationToken();
   } else if constexpr (sizeof...(Ts) == 1) {
@@ -489,14 +490,17 @@ inline CancellationToken CancellationToken::merge(Ts&&... tokens) {
       }
       return *copyToks[0];
     } else if constexpr (NCopy == N) {
-      return CancellationToken(detail::MergingCancellationState::createCopy(
-          copyIdx, copyToks.data()));
+      return CancellationToken(
+          detail::MergingCancellationState::createCopy(
+              copyIdx, copyToks.data()));
     } else if constexpr (NCopy == 0) {
-      return CancellationToken(detail::MergingCancellationState::createMove(
-          moveIdx, moveToks.data()));
+      return CancellationToken(
+          detail::MergingCancellationState::createMove(
+              moveIdx, moveToks.data()));
     } else {
-      return CancellationToken(detail::MergingCancellationState::createCopyMove(
-          copyIdx, copyToks.data(), moveIdx, moveToks.data()));
+      return CancellationToken(
+          detail::MergingCancellationState::createCopyMove(
+              copyIdx, copyToks.data(), moveIdx, moveToks.data()));
     }
   }
 }

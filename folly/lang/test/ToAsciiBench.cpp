@@ -48,14 +48,14 @@ using abc = folly::to_ascii_alphabet_lower;
     folly::detail::to_ascii_with_##impl<base, abc>(buf, size, v);          \
     return size;                                                           \
   }
-#define FOLLY_TO_ASCII_BENCH_CHECK(base)                                    \
-  extern "C" FOLLY_KEEP size_t check_to_ascii_range_##base(                 \
-      char* outb, char* oute, uint64_t v) {                                 \
-    return folly::detail::to_ascii_with_route<base, abc>(outb, oute, v);    \
-  }                                                                         \
-  extern "C" FOLLY_KEEP size_t check_to_ascii_array_##base(                 \
-      char(&out)[(folly::to_ascii_size_max<base, uint64_t>)], uint64_t v) { \
-    return folly::detail::to_ascii_with_route<base, abc>(out, v);           \
+#define FOLLY_TO_ASCII_BENCH_CHECK(base)                                     \
+  extern "C" FOLLY_KEEP size_t check_to_ascii_range_##base(                  \
+      char* outb, char* oute, uint64_t v) {                                  \
+    return folly::detail::to_ascii_with_route<base, abc>(outb, oute, v);     \
+  }                                                                          \
+  extern "C" FOLLY_KEEP size_t check_to_ascii_array_##base(                  \
+      char (&out)[(folly::to_ascii_size_max<base, uint64_t>)], uint64_t v) { \
+    return folly::detail::to_ascii_with_route<base, abc>(out, v);            \
   }
 FOLLY_TO_ASCII_BENCH_CHECK_SIZE(imuls, 16)
 FOLLY_TO_ASCII_BENCH_CHECK_SIZE(imuls, 10)
@@ -113,7 +113,6 @@ struct inputs<10> {
       12345678901234567890u,
   };
 };
-constexpr uint64_t const inputs<10>::data[21];
 
 template <>
 struct inputs<16> {
@@ -137,7 +136,6 @@ struct inputs<16> {
       0x123456789abcdef0,
   };
 };
-constexpr uint64_t const inputs<16>::data[17];
 
 } // namespace
 

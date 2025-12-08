@@ -23,7 +23,7 @@ using namespace folly;
 using std::string;
 
 using std::unique_ptr;
-typedef FutureException eggs_t;
+using eggs_t = FutureException;
 static eggs_t eggs("eggs");
 
 TEST(Promise, makeEmpty) {
@@ -114,7 +114,9 @@ TEST(Promise, lacksPreconditionValid) {
 #define DOIT(STMT)         \
   do {                     \
     auto p = makeValid();  \
-    { STMT; }              \
+    {                      \
+      STMT;                \
+    }                      \
     copy(std::move(p));    \
     EXPECT_NO_THROW(STMT); \
   } while (false)

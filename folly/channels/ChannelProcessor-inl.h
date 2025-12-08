@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <fmt/format.h>
 #include <folly/channels/ChannelProcessor.h>
 #include <folly/channels/ConsumeChannel.h>
 #include <folly/channels/MergeChannel.h>
@@ -36,8 +37,9 @@ class ChannelProcessorImpl {
       std::shared_ptr<folly::channels::RateLimiter> rateLimiter,
       MergeChannel<KeyType, Unit> mergeChannel,
       Receiver<MergeChannelEvent<KeyType, Unit>> mergeChannelReceiver)
-      : implState_(make_intrusive<ImplState>(
-            std::move(executors), std::move(rateLimiter))),
+      : implState_(
+            make_intrusive<ImplState>(
+                std::move(executors), std::move(rateLimiter))),
         channels_(std::move(mergeChannel)),
         handle_(consumeChannelWithCallback(
             std::move(mergeChannelReceiver),
@@ -117,8 +119,7 @@ class ChannelProcessorImpl {
 
   template <
       typename Function,
-      typename ReturnType =
-          typename std::invoke_result_t<Function>::StorageType>
+      typename ReturnType = typename invoke_result_t<Function>::StorageType>
   static folly::coro::Task<ReturnType> catchNonCoroException(Function func) {
     auto result = folly::makeTryWith(std::move(func));
     if (result.hasException()) {
@@ -214,7 +215,7 @@ class ChannelProcessorImpl {
           result.template hasException<OnClosedException>()) {
         co_yield folly::coro::co_error(OnClosedException());
       } else if (result.hasException()) {
-        LOG(FATAL) << folly::sformat(
+        LOG(FATAL) << fmt::format(
             "Encountered exception from callback when consuming channel of "
             "type {}: {}",
             typeid(InputValueType).name(),
@@ -235,7 +236,7 @@ class ChannelProcessorImpl {
           result.template hasException<OnClosedException>()) {
         co_yield folly::coro::co_error(OnClosedException());
       } else if (result.hasException()) {
-        LOG(FATAL) << folly::sformat(
+        LOG(FATAL) << fmt::format(
             "Encountered exception from callback when consuming channel of "
             "type {}: {}",
             typeid(InputValueType).name(),

@@ -21,15 +21,30 @@
 
 #pragma once
 
-#include <Python.h>
-#include <folly/Function.h>
 #include <folly/fibers/FiberManagerInternal.h>
+#include <folly/python/Weak.h>
+
+#ifdef FOLLY_PYTHON_WIN_SHAREDLIB
+#ifdef FOLLY_PYTHON_FIBERS_DETAIL_DEFS
+#define FOLLY_PYTHON_FIBERS_API __declspec(dllexport)
+#else
+#define FOLLY_PYTHON_FIBERS_API __declspec(dllimport)
+#endif
+#else
+#define FOLLY_PYTHON_FIBERS_API
+#endif
 
 namespace folly {
 namespace python {
 
+namespace fibers_detail {
+FOLLY_PYTHON_FIBERS_API void assign_func(
+    folly::fibers::FiberManager* (*_get_fiber_manager)(
+        const folly::fibers::FiberManager::Options&));
+} // namespace fibers_detail
+
 // Must be called from main context
-folly::fibers::FiberManager* getFiberManager(
+FOLLY_PYTHON_FIBERS_API folly::fibers::FiberManager* getFiberManager(
     const folly::fibers::FiberManager::Options& opts = {});
 
 /**
@@ -45,8 +60,8 @@ void bridgeFibers(
   auto* fiberManager = getFiberManager();
   // We are handing over a pointer to a python object to c++ and need
   // to make sure it isn't removed by python in that time.
-  Py_INCREF(userData);
-  auto guard = folly::makeGuard([=] { Py_DECREF(userData); });
+  Py_IncRef(userData);
+  auto guard = folly::makeGuard([=] { Py_DecRef(userData); });
   fiberManager->addTask(
       [function = std::move(function),
        callback = std::move(callback),

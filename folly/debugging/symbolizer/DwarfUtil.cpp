@@ -21,13 +21,13 @@
 
 #include <folly/Optional.h>
 #include <folly/Range.h>
-#include <folly/experimental/symbolizer/Elf.h>
+#include <folly/debugging/symbolizer/Elf.h>
 #include <folly/portability/Config.h>
 #include <folly/portability/Unistd.h>
 
 #if FOLLY_HAVE_DWARF && FOLLY_HAVE_ELF
 
-#include <dwarf.h> // @manual=fbsource//third-party/libdwarf:dwarf
+#include <dwarf.h> // @manual
 
 // We need a single dwarf5 tag, but may not be building against
 // a new enough libdwarf, so just define it ourselves.
@@ -732,7 +732,7 @@ Attribute readAttribute(
           *cu.rnglistsBase + index * offsetSize);
       auto offset = readOffset(sp, cu.is64Bit);
       return {spec, die, *cu.rnglistsBase + offset};
-    } break;
+    }
 
     case DW_FORM_loclistx: {
       auto index = readULEB(info);
@@ -745,7 +745,7 @@ Attribute readAttribute(
           *cu.loclistsBase + index * offsetSize);
       auto offset = readOffset(sp, cu.is64Bit);
       return {spec, die, *cu.loclistsBase + offset};
-    } break;
+    }
 
     case DW_FORM_data16:
       return {spec, die, readBytes(info, 16)};
@@ -761,7 +761,6 @@ Attribute readAttribute(
       FOLLY_SAFE_DFATAL("invalid attribute form: ", spec.form);
       return {spec, die, 0u};
   }
-  return {spec, die, 0u};
 }
 
 /*

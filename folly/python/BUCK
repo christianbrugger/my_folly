@@ -1,28 +1,548 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target", "non_fbcode_target")
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
-load("@fbcode_macros//build_defs:cython_library.bzl", "cython_library")
+load("@fbcode_macros//build_defs:cython_library.bzl", "CYTHON_DEFAULT_APPLE_SDKS", "CYTHON_DEFAULT_PLATFORMS", "cython_library")
+load(
+    "../defs.bzl",
+    "folly_xplat_library",
+)
 
-cpp_library(
+oncall("fbcode_entropy_wardens_folly")
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "gil_aware_manual_executor",
+    srcs = ["GILAwareManualExecutor.cpp"],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = ["GILAwareManualExecutor.h"],
+    deps = [
+        ":weak",
+        "//xplat/folly:scope_guard",
+        "//xplat/folly/executors:drivable_executor",
+        "//xplat/folly/executors:sequenced_executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "range",
+    headers = {
+        "range.pxd": "range.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly:range",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:folly",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "async_generator_lib",
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    enable_static_variant = False,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "async_generator.h",
+    ],
+    deps = [
+        "//xplat/folly:portability",
+        "//xplat/folly/experimental/coro:async_generator",
+        "//xplat/folly/experimental/coro:task",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "proactor_executor",
+    srcs = [
+        "ProactorExecutor.cpp",
+    ],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "ProactorExecutor.h",
+    ],
+    exported_deps = [
+        "fbsource//third-party/python:python",
+        "//xplat/folly/concurrency:concurrent_hash_map",
+        "//xplat/folly/python:asyncio_executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "executor",
+    srcs = ["executor.pyx"],
+    headers = [
+        "executor.pxd",
+        "executor_detail.pxd",
+    ],
+    header_namespace = "folly/python",
+    cpp_deps = [
+        ":asyncio_executor",
+        ":proactor_executor",
+        ":executor_lib",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:folly",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "futures_lib",
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    enable_static_variant = False,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "futures.h",
+    ],
+    deps = [
+        "fbsource//xplat/folly/futures:core",
+        ":asyncio_executor",
+        ":executor_lib",
+        ":weak",
+        "//xplat/folly:executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "executor_lib",
+    srcs = [
+        "executor.cpp",
+    ],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    enable_static_variant = False,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "executor.h",
+    ],
+    deps = [
+        ":asyncio_executor",
+        ":import",
+        ":weak",
+        "//xplat/folly:executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "coro",
+    headers = {
+        "coro.pxd": "coro.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly/experimental/coro:task",
+        "//xplat/folly/python:coro_lib",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
     name = "asyncio_executor",
+    srcs = [
+        "AsyncioExecutor.cpp",
+    ],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    enable_static_variant = False,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "AsyncioExecutor.h",
+    ],
+    deps = [
+        ":weak",
+        "//xplat/folly:chrono",
+        "//xplat/folly:exception_string",
+        "//xplat/folly:function",
+        "//xplat/folly/executors:drivable_executor",
+        "//xplat/folly/executors:sequenced_executor",
+        "//xplat/folly/io/async:async_base",
+        "//xplat/folly/portability:gflags",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "folly",
+    headers = {"__init__.pxd": "__init__.pxd"},
+    cpp_deps = [
+        "fbsource//xplat/folly/futures:core",
+        "//xplat/folly:exception_wrapper",
+        "//xplat/folly:executor",
+        "//xplat/folly:try",
+        "//xplat/folly:unit",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "fibers",
+    srcs = ["fiber_manager.pyx"],
+    headers = [
+        "fiber_manager.pxd",
+        "fibers.pxd",
+    ],
+    cpp_deps = [
+        "//xplat/folly/fibers:core",
+        "//xplat/folly/fibers:executor_loop_controller",
+        "//xplat/folly/fibers:loop_controller",
+        "//xplat/folly/python:fibers_lib",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:folly",
+        "//xplat/folly/python:futures",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "async_generator",
+    headers = {
+        "async_generator.pxd": "async_generator.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly/experimental/coro:async_generator",
+        "//xplat/folly/python:async_generator_lib",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:coro",
+        "//xplat/folly/python:optional",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "import",
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "import.h",
+    ],
+    exported_deps = [
+        "//third-party/fmt:fmt",
+        "//xplat/folly:likely",
+        "//xplat/folly:portability",
+        "//xplat/folly/python:error",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "memory",
+    headers = {
+        "memory.pxd": "memory.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly:memory",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "function",
+    headers = {
+        "function.pxd": "function.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly:function",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:folly",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "iobuf_ext",
+    srcs = ["iobuf_ext.cpp"],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = ["iobuf_ext.h"],
+    deps = [
+        ":weak",
+    ],
+    exported_deps = [
+        "fbsource//third-party/python:python",
+        "fbsource//xplat/folly/io:iobuf",
+        "//xplat/folly:executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "iobuf_lib",
+    srcs = ["iobuf.cpp"],
+    exported_headers = {
+        "folly/python/iobuf_api.h": ":iobuf__iobuf_api.h",
+        "iobuf.h": "iobuf.h",
+    },
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    deps = [
+        ":import",
+    ],
+    exported_deps = [
+        "fbsource//third-party/python:python",
+        "fbsource//xplat/folly/io:iobuf",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "iobuf",
+    srcs = ["iobuf.pyx"],
+    headers = [
+        "iobuf.pxd",
+    ],
+    header_namespace = "folly/python",
+    api = ["iobuf"],
+    cpp_deps = [
+        "fbsource//xplat/folly/io:iobuf",
+        "//xplat/folly:executor",
+        ":iobuf_ext",
+        ":iobuf_lib",
+    ],
+    package = "folly",
+    tests = [
+        "//xplat/folly/python/test:iobuf",
+    ],
+    types = ["iobuf.pyi"],
+    visibility = ["PUBLIC"],
+    deps = [
+        ":executor",
+        ":folly",
+        ":futures",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "coro_lib",
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    enable_static_variant = False,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "coro.h",
+    ],
+    deps = [
+        ":asyncio_executor",
+        ":executor_lib",
+        ":weak",
+        "//xplat/folly:cancellation_token",
+        "//xplat/folly:executor",
+        "//xplat/folly:portability",
+        "//xplat/folly/experimental/coro:task",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "fibers_lib",
+    srcs = ["fibers.cpp"],
+    exported_headers = ["fibers.h"],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    deps = [
+        ":import",
+        ":weak",
+        "//xplat/folly/fibers:core",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "cast",
+    headers = {
+        "cast.pxd": "cast.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly/lang:cast",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "expected",
+    headers = {
+        "expected.pxd": "expected.pxd",
+    },
+    cpp_deps = ["//xplat/folly:expected"],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:folly",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "futures",
+    headers = {
+        "futures.pxd": "futures.pxd",
+    },
+    cpp_deps = [
+        "//xplat/folly/python:futures_lib",
+    ],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:executor",
+    ],
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "error",
+    srcs = ["error.cpp"],
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = ["error.h"],
+    deps = [
+        ":weak",
+        "//xplat/folly:conv",
+        "//xplat/folly:range",
+        "//xplat/folly:scope_guard",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "optional",
+    headers = {"optional.pxd": "optional.pxd"},
+    cpp_deps = ["//xplat/folly:optional"],
+    package = "folly",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//xplat/folly/python:folly",  # So we don't squash the "folly" package
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "fbstring",
+    headers = ["fbstring.pxd"],
+    cpp_deps = [
+        "//xplat/folly:fbstring",
+    ],
+    package = "folly",
+    deps = [
+        ":folly",
+    ],
+)
+
+non_fbcode_target(
+    _kind = cython_library,
+    name = "request_context",
+    srcs = ["request_context.pyx"],
+    headers = [
+        "request_context.h",
+        "request_context.pxd",
+    ],
+    compatible_with = [
+        "ovr_config//os:linux",
+        "ovr_config//os:macos",
+        "ovr_config//os:windows",
+    ],
+    cpp_compiler_flags = select({
+        "DEFAULT": ["-DFOLLY_PYTHON_META_BUILD"],
+        # Conda is not Meta Python
+        "ovr_config//distro:conda": [],
+    }),
+    cpp_deps = [
+        "//xplat/folly/io/async:request_context",
+        ":weak",
+    ],
+    package = "folly",
+    types = ["request_context.pyi"],
+    deps = [
+        ":folly",
+    ],
+)
+
+# !!!! fbcode/folly/python/TARGETS was merged into this file, see https://fburl.com/workplace/xl8l9yuo for more info !!!!
+
+fbcode_target(
+    _kind = cython_library,
+    name = "request_context",
+    srcs = ["request_context.pyx"],
+    headers = [
+        "request_context.h",
+        "request_context.pxd",
+    ],
+    compatible_with = [
+        "ovr_config//os:linux",
+        "ovr_config//os:macos",
+        "ovr_config//os:windows",
+    ],
+    cpp_compiler_flags = select({
+        "DEFAULT": ["-DFOLLY_PYTHON_META_BUILD"],
+        # Conda is not Meta Python
+        "ovr_config//distro:conda": [],
+    }),
+    cpp_deps = [
+        "//folly/io/async:request_context",
+        ":weak",
+    ],
+    package = "folly",
+    types = ["request_context.pyi"],
+    deps = [
+        ":folly",
+    ],
+)
+
+fbcode_target(
+    _kind = cpp_library,
+    name = "asyncio_executor",
+    srcs = [
+        "AsyncioExecutor.cpp",
+    ],
     headers = [
         "AsyncioExecutor.h",
     ],
     modular_headers = False,
     exported_deps = [
-        "fbsource//third-party/python:python",  # Python.h
+        ":weak",
+        "//folly:chrono",
         "//folly:exception_string",
         "//folly:function",
         "//folly/executors:drivable_executor",
         "//folly/executors:sequenced_executor",
         "//folly/io/async:async_base",
+        "//folly/portability:gflags",
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "gil_aware_manual_executor",
     srcs = ["GILAwareManualExecutor.cpp"],
     headers = ["GILAwareManualExecutor.h"],
     deps = [
-        "fbsource//third-party/python:python",
+        ":weak",
         "//folly:scope_guard",
     ],
     exported_deps = [
@@ -31,7 +551,8 @@ cpp_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "folly",
     headers = ["__init__.pxd"],
     cpp_deps = [
@@ -45,28 +566,37 @@ cython_library(
     package = "folly",
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "executor_lib",
     srcs = [
         "executor.cpp",
     ],
     headers = [
         "executor.h",
-        # @fb-only: ":executor__executor_api.h", 
     ],
-    # TODO(T36778537): Cython-generated `*_api.h` headers aren't modular.
-    modular_headers = False,
-    target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
+    compiler_flags = select({
+        "DEFAULT": [],
+        "ovr_config//os:windows": [
+            "-DFOLLY_PYTHON_WIN_SHAREDLIB",
+        ],
+    }),
+    preferred_linkage = select({
+        "DEFAULT": None,
+        "ovr_config//os:windows": "shared",
+    }),
     deps = [
         ":import",
     ],
     exported_deps = [
         ":asyncio_executor",
+        ":weak",
         "//folly:executor",
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "proactor_executor",
     srcs = [
         "ProactorExecutor.cpp",
@@ -81,17 +611,20 @@ cpp_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "executor",
     srcs = [
         "executor.pyx",
     ],
     headers = [
         "executor.pxd",
+        "executor_detail.pxd",
     ],
-    api = ["executor"],
     cpp_deps = [
+        "//folly/portability:unistd",
         ":asyncio_executor",
+        ":executor_lib",
         ":proactor_executor",
     ],
     package = "folly",
@@ -100,7 +633,8 @@ cython_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "function",
     headers = ["function.pxd"],
     cpp_deps = [
@@ -112,24 +646,23 @@ cython_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "futures_lib",
     headers = [
         "futures.h",
     ],
-    # TODO(T36778537): Cython-generated `*_api.h` headers aren't modular.
-    modular_headers = False,
-    target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
     exported_deps = [
-        "fbsource//third-party/python:python",  # Python.h
         ":asyncio_executor",
         ":executor_lib",
+        ":weak",
         "//folly:executor",
         "//folly/futures:core",
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "futures",
     headers = [
         "futures.pxd",
@@ -143,18 +676,16 @@ cython_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "coro_lib",
     headers = [
         "coro.h",
     ],
-    # TODO(T36778537): Cython-generated `*_api.h` headers aren't modular.
-    modular_headers = False,
-    target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
     exported_deps = [
-        "fbsource//third-party/python:python",  # Python.h
         ":asyncio_executor",
         ":executor_lib",
+        ":weak",
         "//folly:cancellation_token",
         "//folly:executor",
         "//folly:portability",
@@ -162,7 +693,8 @@ cpp_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "coro",
     headers = [
         "coro.pxd",
@@ -177,34 +709,39 @@ cython_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "fibers_lib",
     srcs = ["fibers.cpp"],
-    headers = [
-        "fibers.h",
-        # @fb-only: ":fibers__fiber_manager_api.h", 
-    ],
-    # TODO(T36778537): Cython-generated `*_api.h` headers aren't modular.
-    modular_headers = False,
+    headers = ["fibers.h"],
+    compiler_flags = select({
+        "DEFAULT": [],
+        "ovr_config//os:windows": [
+            "-DFOLLY_PYTHON_WIN_SHAREDLIB",
+        ],
+    }),
+    preferred_linkage = select({
+        "DEFAULT": None,
+        "ovr_config//os:windows": "shared",
+    }),
     target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
     deps = [
         ":import",
     ],
     exported_deps = [
-        "fbsource//third-party/python:python",  # Python.h
-        "//folly:function",
+        ":weak",
         "//folly/fibers:core",
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "fibers",
     srcs = ["fiber_manager.pyx"],
     headers = [
         "fiber_manager.pxd",
         "fibers.pxd",
     ],
-    api = ["fiber_manager"],
     cpp_deps = [
         "//folly/fibers:core",
         "//folly/fibers:executor_loop_controller",
@@ -218,7 +755,8 @@ cython_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "import",
     headers = [
         "import.h",
@@ -231,10 +769,14 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "iobuf_ext",
     srcs = ["iobuf_ext.cpp"],
     headers = ["iobuf_ext.h"],
+    deps = [
+        ":weak",
+    ],
     exported_deps = [
         "fbsource//third-party/python:python",  # Python.h
         "//folly:executor",
@@ -242,12 +784,13 @@ cpp_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "iobuf_lib",
     srcs = ["iobuf.cpp"],
     headers = [
         "iobuf.h",
-        # @fb-only: ":iobuf__iobuf_api.h", 
+        # @fb-only[end= ]: ":iobuf__iobuf_api.h",
     ],
     # TODO(T36778537): Cython-generated `*_api.h` headers aren't modular.
     modular_headers = False,
@@ -261,7 +804,8 @@ cpp_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "iobuf",
     srcs = ["iobuf.pyx"],
     headers = [
@@ -281,12 +825,14 @@ cython_library(
         "iobuf.pyi",
     ],
     deps = [
+        ":executor",
         ":folly",
         ":futures",
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "range",
     headers = ["range.pxd"],
     cpp_deps = [
@@ -298,7 +844,8 @@ cython_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "optional",
     headers = ["optional.pxd"],
     cpp_deps = ["//folly:optional"],
@@ -308,7 +855,8 @@ cython_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "expected",
     headers = ["expected.pxd"],
     cpp_deps = ["//folly:expected"],
@@ -318,7 +866,8 @@ cython_library(
     ],
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "async_generator_lib",
     headers = [
         "async_generator.h",
@@ -330,7 +879,8 @@ cpp_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "async_generator",
     headers = [
         "async_generator.pxd",
@@ -345,7 +895,8 @@ cython_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "cast",
     headers = ["cast.pxd"],
     cpp_deps = [
@@ -354,7 +905,8 @@ cython_library(
     package = "folly",
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "memory",
     headers = ["memory.pxd"],
     cpp_deps = [
@@ -363,7 +915,8 @@ cython_library(
     package = "folly",
 )
 
-cpp_library(
+fbcode_target(
+    _kind = cpp_library,
     name = "error",
     srcs = [
         "error.cpp",
@@ -372,7 +925,7 @@ cpp_library(
         "error.h",
     ],
     deps = [
-        "fbsource//third-party/python:python",  # Python.h
+        ":weak",
         "//folly:conv",
         "//folly:scope_guard",
     ],
@@ -381,7 +934,8 @@ cpp_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "fbstring",
     headers = ["fbstring.pxd"],
     cpp_deps = [
@@ -393,7 +947,8 @@ cython_library(
     ],
 )
 
-cython_library(
+fbcode_target(
+    _kind = cython_library,
     name = "build_mode",
     srcs = [
         "build_mode.pyx",
@@ -405,4 +960,68 @@ cython_library(
     deps = [
         ":folly",
     ],
+)
+
+fbcode_target(
+    _kind = cpp_library,
+    name = "weak",
+    headers = [
+        "Weak.h",
+    ],
+    exported_linker_flags = select({
+        "DEFAULT": [],
+        # These make it so linking libpython is optional
+        "ovr_config//os:macos": [
+            "-Xlinker",
+            "-undefined",
+            "-Xlinker",
+            "dynamic_lookup",
+        ],
+    }),
+    tests = [
+        "fbcode//folly/python/test:weak-test",
+        "fbcode//folly/python/test:weak-test-linked",
+    ],
+    visibility = ["PUBLIC"],
+    exported_deps = [
+        "fbsource//third-party/python:python-headers",
+    ] + select({
+        "DEFAULT": [],
+        "ovr_config//os:windows": [
+            "fbsource//third-party/python:python",  # @manual
+        ],
+    }),
+)
+
+non_fbcode_target(
+    _kind = folly_xplat_library,
+    name = "weak",
+    apple_sdks = CYTHON_DEFAULT_APPLE_SDKS,
+    exported_linker_flags = select({
+        "DEFAULT": [],
+        # These make it so linking libpython is optional
+        "ovr_config//os:macos": [
+            "-Xlinker",
+            "-undefined",
+            "-Xlinker",
+            "dynamic_lookup",
+        ],
+    }),
+    platforms = CYTHON_DEFAULT_PLATFORMS,
+    raw_headers = [
+        "Weak.h",
+    ],
+    tests = [
+        "fbcode//folly/python/test:weak-test",
+        "fbcode//folly/python/test:weak-test-linked",
+    ],
+    visibility = ["PUBLIC"],
+    exported_deps = [
+        "fbsource//third-party/python:python-headers",
+    ] + select({
+        "DEFAULT": [],
+        "ovr_config//os:windows": [
+            "fbsource//third-party/python:python",  # @manual
+        ],
+    }),
 )

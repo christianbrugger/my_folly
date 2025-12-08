@@ -31,6 +31,7 @@
 #include <boost/noncopyable.hpp>
 #include <glog/logging.h>
 #include <folly/Portability.h>
+#include <folly/lang/Builtin.h>
 
 namespace folly {
 
@@ -74,7 +75,7 @@ struct DerivedNodeTraits {
   static T* asT(IntrusiveHeapNode<Tag>* n) { return static_cast<T*>(n); }
 };
 
-template <class T, class Tag, IntrusiveHeapNode<Tag> T::*PtrToMember>
+template <class T, class Tag, IntrusiveHeapNode<Tag> T::* PtrToMember>
 struct MemberNodeTraits {
   static IntrusiveHeapNode<Tag>* asNode(T* x) { return &(x->*PtrToMember); }
   static T* asT(IntrusiveHeapNode<Tag>* n) {
@@ -229,7 +230,7 @@ class IntrusiveHeap {
     }
     do {
       Node* grandparent = parent;
-      if (compare(a, b)) {
+      if (FOLLY_BUILTIN_UNPREDICTABLE(compare(a, b))) {
         parent = b;
       } else {
         parent = a;

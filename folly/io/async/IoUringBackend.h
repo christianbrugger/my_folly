@@ -36,8 +36,11 @@
 #include <folly/Optional.h>
 #include <folly/Range.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/EventBase.h>
 #include <folly/io/async/EventBaseBackendBase.h>
 #include <folly/io/async/IoUringBase.h>
+#include <folly/io/async/IoUringProvidedBufferRing.h>
+#include <folly/io/async/IoUringZeroCopyBufferPool.h>
 #include <folly/io/async/Liburing.h>
 #include <folly/portability/Asm.h>
 #include <folly/small_vector.h>
@@ -49,6 +52,7 @@
 #if FOLLY_HAS_LIBURING
 
 #include <liburing.h> // @manual
+#include <net/if.h>
 
 namespace folly {
 
@@ -58,6 +62,9 @@ class IoUringBackend : public EventBaseBackendBase {
    public:
     using std::runtime_error::runtime_error;
   };
+
+  using ResolveNapiIdCallback =
+      std::function<int(int ifindex, uint32_t queueId)>;
 
   struct Options {
     enum Flags {
@@ -158,6 +165,20 @@ class IoUringBackend : public EventBaseBackendBase {
       return *this;
     }
 
+    constexpr bool isPow2(uint64_t n) noexcept {
+      return n > 0 && !((n - 1) & n);
+    }
+
+    Options& setProvidedBufRings(size_t v) {
+      if (!isPow2(v)) {
+        throw std::runtime_error(
+            folly::to<std::string>(
+                "number of provided buffer rings must be a power of 2"));
+      }
+      providedBufRings = v;
+      return *this;
+    }
+
     Options& setRegisterRingFd(bool v) {
       registerRingFd = v;
 
@@ -188,6 +209,63 @@ class IoUringBackend : public EventBaseBackendBase {
       return *this;
     }
 
+    Options& setZeroCopyRx(bool v) {
+      zeroCopyRx = v;
+
+      return *this;
+    }
+
+    Options& setZeroCopyRxInterface(std::string v) {
+      zcRxIfname = std::move(v);
+      zcRxIfindex = ::if_nametoindex(zcRxIfname.c_str());
+      if (zcRxIfindex == 0) {
+        throw std::runtime_error(
+            folly::to<std::string>(
+                "invalid network interface name: ",
+                zcRxIfname,
+                ", errno: ",
+                errno));
+      }
+
+      return *this;
+    }
+
+    Options& setZeroCopyRxQueue(int queueId) {
+      zcRxQueueId = queueId;
+
+      return *this;
+    }
+
+    Options& setResolveNapiCallback(ResolveNapiIdCallback&& v) {
+      resolveNapiId = std::move(v);
+
+      return *this;
+    }
+
+    Options& setZeroCopyRxNumPages(int v) {
+      zcRxNumPages = v;
+
+      return *this;
+    }
+
+    Options& setZeroCopyRxRefillEntries(int v) {
+      zcRxRefillEntries = v;
+
+      return *this;
+    }
+
+    Options& setEnableIncrementalBuffers(bool v) {
+      enableIncrementalBuffers = v;
+
+      return *this;
+    }
+
+    Options& setUseHugePages(bool v) {
+      useHugePages = v;
+
+      return *this;
+    }
+
     ssize_t sqeSize{-1};
 
     size_t capacity{256};
@@ -198,6 +276,7 @@ class IoUringBackend : public EventBaseBackendBase {
     size_t sqGroupNumThreads{1};
     size_t initialProvidedBuffersCount{0};
     size_t initialProvidedBuffersEachSize{0};
+    size_t providedBufRings{1};
 
     uint32_t flags{0};
 
@@ -219,6 +298,19 @@ class IoUringBackend : public EventBaseBackendBase {
     std::set<uint32_t> sqCpus;
 
     std::string sqGroupName;
+
+    // Zero copy receive
+    bool zeroCopyRx{false};
+    std::string zcRxIfname;
+    int zcRxQueueId{-1};
+    int zcRxIfindex{-1};
+    ResolveNapiIdCallback resolveNapiId;
+    int zcRxNumPages{-1};
+    int zcRxRefillEntries{-1};
+
+    // Incremental Buffers
+    bool enableIncrementalBuffers{false};
+    bool useHugePages{false};
   };
 
   explicit IoUringBackend(Options options);
@@ -236,6 +328,10 @@ class IoUringBackend : public EventBaseBackendBase {
 
   // from EventBaseBackendBase
   int getPollableFd() const override { return ioRing_.ring_fd; }
+  int getNapiId() const override { return napiId_; }
+  void queueRecvZc(
+      int fd, void* buf, unsigned long nbytes, RecvZcCallback&& callback)
+      override;
 
   event_base* getEventBase() override { return nullptr; }
 
@@ -254,7 +350,6 @@ class IoUringBackend : public EventBaseBackendBase {
   // returns true if the current Linux kernel version
   // supports the io_uring backend
   static bool isAvailable();
-  bool kernelHasNonBlockWriteFixes() const;
   static bool kernelSupportsRecvmsgMultishot();
   static bool kernelSupportsDeferTaskrun();
   static bool kernelSupportsSendZC();
@@ -332,6 +427,11 @@ class IoUringBackend : public EventBaseBackendBase {
   void queueRename(
       const char* oldPath, const char* newPath, FileOpCallback&& cb);
 
+  void queueUnlinkat(
+      int dirfd, const char* path, int flags, FileOpCallback&& cb);
+
+  void queueUnlink(const char* path, FileOpCallback&& cb);
+
   void queueFallocate(
       int fd, int mode, off_t offset, off_t len, FileOpCallback&& cb);
 
@@ -356,8 +456,14 @@ class IoUringBackend : public EventBaseBackendBase {
   void cancel(IoSqeBase* sqe);
 
   // built in buffer provider
-  IoUringBufferProviderBase* bufferProvider() { return bufferProvider_.get(); }
+  IoUringProvidedBufferRing* bufferProvider() {
+    return bufferProviders_
+        [bufferProviderIdx_++ & (bufferProviders_.size() - 1)]
+            .get();
+  }
+  bool hasBufferProvider() { return bufferProviders_.size() > 0; }
   uint16_t nextBufferProviderGid() { return bufferProviderGidNext_++; }
+  IoUringZeroCopyBufferPool* zcBufferPool() { return zcBufferPool_.get(); }
 
  protected:
   enum class WaitForEventsMode { WAIT, DONT_WAIT };
@@ -435,17 +541,11 @@ class IoUringBackend : public EventBaseBackendBase {
   struct IoSqe;
 
   static void processPollIoSqe(
-      IoUringBackend* backend, IoSqe* ioSqe, int res, uint32_t flags);
+      IoUringBackend* backend, IoSqe* ioSqe, const io_uring_cqe* cqe);
   static void processTimerIoSqe(
-      IoUringBackend* backend,
-      IoSqe* /*sqe*/,
-      int /*res*/,
-      uint32_t /* flags */);
+      IoUringBackend* backend, IoSqe* /*sqe*/, const io_uring_cqe* /*cqe*/);
   static void processSignalReadIoSqe(
-      IoUringBackend* backend,
-      IoSqe* /*sqe*/,
-      int /*res*/,
-      uint32_t /* flags */);
+      IoUringBackend* backend, IoSqe* /*sqe*/, const io_uring_cqe* /*cqe*/);
 
   // signal handling
   void addSignalEvent(Event& event);
@@ -495,7 +595,7 @@ class IoUringBackend : public EventBaseBackendBase {
   };
 
   struct IoSqe : public IoSqeBase {
-    using BackendCb = void(IoUringBackend*, IoSqe*, int, uint32_t);
+    using BackendCb = void(IoUringBackend*, IoSqe*, const io_uring_cqe*);
     explicit IoSqe(
         IoUringBackend* backend = nullptr,
         bool poolAlloc = false,
@@ -503,7 +603,7 @@ class IoUringBackend : public EventBaseBackendBase {
         : backend_(backend), poolAlloc_(poolAlloc), persist_(persist) {}
 
     void callback(const io_uring_cqe* cqe) noexcept override {
-      backendCb_(backend_, this, cqe->res, cqe->flags);
+      backendCb_(backend_, this, cqe);
     }
     void callbackCancelled(const io_uring_cqe*) noexcept override { release(); }
     virtual void release() noexcept;
@@ -521,6 +621,7 @@ class IoUringBackend : public EventBaseBackendBase {
     FOLLY_ALWAYS_INLINE void resetEvent() {
       // remove it from the list
       unlink();
+      setEventBase(nullptr);
       if (event_) {
         event_->setUserData(nullptr);
         event_ = nullptr;
@@ -617,8 +718,13 @@ class IoUringBackend : public EventBaseBackendBase {
             ret = true;
             std::unique_ptr<IOBuf> buf;
             if (flags & IORING_CQE_F_BUFFER) {
-              if (IoUringBufferProviderBase* bp = backend->bufferProvider()) {
-                buf = bp->getIoBuf(flags >> 16, res);
+              if (IoUringProvidedBufferRing* bp = backend->bufferProvider()) {
+                auto hasMore = (flags & IORING_CQE_F_BUF_MORE) != 0;
+                uint16_t bufId = flags >> IORING_CQE_BUFFER_SHIFT;
+                VLOG(5) << "bufId=" << bufId << " bp=" << (void*)bp
+                        << " sizePerBuffer=" << bp->sizePerBuffer()
+                        << " startBuf=" << bufId;
+                buf = bp->getIoBuf(bufId, res, hasMore);
               }
             }
             hdr_->cbFunc_(hdr_, res, std::move(buf));
@@ -736,13 +842,8 @@ class IoUringBackend : public EventBaseBackendBase {
     void prepRecvmsgMultishot(
         struct io_uring_sqe* sqe, int fd, struct msghdr* msg) noexcept {
       CHECK(sqe);
-      ::io_uring_prep_recvmsg(sqe, fd, msg, MSG_TRUNC);
-      // this magic value is set in io_uring_prep_recvmsg_multishot,
-      // however this version of the library isn't available widely yet
-      // so just hardcode it here
-      constexpr uint16_t kMultishotFlag = 1U << 1;
-      sqe->ioprio |= kMultishotFlag;
-      if (IoUringBufferProviderBase* bp = backend_->bufferProvider()) {
+      ::io_uring_prep_recvmsg_multishot(sqe, fd, msg, MSG_TRUNC);
+      if (IoUringProvidedBufferRing* bp = backend_->bufferProvider()) {
         sqe->buf_group = bp->gid();
         sqe->flags |= IOSQE_BUFFER_SELECT;
       }
@@ -959,6 +1060,26 @@ class IoUringBackend : public EventBaseBackendBase {
     int flags_;
   };
 
+  struct FUnlinkIoSqe : public FileOpIoSqe {
+    FUnlinkIoSqe(
+        IoUringBackend* backend,
+        int dirfd,
+        const char* path,
+        int flags,
+        FileOpCallback&& cb)
+        : FileOpIoSqe(backend, dirfd, std::move(cb)),
+          path_(path),
+          flags_(flags) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      ::io_uring_prep_unlinkat(sqe, fd_, path_, flags_);
+      ::io_uring_sqe_set_data(sqe, this);
+    }
+
+    const char* path_;
+    int flags_;
+  };
+
   struct FAllocateIoSqe : public FileOpIoSqe {
     FAllocateIoSqe(
         IoUringBackend* backend,
@@ -1018,6 +1139,17 @@ class IoUringBackend : public EventBaseBackendBase {
     unsigned int flags_;
   };
 
+  struct RecvzcIoSqe : public ReadWriteIoSqe {
+    using ReadWriteIoSqe::ReadWriteIoSqe;
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      ::io_uring_prep_rw(
+          IORING_OP_RECV_ZC, sqe, fd_, nullptr, iov_.data()->iov_len, 0);
+      ::io_uring_sqe_set_data(sqe, this);
+      sqe->ioprio |= IORING_RECV_MULTISHOT;
+    }
+  };
+
   size_t getActiveEvents(WaitForEventsMode waitForEvents);
   size_t prepList(IoSqeBaseList& ioSqes);
   int submitOne();
@@ -1030,9 +1162,16 @@ class IoUringBackend : public EventBaseBackendBase {
 
   void processFileOp(IoSqe* ioSqe, int res) noexcept;
 
+  void processRecvZc(IoSqe* sqe, const io_uring_cqe* cqe) noexcept;
+
   static void processFileOpCB(
-      IoUringBackend* backend, IoSqe* ioSqe, int res, uint32_t) {
-    static_cast<IoUringBackend*>(backend)->processFileOp(ioSqe, res);
+      IoUringBackend* backend, IoSqe* ioSqe, const io_uring_cqe* cqe) {
+    backend->processFileOp(ioSqe, cqe->res);
+  }
+
+  static void processRecvZcCB(
+      IoUringBackend* backend, IoSqe* ioSqe, const io_uring_cqe* cqe) {
+    backend->processRecvZc(ioSqe, cqe);
   }
 
   IoUringBackend::IoSqe* allocNewIoSqe(const EventCallback& /*cb*/) {
@@ -1063,6 +1202,7 @@ class IoUringBackend : public EventBaseBackendBase {
   std::unique_ptr<IoSqe> signalReadEntry_;
   IoSqeList freeList_;
   bool usingDeferTaskrun_{false};
+  int napiId_{-1};
 
   // timer related
   int timerFd_{-1};
@@ -1077,7 +1217,9 @@ class IoUringBackend : public EventBaseBackendBase {
   // submit
   IoSqeBaseList submitList_;
   uint16_t bufferProviderGidNext_{0};
-  IoUringBufferProviderBase::UniquePtr bufferProvider_;
+  std::vector<IoUringProvidedBufferRing::UniquePtr> bufferProviders_;
+  uint64_t bufferProviderIdx_{0};
+  IoUringZeroCopyBufferPool::UniquePtr zcBufferPool_;
 
   // loop related
   bool loopBreak_{false};

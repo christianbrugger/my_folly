@@ -44,6 +44,7 @@
 #include <folly/futures/Future.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/Lock.h>
 #include <folly/tracing/AsyncStack.h>
 
 using namespace folly::fibers;
@@ -1763,7 +1764,7 @@ TEST(FiberManager, nestedFiberManagersSameEvb) {
 
   // Use frozen options
   FiberManager::Options used;
-  used.stackSize = 1024;
+  used.stackSize = 2048;
   FiberManager::FrozenOptions options{used};
   auto& fm2 = getFiberManager(evb, options);
   EXPECT_NE(&fm1, &fm2);
@@ -1772,12 +1773,12 @@ TEST(FiberManager, nestedFiberManagersSameEvb) {
   EXPECT_EQ(&fm2, &getFiberManager(evb, options));
   EXPECT_EQ(&fm2, &getFiberManager(evb, FiberManager::FrozenOptions{used}));
   FiberManager::Options same;
-  same.stackSize = 1024;
+  same.stackSize = 2048;
   EXPECT_EQ(&fm2, &getFiberManager(evb, FiberManager::FrozenOptions{same}));
 
   // Different option
   FiberManager::Options differ;
-  differ.stackSize = 2048;
+  differ.stackSize = 4096;
   auto& fm3 = getFiberManager(evb, FiberManager::FrozenOptions{differ});
   EXPECT_NE(&fm1, &fm3);
   EXPECT_NE(&fm2, &fm3);
@@ -2662,7 +2663,7 @@ TEST(TimedMutex, ThreadFiberDeadlockOrder) {
     mutex.unlock();
   });
 
-  fm.addTask([&] { std::lock_guard<TimedMutex> lg(mutex); });
+  fm.addTask([&] { std::lock_guard lg(mutex); });
   fm.addTask([&] {
     runInMainContext([&] {
       auto locked = mutex.try_lock_for(std::chrono::seconds{1});
@@ -2706,6 +2707,74 @@ TEST(TimedMutex, ThreadFiberDeadlockRace) {
 
   evb.loopOnce();
   EXPECT_EQ(0, fm.hasTasks());
+}
+
+namespace {
+
+template <class Mutex>
+void testTimedRWMutex() {
+  constexpr size_t kNumReadTasks = 1000;
+  constexpr size_t kNumReadIters = 10;
+  constexpr size_t kNumWriteTasks = 100;
+  constexpr size_t kNumThreads = 4;
+
+  std::atomic<size_t> numReadSections = 0;
+  std::atomic<bool> writeLocked = false;
+  size_t numWriteSections = 0;
+
+  Mutex mutex;
+  std::vector<std::unique_ptr<folly::EventBase>> evbs{kNumThreads};
+  for (auto& evb : evbs) {
+    evb = std::make_unique<folly::EventBase>();
+    auto& fm = getFiberManager(*evb);
+
+    for (size_t i = 0; i < kNumReadTasks; ++i) {
+      fm.addTask([&] {
+        for (size_t j = 0; j < kNumReadIters; ++j) {
+          std::shared_lock lock(mutex);
+          ASSERT_FALSE(writeLocked.load());
+          ++numReadSections;
+          Baton b;
+          b.try_wait_for(std::chrono::milliseconds(1));
+        }
+      });
+    }
+
+    for (size_t i = 0; i < kNumWriteTasks; ++i) {
+      fm.addTask([&, i] {
+        std::unique_lock lock(mutex);
+        ASSERT_FALSE(writeLocked.exchange(true));
+        ++numWriteSections;
+        ASSERT_TRUE(writeLocked.exchange(false));
+        if (i % 10 == 0) {
+          auto rlock = folly::transition_lock<std::shared_lock>(lock);
+        }
+      });
+    }
+  }
+
+  std::vector<std::thread> threads;
+  for (size_t i = 0; i < kNumThreads; ++i) {
+    threads.emplace_back([&evbs, i] { evbs[i]->loop(); });
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(
+      numReadSections.load(), kNumThreads * kNumReadTasks * kNumReadIters);
+  EXPECT_EQ(numWriteSections, kNumThreads * kNumWriteTasks);
+}
+
+} // namespace
+
+TEST(TimedRWMutex, MultipleThreadsReadPriority) {
+  testTimedRWMutex<TimedRWMutexReadPriority<Baton>>();
+}
+
+TEST(TimedRWMutex, MultipleThreadsWritePriority) {
+  testTimedRWMutex<TimedRWMutexWritePriority<Baton>>();
 }
 
 namespace {

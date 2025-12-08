@@ -185,7 +185,7 @@ class MultiplexChannelProcessor : public IChannelCallback {
   void start(Receiver<InputValueType> inputReceiver) {
     executeWithMutexWhenReady(
         [this, inputReceiver = std::move(inputReceiver)]() mutable
-        -> folly::coro::Task<void> {
+            -> folly::coro::Task<void> {
           co_await processStart(std::move(inputReceiver));
         });
   }
@@ -225,7 +225,7 @@ class MultiplexChannelProcessor : public IChannelCallback {
   void destroyHandle(CloseResult closeResult) {
     executeWithMutexWhenReady(
         [this, closeResult = std::move(closeResult)]() mutable
-        -> folly::coro::Task<void> {
+            -> folly::coro::Task<void> {
           co_await processHandleDestroyed(std::move(closeResult));
         });
   }
@@ -387,8 +387,9 @@ class MultiplexChannelProcessor : public IChannelCallback {
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
       auto& sender = std::get<FanoutSender<OutputValueType>>(it->second);
       if (!sender.anySubscribers()) {
-        clearedSubscriptions.push_back(std::make_pair(
-            it->first, std::move(std::get<KeyContextType>(it->second))));
+        clearedSubscriptions.push_back(
+            std::make_pair(
+                it->first, std::move(std::get<KeyContextType>(it->second))));
         it = subscriptions_.erase(it);
         subscriptionsToRemove++;
       } else {
@@ -436,28 +437,32 @@ class MultiplexChannelProcessor : public IChannelCallback {
       rateLimiter->executeWhenReady(
           [this, func = std::move(func), executor = multiplexer_.getExecutor()](
               std::unique_ptr<RateLimiter::Token> token) mutable {
-            folly::coro::co_invoke(
-                [this,
-                 token = std::move(token),
-                 func = std::move(func)]() mutable -> folly::coro::Task<void> {
-                  auto lock = co_await mutex_.co_scoped_lock();
-                  co_await func();
-                  pendingAsyncCalls_--;
-                  maybeDelete(lock);
-                })
-                .scheduleOn(executor)
+            co_withExecutor(
+                executor,
+                folly::coro::co_invoke(
+                    [this,
+                     token = std::move(token),
+                     func =
+                         std::move(func)]() mutable -> folly::coro::Task<void> {
+                      auto lock = co_await mutex_.co_scoped_lock();
+                      co_await func();
+                      pendingAsyncCalls_--;
+                      maybeDelete(lock);
+                    }))
                 .start();
           },
           multiplexer_.getExecutor());
     } else {
-      folly::coro::co_invoke(
-          [this, func = std::move(func)]() mutable -> folly::coro::Task<void> {
-            auto lock = co_await mutex_.co_scoped_lock();
-            co_await func();
-            pendingAsyncCalls_--;
-            maybeDelete(lock);
-          })
-          .scheduleOn(multiplexer_.getExecutor())
+      co_withExecutor(
+          multiplexer_.getExecutor(),
+          folly::coro::co_invoke(
+              [this,
+               func = std::move(func)]() mutable -> folly::coro::Task<void> {
+                auto lock = co_await mutex_.co_scoped_lock();
+                co_await func();
+                pendingAsyncCalls_--;
+                maybeDelete(lock);
+              }))
           .start();
     }
   }

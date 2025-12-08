@@ -14,24 +14,51 @@
  * limitations under the License.
  */
 
+#define FOLLY_PYTHON_FIBERS_DETAIL_DEFS
 #include <folly/python/fibers.h>
-
-#include <stdexcept>
-
-#include <folly/python/fiber_manager_api.h>
 #include <folly/python/import.h>
 
 namespace folly {
 namespace python {
 
-FOLLY_CONSTINIT static import_cache import_folly__fiber_manager_{
-    import_folly__fiber_manager, "import_folly__fiber_manager"};
+namespace fibers_detail {
+// Will be filled in from Cython Side
+folly::fibers::FiberManager* (*get_fiber_manager)(
+    const folly::fibers::FiberManager::Options&);
 
-folly::fibers::FiberManager* getFiberManager(
+FOLLY_PYTHON_FIBERS_API void assign_func(
+    folly::fibers::FiberManager* (*_get_fiber_manager)(
+        const folly::fibers::FiberManager::Options&)) {
+  get_fiber_manager = _get_fiber_manager;
+}
+} // namespace fibers_detail
+
+int import_folly_fiber_manager_impl() {
+  // This is exactly what cython does, but in a Weak Friendly Way
+  int ret = 0;
+  PyObject* mod = nullptr;
+  mod = PyImport_ImportModule("folly.fiber_manager");
+  if (mod == nullptr) { // We failed to import
+    ret = -1;
+  }
+  Py_DecRef(mod);
+  return ret;
+}
+
+constinit static import_cache import_folly_fiber_manager{
+    import_folly_fiber_manager_impl, "folly.fiber_manager"};
+
+FOLLY_PYTHON_FIBERS_API folly::fibers::FiberManager* getFiberManager(
     const folly::fibers::FiberManager::Options& opts) {
   DCHECK(!folly::fibers::onFiber());
-  import_folly__fiber_manager_();
-  return get_fiber_manager(opts);
+  if (!isLinked()) {
+    // Python isn't even linked
+    return nullptr;
+  }
+  // Python module once loaded will fill-in get_fiber_manager
+  import_folly_fiber_manager();
+  DCHECK(fibers_detail::get_fiber_manager != nullptr);
+  return fibers_detail::get_fiber_manager(opts);
 }
 
 } // namespace python

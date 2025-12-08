@@ -16,6 +16,8 @@
 
 #include <cstdlib>
 
+#include <fmt/format.h>
+
 #include <folly/Format.h>
 #include <folly/init/Init.h>
 #include <folly/logging/GlogStyleFormatter.h>
@@ -28,6 +30,7 @@
 
 FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
+using namespace fmt::literals;
 using namespace folly;
 
 namespace {
@@ -74,7 +77,7 @@ TEST(GlogFormatter, log) {
   auto tid = getOSThreadID();
 
   // Test a very simple single-line log message
-  auto expected = folly::sformat(
+  auto expected = fmt::format(
       "W0417 13:45:56.123456 {:5d} myfile.cpp:1234] hello world\n", tid);
   EXPECT_EQ(
       expected,
@@ -87,7 +90,7 @@ TEST(GlogFormatter, logThreadName) {
   auto threadName = getCurrentThreadName().value_or("Unknown");
 
   // Test a very simple single-line log message
-  auto expected = folly::sformat(
+  auto expected = fmt::format(
       "W0417 13:45:56.123456 {:5d} [{}] myfile.cpp:1234] hello world\n",
       tid,
       threadName);
@@ -123,7 +126,7 @@ TEST(GlogFormatter, logThreadNameChanged) {
     });
     thread.join();
     // Test a very simple single-line log message
-    auto expected = folly::sformat(
+    auto expected = fmt::format(
         "W0417 13:45:56.123456 {:5d} [{}] myfile.cpp:1234] hello world\n",
         otherThreadID,
         threadName);
@@ -136,7 +139,7 @@ TEST(GlogFormatter, filename) {
   auto tid = getOSThreadID();
 
   // Make sure only the file basename gets logged
-  auto expected = folly::sformat(
+  auto expected = fmt::format(
       "W0417 13:45:56.123456 {:5d} myfile.cpp:1234] hello world\n", tid);
   EXPECT_EQ(
       expected,
@@ -148,7 +151,7 @@ TEST(GlogFormatter, filename) {
           "testFunction"));
 
   // Log a message with a very long file name.
-  expected = folly::sformat(
+  expected = fmt::format(
       "W0417 13:45:56.123456 {:5d} "
       "this_is_a_really_long_file_name_that_will_probably_exceed_"
       "our_buffer_allocation_guess.cpp:123456789] oh noes\n",
@@ -166,20 +169,19 @@ TEST(GlogFormatter, filename) {
 
 TEST(GlogFormatter, multiline) {
   auto tid = getOSThreadID();
-  std::map<std::string, std::string> formatMap{
-      {"tid", folly::to<std::string>(tid)}};
 
   // Log a multi-line message
-  auto expected = folly::svformat(
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777] Eeek, a mouse!\n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777]    .   .\n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777]   ( ).( )\n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777]    (o o) .-._.'\n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777]   (  -  )\n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777]    mm mm\n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777] \n"
-      "V0417 13:45:56.123456 {tid:>5s} rodent.cpp:777] =============\n",
-      formatMap);
+  auto expected = fmt::format(
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777] Eeek, a mouse!\n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777]    .   .\n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777]   ( ).( )\n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777]    (o o) .-._.'\n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777]   (  -  )\n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777]    mm mm\n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777] \n"
+      "V0417 13:45:56.123456 {tid:>5} rodent.cpp:777] =============\n",
+
+      "tid"_a = tid);
   EXPECT_EQ(
       expected,
       formatMsg(
@@ -199,14 +201,13 @@ TEST(GlogFormatter, multiline) {
 
 TEST(GlogFormatter, singleNewline) {
   auto tid = getOSThreadID();
-  std::map<std::string, std::string> formatMap{
-      {"tid", folly::to<std::string>(tid)}};
 
   // Logging a single newline is basically two empty strings.
-  auto expected = folly::svformat(
-      "V0417 13:45:56.123456 {tid:>5s} foo.txt:123] \n"
-      "V0417 13:45:56.123456 {tid:>5s} foo.txt:123] \n",
-      formatMap);
+  auto expected = fmt::format(
+      "V0417 13:45:56.123456 {tid:>5} foo.txt:123] \n"
+      "V0417 13:45:56.123456 {tid:>5} foo.txt:123] \n",
+
+      "tid"_a = tid);
   EXPECT_EQ(
       expected,
       formatMsg(LogLevel::DBG9, "\n", "foo.txt", 123, "testFunction"));
@@ -216,7 +217,7 @@ TEST(GlogFormatter, unprintableChars) {
   auto tid = getOSThreadID();
 
   // Unprintable characters should be backslash escaped, as should backslashes.
-  auto expected = folly::sformat(
+  auto expected = fmt::format(
       "E0417 13:45:56.123456 {:5d} escapes.cpp:97] foo\\x07bar\\x1btest\n",
       tid);
   EXPECT_EQ(
@@ -227,13 +228,13 @@ TEST(GlogFormatter, unprintableChars) {
           "escapes.cpp",
           97,
           "testFunction"));
-  expected = folly::sformat(
+  expected = fmt::format(
       "I0417 13:45:56.123456 {:5d} escapes.cpp:98] foo\\\\bar\"test\n", tid);
   EXPECT_EQ(
       expected,
       formatMsg(
           LogLevel::INFO, "foo\\bar\"test", "escapes.cpp", 98, "testFunction"));
-  expected = folly::sformat(
+  expected = fmt::format(
       "C0417 13:45:56.123456 {:5d} escapes.cpp:99] nul\\x00byte\n", tid);
   EXPECT_EQ(
       expected,

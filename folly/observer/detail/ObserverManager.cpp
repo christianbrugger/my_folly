@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <folly/observer/detail/ObserverManager.h>
 
 #include <future>
@@ -61,10 +62,11 @@ class ObserverManager::UpdatesManager::CurrentQueueProcessor {
       LOG(ERROR) << "--observer_manager_pool_size should be >= 1";
       FLAGS_observer_manager_pool_size = 1;
     }
+    threads_.reserve(FLAGS_observer_manager_pool_size);
     for (int32_t i = 0; i < FLAGS_observer_manager_pool_size; ++i) {
       threads_.emplace_back([this, i]() {
         folly::setThreadName(
-            folly::sformat("{}{}", kObserverManagerThreadNamePrefix, i));
+            fmt::format("{}{}", kObserverManagerThreadNamePrefix, i));
         ObserverManager::inManagerThread_ = true;
 
         while (true) {
@@ -85,6 +87,11 @@ class ObserverManager::UpdatesManager::CurrentQueueProcessor {
       });
     }
   }
+
+  CurrentQueueProcessor(const CurrentQueueProcessor&) = delete;
+  CurrentQueueProcessor& operator=(const CurrentQueueProcessor&) = delete;
+  CurrentQueueProcessor(CurrentQueueProcessor&&) = delete;
+  CurrentQueueProcessor& operator=(CurrentQueueProcessor&&) = delete;
 
   ~CurrentQueueProcessor() {
     for (size_t i = 0; i < threads_.size(); ++i) {
@@ -108,7 +115,7 @@ class ObserverManager::UpdatesManager::NextQueueProcessor {
       auto& manager = getInstance();
 
       folly::setThreadName(
-          folly::sformat("{}NQ", kObserverManagerThreadNamePrefix));
+          fmt::format("{}NQ", kObserverManagerThreadNamePrefix));
 
       Function<Core::Ptr()> queueCoreFunc;
 
@@ -155,6 +162,11 @@ class ObserverManager::UpdatesManager::NextQueueProcessor {
       }
     });
   }
+
+  NextQueueProcessor(const NextQueueProcessor&) = delete;
+  NextQueueProcessor& operator=(const NextQueueProcessor&) = delete;
+  NextQueueProcessor(NextQueueProcessor&&) = delete;
+  NextQueueProcessor& operator=(NextQueueProcessor&&) = delete;
 
   ~NextQueueProcessor() {
     stop_ = true;

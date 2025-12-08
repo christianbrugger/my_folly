@@ -209,11 +209,8 @@ FOLLY_ALWAYS_INLINE size_t to_ascii_size_clzll(uint64_t v) {
   //  log2 is approx log<2>(v)
   size_t const vlog2 = 64 - static_cast<size_t>(__builtin_clzll(v));
 
-  //  work around msvc warning C4127 (conditional expression is constant)
-  bool false_ = false;
-
   //  handle directly when Base is power-of-two
-  if (false_ || !(Base & (Base - 1))) {
+  if constexpr (!(Base & (Base - 1))) {
     constexpr auto const blog2 = constexpr_log2(Base);
     return vlog2 / blog2 + size_t(vlog2 % blog2 != 0);
   }
@@ -276,7 +273,7 @@ FOLLY_ALWAYS_INLINE void to_ascii_with_table(
     char* out, size_t size, uint64_t v) {
   using table = to_ascii_table<Base, Alphabet>;
   auto pos = size;
-  while (FOLLY_UNLIKELY(pos > 2)) {
+  while (pos > 2) {
     pos -= 2;
     //  keep /, % together so a peephole optimization computes them together
     auto const q = v / (Base * Base);
@@ -287,7 +284,7 @@ FOLLY_ALWAYS_INLINE void to_ascii_with_table(
   }
 
   auto const val = table::data.data[size_t(v)];
-  if (FOLLY_UNLIKELY(pos == 2)) {
+  if (pos == 2) {
     std::memcpy(out, &val, 2);
   } else {
     *out = val >> (kIsLittleEndian ? 8 : 0);

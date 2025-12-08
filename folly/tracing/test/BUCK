@@ -1,10 +1,15 @@
-load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
+load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
 load("@fbcode_macros//build_defs:cpp_unittest.bzl", "cpp_unittest")
+load("@fbcode_macros//build_defs:custom_unittest.bzl", "custom_unittest")
 load("@fbsource//tools/build_defs:fb_native_wrapper.bzl", "fb_native")
+load("@fbsource//tools/build_defs/dirsync:fb_dirsync_cpp_library.bzl", "fb_dirsync_cpp_library")
+load("../../defs.bzl", "folly_xplat_library")
 
 oncall("fbcode_entropy_wardens_folly")
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "async_stack_test",
     srcs = ["AsyncStackTest.cpp"],
     deps = [
@@ -17,18 +22,21 @@ cpp_unittest(
     ],
 )
 
-cpp_unittest(
+fbcode_target(
+    _kind = cpp_unittest,
     name = "static_tracepoint_test",
     srcs = ["StaticTracepointTest.cpp"],
+    extract_helper_lib = False,
     labels = ["oss-broken"],
     deps = [
+        "fbsource//third-party/fmt:fmt",
         ":static_tracepoint_test_module",
         "//folly:conv",
         "//folly:format",
         "//folly:random",
         "//folly:string",
         "//folly:subprocess",
-        "//folly/experimental/symbolizer/detail:debug",
+        "//folly/debugging/symbolizer/detail:debug",
         "//folly/lang:bits",
         "//folly/portability:filesystem",
         "//folly/portability:gtest",
@@ -37,7 +45,7 @@ cpp_unittest(
     ],
 )
 
-cpp_library(
+fb_dirsync_cpp_library(
     name = "static_tracepoint_test_module",
     srcs = [
         "StaticTracepointTestModule.cpp",
@@ -45,6 +53,7 @@ cpp_library(
     headers = [
         "StaticTracepointTestModule.h",
     ],
+    xplat_impl = folly_xplat_library,
     deps = [
         "//folly/tracing:static_tracepoint",
     ],
@@ -55,8 +64,9 @@ fb_native.filegroup(
     srcs = ["StaticTracepointSectionTest.lds"],
 )
 
-cpp_unittest(
-    name = "static_tracepoint_section_test",
+fbcode_target(
+    _kind = cpp_binary,
+    name = "static_tracepoint_section_test_bin",
     srcs = ["StaticTracepointSectionTest.cpp"],
     headers = [],
     linker_flags = [
@@ -69,4 +79,11 @@ cpp_unittest(
         "//folly/debugging/symbolizer:elf",
         "//folly/tracing:static_tracepoint",
     ],
+)
+
+fbcode_target(
+    _kind = custom_unittest,
+    name = "static_tracepoint_section_test",
+    command = ["$(location :static_tracepoint_section_test_bin)"],
+    type = "simple",
 )

@@ -56,6 +56,10 @@
 #include <string_view>
 #include <type_traits>
 
+#if defined(__cpp_lib_ranges)
+#include <ranges>
+#endif
+
 #if __has_include(<fmt/format.h>)
 #include <fmt/format.h>
 #endif
@@ -147,6 +151,19 @@ struct IsCharPointer<const char*> {
   using const_type = int;
   using type = int;
 };
+
+#if defined(__cpp_char8_t) && __cpp_char8_t >= 201811L
+template <>
+struct IsCharPointer<char8_t*> {
+  using type = int;
+};
+
+template <>
+struct IsCharPointer<const char8_t*> {
+  using const_type = int;
+  using type = int;
+};
+#endif
 
 template <class T>
 struct IsUnsignedCharPointer {};
@@ -635,12 +652,24 @@ class Range {
   // At the moment the set of implicit target types consists of just
   // std::string_view (when it is available).
   struct NotStringView {};
+  struct StringViewTypeChar {
+    template <typename ValueType>
+    using apply = std::basic_string_view<ValueType>;
+  };
+  struct StringViewTypeNone {
+    template <typename>
+    using apply = NotStringView;
+  };
   template <typename ValueType>
-  struct StringViewType //
-      : std::conditional<
-            detail::range_is_char_type_v_<Iter>,
-            std::basic_string_view<ValueType>,
-            NotStringView> {};
+  using StringViewTypeFunc = std::conditional_t<
+      detail::range_is_char_type_v_<Iter>,
+      StringViewTypeChar,
+      StringViewTypeNone>;
+  template <typename ValueType>
+  struct StringViewType {
+    using type =
+        typename StringViewTypeFunc<ValueType>::template apply<ValueType>;
+  };
 
   template <typename Target>
   struct IsConstructibleViaStringView
@@ -697,6 +726,15 @@ class Range {
       std::is_nothrow_constructible<Tgt, Iter const&, size_type>::value) {
     return Tgt(b_, walk_size());
   }
+
+#if FMT_VERSION < 100000
+  template <
+      typename IterType = Iter,
+      std::enable_if_t<detail::range_is_char_type_v_<IterType>, int> = 0>
+  constexpr operator fmt::basic_string_view<value_type>() const noexcept {
+    return _t<StringViewType<value_type>>(*this);
+  }
+#endif
 
   /// explicit non-operator conversion to any compatible type
   ///
@@ -775,36 +813,6 @@ class Range {
       throw_exception<std::out_of_range>("index out of range");
     }
     return b_[i];
-  }
-
-  // Do NOT use this function, which was left behind for backwards
-  // compatibility.  Use SpookyHashV2 instead -- it is faster, and produces
-  // a 64-bit hash, which means dramatically fewer collisions in large maps.
-  // (The above advice does not apply if you are targeting a 32-bit system.)
-  //
-  // Works only for Range<const char*> and Range<char*>
-  //
-  //
-  //         ** WANT TO GET RID OF THIS LINT? **
-  //
-  // A) Use a better hash function (*cough*folly::Hash*cough*), but
-  //    only if you don't serialize data in a format that depends on
-  //    this formula (ie the writer and reader assume this exact hash
-  //    function is used).
-  //
-  // B) If you have to use this exact function then make your own hasher
-  //    object and copy the body over (see thrift example: D3972362).
-  //    https://github.com/facebook/fbthrift/commit/f8ed502e24ab4a32a9d5f266580
-  [[deprecated(
-      "Replace with folly::Hash if the hash is not serialized")]] uint32_t
-  hash() const {
-    // Taken from fbi/nstring.h:
-    //    Quick and dirty bernstein hash...fine for short ascii strings
-    uint32_t hash = 5381;
-    for (size_t ix = 0; ix < size(); ix++) {
-      hash = ((hash << 5) + hash) + b_[ix];
-    }
-    return hash;
   }
 
   void advance(size_type n) {
@@ -962,7 +970,7 @@ class Range {
     return find(other) != std::string::npos;
   }
 
-  void swap(Range& rhs) {
+  void swap(Range& rhs) noexcept(std::is_nothrow_swappable_v<Iter>) {
     std::swap(b_, rhs.b_);
     std::swap(e_, rhs.e_);
   }
@@ -1267,7 +1275,8 @@ template <class Iter>
 const typename Range<Iter>::size_type Range<Iter>::npos = std::string::npos;
 
 template <class Iter>
-void swap(Range<Iter>& lhs, Range<Iter>& rhs) {
+void swap(Range<Iter>& lhs, Range<Iter>& rhs) noexcept(
+    noexcept(lhs.swap(rhs))) {
   lhs.swap(rhs);
 }
 
@@ -1769,3 +1778,8 @@ namespace ranges {
 template <class Iter>
 inline constexpr bool enable_view<::folly::Range<Iter>> = true;
 } // namespace ranges
+
+#if defined(__cpp_lib_ranges)
+template <typename T>
+constexpr bool std::ranges::enable_borrowed_range<folly::Range<T>> = true;
+#endif

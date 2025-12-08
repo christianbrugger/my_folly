@@ -130,15 +130,6 @@ struct FOLLY_EXPORT TypeError : std::runtime_error {
 
 namespace detail {
 
-// This helper is used in destroy() to be able to run destructors on
-// types like "int64_t" without a compiler error.
-struct Destroy {
-  template <class T>
-  static void destroy(T* t) {
-    t->~T();
-  }
-};
-
 /*
  * Helper for implementing numeric conversions in operators on
  * numbers.  Just promotes to double when one of the arguments is
@@ -831,11 +822,36 @@ inline dynamic::item_iterator dynamic::find(StringPiece key) {
 template <typename K>
 dynamic::IfIsNonStringDynamicConvertible<K, std::size_t> dynamic::count(
     K&& key) const {
+  if (const auto* as_array = get_nothrow<Array>()) {
+    return std::count(as_array->begin(), as_array->end(), std::forward<K>(key));
+  }
   return find(std::forward<K>(key)) != items().end() ? 1u : 0u;
 }
 
 inline std::size_t dynamic::count(StringPiece key) const {
+  if (const auto* as_array = get_nothrow<Array>()) {
+    return std::count(as_array->begin(), as_array->end(), key);
+  }
   return find(key) != items().end() ? 1u : 0u;
+}
+
+template <typename K>
+dynamic::IfIsNonStringDynamicConvertible<K, bool> dynamic::contains(
+    K&& key) const {
+  if (const auto* as_array = get_nothrow<Array>()) {
+    return std::find(
+               as_array->begin(), as_array->end(), std::forward<K>(key)) !=
+        as_array->end();
+  }
+  return find(std::forward<K>(key)) != items().end();
+}
+
+inline bool dynamic::contains(StringPiece key) const {
+  if (const auto* as_array = get_nothrow<Array>()) {
+    return std::find(as_array->begin(), as_array->end(), key) !=
+        as_array->end();
+  }
+  return find(key) != items().end();
 }
 
 template <class K, class V>
@@ -1167,6 +1183,40 @@ inline std::ostream& operator<<(std::ostream& out, dynamic const& d) {
   return out;
 }
 
+template <typename Val>
+size_t erase(folly::dynamic& dyn, Val const& val) {
+  return erase_if(dyn, [&](dynamic const& d) { return d == val; });
+}
+
+template <typename Pred>
+size_t erase_if(dynamic& dyn, Pred pred) {
+  if (dyn.isArray()) {
+    using item_type = dynamic;
+    if constexpr (std::is_invocable_v<Pred&, item_type const&>) {
+      auto b = dyn.begin();
+      auto e = dyn.end();
+      auto f = std::remove_if(b, e, std::ref(pred));
+      auto c = e - f;
+      dyn.erase(f, e);
+      return c;
+    }
+  }
+  if (dyn.isObject()) {
+    using item_type = std::pair<dynamic const, dynamic>;
+    if constexpr (std::is_invocable_v<Pred&, item_type const&>) {
+      size_t c = 0;
+      auto view = dyn.items();
+      auto b = view.begin();
+      auto e = view.end();
+      while (b != e) {
+        b = pred(std::as_const(*b)) ? (++c, dyn.erase(b)) : std::next(b);
+      }
+      return c;
+    }
+  }
+  throw_exception<TypeError>("container", dyn.type());
+}
+
 //////////////////////////////////////////////////////////////////////
 
 inline const_dynamic_view::const_dynamic_view(dynamic const& d) noexcept
@@ -1215,7 +1265,7 @@ template <typename Key>
 inline dynamic::IfIsNonStringDynamicConvertible<Key, dynamic const*>
 const_dynamic_view::descend_unchecked_(Key const& key) const noexcept {
   if (auto* parray = d_->get_nothrow<dynamic::Array>()) {
-    if /* constexpr */ (!std::is_integral<Key>::value) {
+    if constexpr (!std::is_integral<Key>::value) {
       return nullptr;
     }
     if (key < 0 || folly::to_unsigned(key) >= parray->size()) {
@@ -1359,6 +1409,8 @@ class FormatValue<dynamic> {
       case dynamic::OBJECT:
         FormatValue(val_.at(arg.splitKey().toString())).format(arg, cb);
         break;
+      default:
+        folly::assume_unreachable();
     }
   }
 

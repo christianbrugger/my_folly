@@ -1,5 +1,4 @@
 """Provides helper functions for the folly library
-
 [folly]
     have_libgflags_override = {True|[False]}
 """
@@ -14,12 +13,10 @@ load(
     "IOS",
     "MACOSX",
     "WINDOWS",
-    "get_available_platforms",
 )
 load("@fbsource//tools/build_defs:fb_xplat_cxx_binary.bzl", "fb_xplat_cxx_binary")
 load("@fbsource//tools/build_defs:fb_xplat_cxx_library.bzl", "fb_xplat_cxx_library")
 load("@fbsource//tools/build_defs:fb_xplat_cxx_test.bzl", "fb_xplat_cxx_test")
-load("@fbsource//tools/build_defs:fbsource_utils.bzl", "is_arvr_mode")
 
 def should_enable_gflags():
     return read_bool("folly", "have_libgflags_override", False)
@@ -41,15 +38,18 @@ def cpp_flags():
             "ovr_config//os:linux": ["-DFOLLY_MOBILE=1"],
         })
 
-    elif is_arvr_mode():
-        flags += select({
-            "DEFAULT": ["-DFOLLY_MOBILE=1"],
-            "ovr_config//os:linux": [],
-            "ovr_config//os:macos": [],
-        })
-
     else:
-        flags += ["-DFOLLY_MOBILE=1"]
+        flags += select({
+            "DEFAULT": select({
+                "DEFAULT": ["-DFOLLY_MOBILE=1"],
+                "ovr_config//os:windows": [],
+            }),
+            "ovr_config//build_mode:arvr_mode": select({
+                "DEFAULT": ["-DFOLLY_MOBILE=1"],
+                "ovr_config//os:linux": [],
+                "ovr_config//os:macos": [],
+            }),
+        })
 
     return flags
 
@@ -114,14 +114,16 @@ def _compute_include_directories():
     base_path = native.package_name()
     if base_path == "xplat/folly":
         return [".."]
-    thrift_path = base_path[6:]
-    return ["/".join(len(thrift_path.split("/")) * [".."])]
+    folly_path = base_path[6:]
+    return ["/".join(len(folly_path.split("/")) * [".."])]
 
-def folly_library(
+def folly_xplat_library(
         name,
         srcs = (),
+        header_namespace = "",
         exported_headers = (),
         raw_headers = (),
+        raw_headers_as_headers_mode = "enabled",
         deps = (),
         exported_deps = (),
         force_static = True,
@@ -130,7 +132,7 @@ def folly_library(
         enable_static_variant = True,
         labels = (),
         **kwargs):
-    """Translate a simpler declartion into the more complete library target"""
+    """Translate a simpler declaration into the more complete library target"""
 
     # Set default platform settings. `()` means empty, whereas None
     # means default
@@ -141,18 +143,21 @@ def folly_library(
 
     # We use gflags on fbcode platforms, which don't mix well when mixing static
     # and dynamic linking.
-    if not is_arvr_mode():
-        force_static = select({
+    force_static = select({
+        "DEFAULT": select({
             "DEFAULT": force_static,
             "ovr_config//runtime:fbcode": False,
-        })
+        }),
+        "ovr_config//build_mode:arvr_mode": force_static,
+    })
 
     fb_xplat_cxx_library(
         name = name,
         srcs = srcs,
-        header_namespace = "",
+        header_namespace = header_namespace,
         exported_headers = exported_headers,
         raw_headers = raw_headers,
+        raw_headers_as_headers_mode = raw_headers_as_headers_mode,
         public_include_directories = _compute_include_directories(),
         deps = deps,
         exported_deps = exported_deps,
@@ -166,27 +171,29 @@ def folly_library(
             "ovr_config//os:android": FBANDROID_CXXFLAGS,
             "ovr_config//os:iphoneos": CLANG_CXX_FLAGS,
             # TODO: Why iphoneos and macos are not marked as clang compilers?
-            "ovr_config//os:macos": CLANG_CXX_FLAGS,
+            "ovr_config//os:macos": CLANG_CXX_FLAGS + ["-fvisibility=default"],
         }) + select({
             "DEFAULT": [],
             "ovr_config//os:windows-cl": WINDOWS_MSVC_CXXFLAGS,
             "ovr_config//os:windows-gcc-or-clang": WINDOWS_CLANG_CXX_FLAGS,
-        }),
+        }) + [
+            "-fexceptions",
+            "-frtti",
+        ],
         fbobjc_compiler_flags = kwargs.pop("fbobjc_compiler_flags", []) +
                                 FBOBJC_CXXFLAGS,
-        fbcode_compiler_flags_override = kwargs.pop("fbcode_compiler_flags", []),
         windows_preferred_linkage = "static",
         visibility = kwargs.pop("visibility", ["PUBLIC"]),
         **kwargs
     )
 
-def folly_cxx_library(name, **kwargs):
-    folly_library(
+def folly_xplat_cxx_library(name, **kwargs):
+    folly_xplat_library(
         name = name,
         **kwargs
     )
 
-def folly_cxx_test(
+def folly_xplat_cxx_test(
         name,
         srcs,
         raw_headers = [],
@@ -196,7 +203,7 @@ def folly_cxx_test(
     # resources is cherry picked because some of the other kwargs
     # have issues that need to be investigated.
     # e.g., Some args are duplicated. Some args cause TSAN errors.
-    # TODO(T188948036): Fix xplat/folly:folly-futures-test and folly_cxx_test
+    # TODO(T188948036): Fix xplat/folly:folly-futures-test and folly_xplat_cxx_test
     resources = kwargs.get("resources", [])
 
     fb_xplat_cxx_test(
@@ -212,7 +219,7 @@ def folly_cxx_test(
         platforms = (CXX,),
     )
 
-def folly_cxx_binary(
+def folly_xplat_cxx_binary(
         name,
         srcs,
         raw_headers = [],
@@ -228,11 +235,3 @@ def folly_cxx_binary(
         contacts = contacts,
         platforms = (CXX,),
     )
-
-def override_soname_if_needed(name):
-    # This is a hack to unblock rollout of platform suffix removal to xplat/folly.
-    # See T89357426. This only applies when using arvr build modes and can be removed when Hermes
-    # is built from source (or prebuilt using arvr build modes).
-    if is_arvr_mode() and ANDROID in get_available_platforms():
-        return "libxplat_folly_{}Android.so".format(name)
-    return None

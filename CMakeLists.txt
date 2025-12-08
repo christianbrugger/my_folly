@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.0.2 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 # We use the GoogleTest module if it is available (only in CMake 3.9+)
 # It requires CMP0054 and CMP0057 to be enabled.
 if (POLICY CMP0054)
@@ -25,6 +25,11 @@ endif()
 # CMP0075 Include file check macros honor CMAKE_REQUIRED_LIBRARIES
 if(POLICY CMP0075)
   cmake_policy(SET CMP0075 NEW)
+endif()
+
+# CMP0167 The FindBoost module is removed
+if(POLICY CMP0167)
+  cmake_policy(SET CMP0167 NEW)
 endif()
 
 # includes
@@ -74,7 +79,7 @@ include(FBBuildOptions)
 fb_activate_static_library_option()
 
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   message(STATUS "setting C++ standard to C++${CMAKE_CXX_STANDARD}")
 endif()
@@ -104,6 +109,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
       "at least Visual Studio 2017. "
       "MSVC version '${MSVC_VERSION}' is not supported."
     )
+  endif()
+endif()
+
+if(NOT DEFINED FOLLY_HAVE_INT128_T)
+  include(CheckTypeSize)
+  check_type_size("__int128_t" FOLLY_INT128_T_SIZE)
+  if(HAVE_FOLLY_INT128_T_SIZE)
+    set(FOLLY_HAVE_INT128_T TRUE)
   endif()
 endif()
 
@@ -171,6 +184,8 @@ REMOVE_MATCHES_FROM_LISTS(files hfiles
     "^${FOLLY_DIR_REGEX_ESCAPED}/(.*/)?test/"
     "^${FOLLY_DIR_REGEX_ESCAPED}/(.*/)?tool/"
     "^${FOLLY_DIR_REGEX_ESCAPED}/facebook/"
+    "^${FOLLY_DIR_REGEX_ESCAPED}/rust/"
+    "^${FOLLY_DIR_REGEX_ESCAPED}/ext/buck2/"
     "Benchmark.cpp$"
     "Test.cpp$"
 )
@@ -184,6 +199,7 @@ if (${FOLLY_NO_EXCEPTION_TRACER})
 endif()
 
 list(REMOVE_ITEM files
+  ${FOLLY_DIR}/python/AsyncioExecutor.cpp
   ${FOLLY_DIR}/python/error.cpp
   ${FOLLY_DIR}/python/executor.cpp
   ${FOLLY_DIR}/python/fibers.cpp
@@ -466,6 +482,12 @@ option(PYTHON_EXTENSIONS
   "Build Python Bindings for Folly, requires Cython and (BUILD_SHARED_LIBS=ON)"
   OFF
 )
+set(PYTHON_PACKAGE_INSTALL_DIR "" CACHE STRING
+  "Installation directory for folly Python packages. \
+  If empty, CMAKE_INSTALL_PREFIX will be used. \
+  No effect if PYTHON_EXTENSIONS=OFF."
+)
+
 
 add_library(folly
   $<TARGET_OBJECTS:folly_base>
@@ -660,12 +682,17 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
 
     DIRECTORY algorithm/simd/test/
       TEST algorithm_simd_contains_test SOURCES ContainsTest.cpp
+      TEST algorithm_simd_find_first_of_test SOURCES find_first_of_test.cpp
       TEST algorithm_simd_find_fixed_test SOURCES FindFixedTest.cpp
       TEST algorithm_simd_movemask_test SOURCES MovemaskTest.cpp
 
     DIRECTORY chrono/test/
       TEST chrono_conv_test WINDOWS_DISABLED
         SOURCES ConvTest.cpp
+
+    DIRECTORY codec/test/
+      TEST codec_hex_test SOURCES hex_test.cpp
+      TEST codec_uuid_test SOURCES UuidTest.cpp
 
     DIRECTORY compression/test/
       TEST compression_compression_test SLOW SOURCES CompressionTest.cpp
@@ -696,6 +723,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST container_fbvector_test SOURCES FBVectorTest.cpp
       BENCHMARK container_foreach_benchmark SOURCES ForeachBenchmark.cpp
       TEST container_foreach_test SOURCES ForeachTest.cpp
+      BENCHMARK container_hash_maps_bench SOURCES HashMapsBench.cpp
       TEST container_heap_vector_types_test SOURCES heap_vector_types_test.cpp
       TEST container_map_util_test WINDOWS_DISABLED SOURCES MapUtilTest.cpp
       TEST container_merge_test SOURCES MergeTest.cpp
@@ -704,6 +732,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
         SOURCES small_vector_test.cpp
       TEST container_sorted_vector_types_test SOURCES sorted_vector_test.cpp
       TEST container_span_test SOURCES span_test.cpp
+      TEST container_std_bitset_test SOURCES StdBitsetTest.cpp
       BENCHMARK container_sparse_byte_set_benchmark
         SOURCES SparseByteSetBenchmark.cpp
       TEST container_sparse_byte_set_test SOURCES SparseByteSetTest.cpp
@@ -721,6 +750,8 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
         SOURCES CoreCachedSharedPtrTest.cpp
       BENCHMARK concurrency_concurrent_hash_map_bench WINDOWS_DISABLED
         SOURCES ConcurrentHashMapBench.cpp
+      TEST concurrency_concurrent_hash_map_stress_test SLOW WINDOWS_DISABLED
+        SOURCES ConcurrentHashMapStressTest.cpp
       TEST concurrency_concurrent_hash_map_test WINDOWS_DISABLED
         SOURCES ConcurrentHashMapTest.cpp
       TEST concurrency_dynamic_bounded_queue_test WINDOWS_DISABLED
@@ -742,7 +773,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
         SOURCES StaticSingletonManagerTest.cpp
       TEST detail_type_list_test SOURCES TypeListTest.cpp
 
-    DIRECTORY detail/base64_detail/tests/
+    DIRECTORY detail/base64_detail/test/
       TEST detail_base64_detail_test WINDOWS_DISABLED
       SOURCES
         Base64AgainstScalarTest.cpp
@@ -896,9 +927,11 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST hash_spooky_hash_v1_test SOURCES SpookyHashV1Test.cpp
       TEST hash_spooky_hash_v2_test SOURCES SpookyHashV2Test.cpp
       TEST hash_traits_test SOURCES traits_test.cpp
+      TEST hash_unique_hash_key_test SOURCES UniqueHashKeyTest.cpp
 
     DIRECTORY io/test/
       TEST io_fs_util_test SOURCES FsUtilTest.cpp
+      BENCHMARK io_iobuf_benchmark WINDOWS_DISABLED SOURCES IOBufBenchmark.cpp
       TEST io_iobuf_test WINDOWS_DISABLED SOURCES IOBufTest.cpp
       TEST io_iobuf_cursor_test SOURCES IOBufCursorTest.cpp
       TEST io_iobuf_queue_test SOURCES IOBufQueueTest.cpp
@@ -939,6 +972,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
         SOURCES DelayedDestructionBaseTest.cpp
       TEST io_async_destructor_check_test SOURCES DestructorCheckTest.cpp
       # Fails with gtest macro error
+      BENCHMARK io_async_event_base_benchmark SOURCES EventBaseBenchmark.cpp
       TEST io_async_event_base_test BROKEN SOURCES EventBaseTest.cpp
       TEST io_async_event_base_local_test WINDOWS_DISABLED
         SOURCES EventBaseLocalTest.cpp
@@ -980,6 +1014,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST lang_r_value_reference_wrapper_test WINDOWS_DISABLED
         SOURCES RValueReferenceWrapperTest.cpp
       TEST lang_safe_assert_test SOURCES SafeAssertTest.cpp
+      TEST lang_switch_test SOURCES SwitchTest.cpp
       BENCHMARK lang_to_ascii_benchmark SOURCES ToAsciiBench.cpp
       TEST lang_to_ascii_test SOURCES ToAsciiTest.cpp
       TEST lang_type_info_test SOURCES TypeInfoTest.cpp
@@ -988,6 +1023,8 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST memory_arena_test WINDOWS_DISABLED SOURCES ArenaTest.cpp
       TEST memory_reentrant_allocator_test WINDOWS_DISABLED
         SOURCES ReentrantAllocatorTest.cpp
+      TEST memory_shared_from_this_ptr_test
+        SOURCES shared_from_this_ptr_test.cpp
       TEST memory_thread_cached_arena_test WINDOWS_DISABLED
         SOURCES ThreadCachedArenaTest.cpp
       TEST memory_mallctl_helper_test SOURCES MallctlHelperTest.cpp
@@ -1034,6 +1071,10 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST synchronization_baton_test SOURCES BatonTest.cpp
       TEST synchronization_call_once_test SOURCES CallOnceTest.cpp
       TEST synchronization_event_count_test SOURCES EventCountTest.cpp
+      BENCHMARK synchronization_hazptr_bench SOURCES HazptrBench.cpp
+      TEST synchronization_hazptr_test SOURCES HazptrTest.cpp
+      BENCHMARK synchronization_lifo_sem_bench WINDOWS_DISABLED
+        SOURCES LifoSemBench.cpp
       TEST synchronization_lifo_sem_test WINDOWS_DISABLED
         SOURCES LifoSemTests.cpp
       TEST synchronization_relaxed_atomic_test WINDOWS_DISABLED
@@ -1041,6 +1082,8 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST synchronization_rw_spin_lock_test SOURCES RWSpinLockTest.cpp
       TEST synchronization_semaphore_test WINDOWS_DISABLED
         SOURCES SemaphoreTest.cpp
+      BENCHMARK synchronization_small_locks_benchmark
+        SOURCES SmallLocksBenchmark.cpp
       TEST synchronization_small_locks_test SOURCES SmallLocksTest.cpp
 
     DIRECTORY synchronization/detail/test/
@@ -1123,10 +1166,12 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST lazy_test SOURCES LazyTest.cpp
       TEST locks_test SOURCES SpinLockTest.cpp
       TEST math_test SOURCES MathTest.cpp
+      BENCHMARK memcpy_benchmark SOURCES MemcpyBenchmark.cpp
       TEST memcpy_test SOURCES MemcpyTest.cpp
       TEST memory_idler_test SOURCES MemoryIdlerTest.cpp
       TEST memory_test WINDOWS_DISABLED
         SOURCES MemoryTest.cpp
+      BENCHMARK memset_benchmark SOURCES MemsetBenchmark.cpp
       TEST move_wrapper_test SOURCES MoveWrapperTest.cpp
       TEST mpmc_pipeline_test SOURCES MPMCPipelineTest.cpp
       TEST mpmc_queue_test SLOW
@@ -1149,6 +1194,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST producer_consumer_queue_test SLOW
         SOURCES ProducerConsumerQueueTest.cpp
       BENCHMARK range_find_benchmark SOURCES RangeFindBenchmark.cpp
+      BENCHMARK random_benchmark SOURCES RandomBenchmark.cpp
       TEST random_test SOURCES RandomTest.cpp
       TEST range_test SOURCES RangeTest.cpp
       TEST replaceable_test WINDOWS_DISABLED SOURCES ReplaceableTest.cpp
@@ -1186,6 +1232,10 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST utility_test SOURCES UtilityTest.cpp
       TEST varint_test SOURCES VarintTest.cpp
 
+    DIRECTORY test/function_benchmark/
+      BENCHMARK function_benchmark
+        SOURCES main.cpp benchmark_impl.cpp test_functions.cpp
+
     DIRECTORY testing/test/
       TEST testing_test_util_test SOURCES TestUtilTest.cpp
 
@@ -1211,6 +1261,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
     folly_define_tests(
       DIRECTORY crypto/test/
         TEST crypto_blake2xb_test SOURCES Blake2xbTest.cpp
+        BENCHMARK crypto_lt_hash_benchmark SOURCES LtHashBenchmark.cpp
         TEST crypto_lt_hash_test SOURCES LtHashTest.cpp
     )
   endif()
@@ -1231,7 +1282,10 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
     add_library(singleton_thread_local_overload
       SHARED ${FOLLY_DIR}/test/SingletonThreadLocalTestOverload.cpp)
     apply_folly_compile_options_to_target(singleton_thread_local_overload)
-    set_target_properties(singleton_thread_local_overload PROPERTIES PREFIX "")
+    set_target_properties(singleton_thread_local_overload PROPERTIES
+      PREFIX ""
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/folly/test
+    )
     target_link_libraries(singleton_thread_local_overload PRIVATE folly)
     folly_define_tests(
       DIRECTORY test/

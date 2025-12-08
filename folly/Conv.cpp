@@ -21,7 +21,7 @@
 
 #include <folly/lang/SafeAssert.h>
 
-#include <fast_float/fast_float.h> // @manual=fbsource//third-party/fast_float:fast_float
+#include <fast_float/fast_float.h>
 
 namespace folly {
 namespace detail {
@@ -225,20 +225,38 @@ constexpr const std::array<
     ErrorString,
     static_cast<std::size_t>(ConversionCode::NUM_ERROR_CODES)>
     kErrorStrings{{
+        // SUCCESS
         {"Success", true},
+        // EMPTY_INPUT_STRING
         {"Empty input string", true},
+        // NO_DIGITS
         {"No digits found in input string", true},
+        // BOOL_OVERFLOW
         {"Integer overflow when parsing bool (must be 0 or 1)", true},
+        // BOOL_INVALID_VALUE
         {"Invalid value for bool", true},
+        // NON_DIGIT_CHAR
         {"Non-digit character found", true},
+        // INVALID_LEADING_CHAR
         {"Invalid leading character", true},
+        // POSITIVE_OVERFLOW
         {"Overflow during conversion", true},
+        // NEGATIVE_OVERFLOW
         {"Negative overflow during conversion", true},
+        // STRING_TO_FLOAT_ERROR
         {"Unable to convert string to floating point value", true},
+        // NON_WHITESPACE_AFTER_END
         {"Non-whitespace character found after end of conversion", true},
+        // ARITH_POSITIVE_OVERFLOW
         {"Overflow during arithmetic conversion", false},
+        // ARITH_NEGATIVE_OVERFLOW
         {"Negative overflow during arithmetic conversion", false},
+        // ARITH_LOSS_OF_PRECISION
         {"Loss of precision during arithmetic conversion", false},
+        // SPLIT_ERROR,
+        {"Unexpected number of fields resulting from a split", true},
+        // CUSTOM,
+        {"Custom conversion failed", true},
     }};
 
 // Check if ASCII is really ASCII
@@ -359,16 +377,11 @@ Expected<Tgt, ConversionCode> str_to_floating_fast_float_from_chars(
     return makeUnexpected(ConversionCode::EMPTY_INPUT_STRING);
   }
 
-  if (*b == '+') {
-    // This function supports a leading + sign, but fast_float does not.
-    b += 1;
-    if (b == e || (!std::isdigit(*b) && *b != '.')) {
-      return makeUnexpected(ConversionCode::STRING_TO_FLOAT_ERROR);
-    }
-  }
-
   Tgt result;
-  auto [ptr, ec] = fast_float::from_chars(b, e, result);
+  fast_float::parse_options options{
+      fast_float::chars_format::general |
+      fast_float::chars_format::allow_leading_plus};
+  auto [ptr, ec] = fast_float::from_chars_advanced(b, e, result, options);
   bool isOutOfRange{ec == std::errc::result_out_of_range};
   bool isOk{ec == std::errc()};
   if (!isOk && !isOutOfRange) {
@@ -377,15 +390,6 @@ Expected<Tgt, ConversionCode> str_to_floating_fast_float_from_chars(
 
   auto numMatchedChars = ptr - src->data();
   src->advance(numMatchedChars);
-
-  if (isOutOfRange) {
-    if (*b == '-') {
-      return -std::numeric_limits<Tgt>::infinity();
-    } else {
-      return std::numeric_limits<Tgt>::infinity();
-    }
-  }
-
   return result;
 }
 

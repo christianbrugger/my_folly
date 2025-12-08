@@ -54,7 +54,7 @@ size_t Core::refresh(size_t version) {
   }
 
   {
-    std::lock_guard<SharedMutex> lgRefresh(refreshMutex_);
+    std::lock_guard lgRefresh(refreshMutex_);
 
     // Recheck in case this code was already refreshed
     if (version_ >= version) {
@@ -90,7 +90,8 @@ size_t Core::refresh(size_t version) {
     }
 
     try {
-      VersionedData newData{creator_(), version};
+      VersionedData newData{
+          creator_(), version, std::chrono::system_clock::now()};
       if (!newData.data) {
         throw std::logic_error("Observer creator returned nullptr.");
       }
@@ -147,8 +148,11 @@ void Core::setForceRefresh() {
   forceRefresh_ = true;
 }
 
-Core::Core(folly::Function<std::shared_ptr<const void>()> creator)
-    : creator_(std::move(creator)) {}
+Core::Core(
+    folly::Function<std::shared_ptr<const void>()> creator,
+    CreatorContext creatorContext)
+    : creator_(std::move(creator)),
+      creatorContext_(std::move(creatorContext)) {}
 
 Core::~Core() {
   dependencies_.withWLock([](const Dependencies& dependencies) {
@@ -158,8 +162,11 @@ Core::~Core() {
   });
 }
 
-Core::Ptr Core::create(folly::Function<std::shared_ptr<const void>()> creator) {
-  auto core = Core::Ptr(new Core(std::move(creator)));
+Core::Ptr Core::create(
+    folly::Function<std::shared_ptr<const void>()> creator,
+    CreatorContext creatorContext) {
+  auto core =
+      Core::Ptr(new Core(std::move(creator), std::move(creatorContext)));
   return core;
 }
 

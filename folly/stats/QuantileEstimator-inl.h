@@ -26,7 +26,10 @@ QuantileEstimates estimatesFromDigest(
 
 template <typename ClockT>
 SimpleQuantileEstimator<ClockT>::SimpleQuantileEstimator()
-    : bufferedDigest_(std::chrono::seconds{1}, 1000, 100) {}
+    : bufferedDigest_(
+          std::chrono::seconds{1},
+          TDigest::kDefaultBufferSize,
+          TDigest::kDefaultMaxSize) {}
 
 template <typename ClockT>
 QuantileEstimates SimpleQuantileEstimator<ClockT>::estimateQuantiles(
@@ -43,7 +46,11 @@ void SimpleQuantileEstimator<ClockT>::addValue(double value, TimePoint now) {
 template <typename ClockT>
 SlidingWindowQuantileEstimator<ClockT>::SlidingWindowQuantileEstimator(
     Duration windowDuration, size_t nWindows)
-    : bufferedSlidingWindow_(nWindows, windowDuration, 1000, 100) {}
+    : bufferedSlidingWindow_(
+          nWindows,
+          windowDuration,
+          TDigest::kDefaultBufferSize,
+          TDigest::kDefaultMaxSize) {}
 
 template <typename ClockT>
 QuantileEstimates SlidingWindowQuantileEstimator<ClockT>::estimateQuantiles(
@@ -57,6 +64,44 @@ template <typename ClockT>
 void SlidingWindowQuantileEstimator<ClockT>::addValue(
     double value, TimePoint now) {
   bufferedSlidingWindow_.append(value, now);
+}
+
+template <typename ClockT>
+MultiSlidingWindowQuantileEstimator<
+    ClockT>::MultiSlidingWindowQuantileEstimator(Range<const WindowDef*> defs)
+    : bufferedMultiSlidingWindow_(
+          defs, TDigest::kDefaultBufferSize, TDigest::kDefaultMaxSize) {}
+
+template <typename ClockT>
+auto MultiSlidingWindowQuantileEstimator<ClockT>::estimateQuantiles(
+    Range<const double*> quantiles, TimePoint now) -> MultiQuantileEstimates {
+  auto digests = bufferedMultiSlidingWindow_.get(now);
+  MultiQuantileEstimates result;
+  result.allTime = detail::estimatesFromDigest(digests.allTime, quantiles);
+  result.windows.reserve(digests.windows.size());
+  for (auto& w : digests.windows) {
+    result.windows.push_back(
+        detail::estimatesFromDigest(TDigest::merge(w), quantiles));
+  }
+  return result;
+}
+
+template <typename ClockT>
+void MultiSlidingWindowQuantileEstimator<ClockT>::addValue(
+    double value, TimePoint now) {
+  bufferedMultiSlidingWindow_.append(value, now);
+}
+
+template <typename ClockT>
+auto MultiSlidingWindowQuantileEstimator<ClockT>::getDigests(TimePoint now)
+    -> Digests {
+  auto digests = bufferedMultiSlidingWindow_.get(now);
+  std::vector<TDigest> windowDigests;
+  windowDigests.reserve(digests.windows.size());
+  for (auto& w : digests.windows) {
+    windowDigests.push_back(TDigest::merge(w));
+  }
+  return Digests{std::move(digests.allTime), std::move(windowDigests)};
 }
 
 } // namespace folly

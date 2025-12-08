@@ -168,6 +168,8 @@ void ThreadPoolExecutor::runTask(const ThreadPtr& thread, Task&& task) {
     observer.taskProcessed(taskInfo);
   });
 
+  thread->processedTasks = thread->processedTasks + 1;
+
   thread->idle.store(true, std::memory_order_relaxed);
   thread->lastActiveTime.store(
       std::chrono::steady_clock::now(), std::memory_order_relaxed);
@@ -266,7 +268,8 @@ void ThreadPoolExecutor::addThreads(size_t n) {
 
 // threadListLock_ is writelocked
 void ThreadPoolExecutor::removeThreads(size_t n, bool isJoin) {
-  isJoin_ = isJoin;
+  // Block early thread stopping.
+  isJoin_.store(isJoin, std::memory_order_release);
   stopThreads(n);
 }
 
@@ -317,6 +320,7 @@ ThreadPoolExecutor::PoolStats ThreadPoolExecutor::getPoolStats() const {
   ThreadPoolExecutor::PoolStats stats;
   size_t activeTasks = 0;
   size_t idleAlive = 0;
+  uint64_t processedTasks = stoppedThreadProcessedTasks_;
   for (const auto& thread : threadList_.get()) {
     if (thread->idle.load(std::memory_order_relaxed)) {
       const std::chrono::nanoseconds idleTime =
@@ -326,9 +330,11 @@ ThreadPoolExecutor::PoolStats ThreadPoolExecutor::getPoolStats() const {
     } else {
       activeTasks++;
     }
+    processedTasks += thread->processedTasks;
   }
   stats.pendingTaskCount = getPendingTaskCountImpl();
   stats.totalTaskCount = stats.pendingTaskCount + activeTasks;
+  stats.processedTaskCount = processedTasks;
 
   stats.threadCount = maxThreads_.load(std::memory_order_relaxed);
   stats.activeThreadCount =
@@ -395,8 +401,8 @@ void ThreadPoolExecutor::addTaskObserver(
 }
 
 BlockingQueueAddResult ThreadPoolExecutor::StoppedThreadQueue::add(
-    ThreadPoolExecutor::ThreadPtr item) {
-  std::lock_guard<std::mutex> guard(mutex_);
+    ThreadPoolExecutor::ThreadPtr&& item) {
+  std::lock_guard guard(mutex_);
   queue_.push(std::move(item));
   return sem_.post();
 }
@@ -404,7 +410,7 @@ BlockingQueueAddResult ThreadPoolExecutor::StoppedThreadQueue::add(
 ThreadPoolExecutor::ThreadPtr ThreadPoolExecutor::StoppedThreadQueue::take() {
   while (true) {
     {
-      std::lock_guard<std::mutex> guard(mutex_);
+      std::lock_guard guard(mutex_);
       if (!queue_.empty()) {
         auto item = std::move(queue_.front());
         queue_.pop();
@@ -420,7 +426,7 @@ ThreadPoolExecutor::StoppedThreadQueue::try_take_for(
     std::chrono::milliseconds time) {
   while (true) {
     {
-      std::lock_guard<std::mutex> guard(mutex_);
+      std::lock_guard guard(mutex_);
       if (!queue_.empty()) {
         auto item = std::move(queue_.front());
         queue_.pop();
@@ -434,7 +440,7 @@ ThreadPoolExecutor::StoppedThreadQueue::try_take_for(
 }
 
 size_t ThreadPoolExecutor::StoppedThreadQueue::size() {
-  std::lock_guard<std::mutex> guard(mutex_);
+  std::lock_guard guard(mutex_);
   return queue_.size();
 }
 

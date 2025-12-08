@@ -36,6 +36,7 @@
 #include <folly/lang/SafeAssert.h>
 #include <folly/portability/Config.h>
 #include <folly/portability/FmtCompile.h>
+#include <folly/system/AtFork.h>
 // Before registrationComplete() we cannot assume that glog has been
 // initialized, so we need to use RAW_LOG for any message that may be logged
 // before that.
@@ -43,6 +44,8 @@
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__)
 #define FOLLY_SINGLETON_HAVE_DLSYM 1
+#else
+#define FOLLY_SINGLETON_HAVE_DLSYM 0
 #endif
 
 namespace folly {
@@ -61,8 +64,12 @@ SingletonVault::Type SingletonVault::defaultVaultType() {
       detail::singleton_hs_init_weak || dlsym(RTLD_DEFAULT, "hs_init");
   bool isJVM = dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
   bool isD = dlsym(RTLD_DEFAULT, "_d_run_main");
+  bool isCgo = dlsym(RTLD_DEFAULT, "_cgo_topofstack") ||
+      dlsym(RTLD_DEFAULT, "_cgo_panic");
 
-  return isPython || isHaskell || isJVM || isD ? Type::Relaxed : Type::Strict;
+  return isPython || isHaskell || isJVM || isD || isCgo
+      ? Type::Relaxed
+      : Type::Strict;
 #else
   return Type::Relaxed;
 #endif

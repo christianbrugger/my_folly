@@ -16,7 +16,6 @@
 
 #include <folly/json/bser/Bser.h>
 
-#include <folly/String.h>
 #include <folly/io/Cursor.h>
 
 using namespace folly;
@@ -28,11 +27,12 @@ static dynamic parseBser(Cursor& curs);
 
 template <typename... ARGS>
 [[noreturn]] static void throwDecodeError(Cursor& curs, ARGS&&... args) {
-  throw BserDecodeError(folly::to<std::string>(
-      std::forward<ARGS>(args)...,
-      " with ",
-      curs.length(),
-      " bytes remaining in cursor"));
+  throw BserDecodeError(
+      folly::to<std::string>(
+          std::forward<ARGS>(args)...,
+          " with ",
+          curs.length(),
+          " bytes remaining in cursor"));
 }
 
 static int64_t decodeInt(Cursor& curs) {

@@ -100,6 +100,21 @@ TEST(ExceptionWrapper, members) {
   EXPECT_EQ(ew.class_name(), kRuntimeErrorClassName);
 }
 
+TEST(ExceptionWrapper, equality) {
+  auto ew = make_exception_wrapper<std::runtime_error>("wat");
+  EXPECT_EQ(ew, ew);
+
+  auto ewSame = ew;
+  EXPECT_EQ(ew, ewSame);
+
+  // Before C++20, operator!= is not defaulted based on operator==
+#if FOLLY_CPLUSPLUS >= 202002L
+  auto ewDiff = make_exception_wrapper<std::runtime_error>("wat");
+  EXPECT_NE(ewDiff, ew);
+  EXPECT_NE(ewDiff, ewSame);
+#endif
+}
+
 TEST(ExceptionWrapper, tryAndCatchTest) {
   auto ew4 = try_and_catch([] { throw 17; });
   EXPECT_TRUE(bool(ew4));
@@ -374,11 +389,64 @@ TEST(ExceptionWrapper, withExceptionPtrAnyNilTest) {
   EXPECT_FALSE(ew.is_compatible_with<int>());
 }
 
-TEST(ExceptionWrapper, withExceptionDeduction) {
-  auto ew = make_exception_wrapper<std::runtime_error>("hi");
-  EXPECT_TRUE(ew.with_exception([](std::runtime_error&) {}));
-  EXPECT_TRUE(ew.with_exception([](std::exception&) {}));
-  EXPECT_FALSE(ew.with_exception([](std::logic_error&) {}));
+TEST(ExceptionWrapper, get_exception_from_exception_wrapper) {
+  static_assert(
+      std::is_invocable_v<
+          get_exception_fn<std::exception>,
+          const exception_wrapper&>);
+  static_assert(
+      std::is_invocable_v<
+          get_mutable_exception_fn<std::exception>,
+          exception_wrapper&>);
+  static_assert(
+      !std::is_invocable_v<
+          get_mutable_exception_fn<std::exception>,
+          const exception_wrapper&>);
+
+  // Unsafe to extract a pointer out of rvalues
+  static_assert(
+      !std::is_invocable_v<
+          get_exception_fn<std::exception>,
+          const exception_wrapper&&>);
+  static_assert(
+      !std::is_invocable_v<
+          get_mutable_exception_fn<std::exception>,
+          exception_wrapper&&>);
+
+  auto ew = make_exception_wrapper<std::runtime_error>("foo");
+
+  EXPECT_EQ(nullptr, get_exception<std::system_error>(ew));
+  EXPECT_EQ(nullptr, get_mutable_exception<std::system_error>(ew));
+
+  EXPECT_STREQ("foo", get_exception<std::exception>(ew)->what());
+  EXPECT_STREQ("foo", get_exception<const std::exception>(ew)->what());
+  EXPECT_STREQ("foo", get_exception<>(ew)->what());
+  EXPECT_STREQ("foo", get_exception<>(std::as_const(ew))->what());
+  EXPECT_STREQ("foo", get_mutable_exception<>(ew)->what());
+
+  EXPECT_STREQ("foo", get_exception<std::runtime_error>(ew)->what());
+  EXPECT_STREQ("foo", get_mutable_exception<std::runtime_error>(ew)->what());
+
+  auto expected_p = ew.get_exception<std::runtime_error>();
+  EXPECT_EQ(expected_p, get_exception<std::runtime_error>(ew));
+  EXPECT_EQ(expected_p, get_mutable_exception<std::runtime_error>(ew));
+
+  static_assert(
+      std::is_same_v<
+          const std::runtime_error*,
+          decltype(get_exception<std::runtime_error>(ew))>);
+  static_assert(
+      std::is_same_v<
+          const std::runtime_error*,
+          decltype(get_exception<const std::runtime_error>(ew))>);
+  static_assert(
+      std::is_same_v<
+          const std::runtime_error*,
+          decltype(get_exception<std::runtime_error>(std::as_const(ew)))>);
+  static_assert(
+      std::is_same_v<
+          std::runtime_error*,
+          decltype(get_mutable_exception<std::runtime_error>(ew))>);
 }
 
 TEST(ExceptionWrapper, withExceptionDeductionExnConst) {
@@ -397,9 +465,11 @@ TEST(ExceptionWrapper, withExceptionDeductionWrapConstExnConst) {
 
 TEST(ExceptionWrapper, withExceptionDeductionReturning) {
   auto ew = make_exception_wrapper<std::runtime_error>("hi");
-  EXPECT_TRUE(ew.with_exception([](std::runtime_error&) { return 3; }));
-  EXPECT_TRUE(ew.with_exception([](std::exception&) { return "hello"; }));
-  EXPECT_FALSE(ew.with_exception([](std::logic_error&) { return nullptr; }));
+  EXPECT_TRUE(ew.with_exception([](const std::runtime_error&) { return 3; }));
+  EXPECT_TRUE(ew.with_exception([](const std::exception&) { return "hello"; }));
+  EXPECT_FALSE(ew.with_exception([](const std::logic_error&) {
+    return nullptr;
+  }));
 }
 
 namespace {
@@ -411,9 +481,9 @@ T& r_to_l(T v) {
 
 TEST(ExceptionWrapper, withExceptionDeductionFunctorLvalue) {
   auto ew = make_exception_wrapper<std::runtime_error>("hi");
-  EXPECT_TRUE(ew.with_exception(r_to_l([](std::runtime_error&) {})));
-  EXPECT_TRUE(ew.with_exception(r_to_l([](std::exception&) {})));
-  EXPECT_FALSE(ew.with_exception(r_to_l([](std::logic_error&) {})));
+  EXPECT_TRUE(ew.with_exception(r_to_l([](const std::runtime_error&) {})));
+  EXPECT_TRUE(ew.with_exception(r_to_l([](const std::exception&) {})));
+  EXPECT_FALSE(ew.with_exception(r_to_l([](const std::logic_error&) {})));
 }
 
 TEST(ExceptionWrapper, nonStdExceptionTest) {
@@ -435,9 +505,28 @@ TEST(ExceptionWrapper, nonStdExceptionTest) {
   }
 }
 
-TEST(ExceptionWrapper, exceptionStr) {
+TEST(ExceptionWrapper, formatNoException) {
+  exception_wrapper ew;
+  auto expected = "";
+  EXPECT_EQ(expected, ew.what());
+  EXPECT_EQ(expected, exceptionStr(ew));
+  EXPECT_EQ(expected, fmt::format("{}", ew));
+}
+
+TEST(ExceptionWrapper, formatStdException) {
   auto ew = make_exception_wrapper<std::runtime_error>("argh");
-  EXPECT_EQ(kRuntimeErrorClassName + ": argh", exceptionStr(ew));
+  auto expected = kRuntimeErrorClassName + ": argh";
+  EXPECT_EQ(expected, ew.what());
+  EXPECT_EQ(expected, exceptionStr(ew));
+  EXPECT_EQ(expected, fmt::format("{}", ew));
+}
+
+TEST(ExceptionWrapper, formatNonStdException) {
+  int inner = 17;
+  auto ew = exception_wrapper{std::make_exception_ptr(inner)};
+  EXPECT_EQ(kIntClassName, ew.what());
+  EXPECT_EQ(kIntClassName, exceptionStr(ew));
+  EXPECT_EQ(kIntClassName, fmt::format("{}", ew));
 }
 
 TEST(ExceptionWrapper, throwExceptionNoexception) {

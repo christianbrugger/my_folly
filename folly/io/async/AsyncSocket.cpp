@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <folly/io/async/AsyncSocket.h>
 
 #include <sys/types.h>
@@ -24,7 +25,6 @@
 #include <boost/preprocessor/control/if.hpp>
 
 #include <folly/Exception.h>
-#include <folly/Format.h>
 #include <folly/Portability.h>
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
@@ -57,7 +57,7 @@ class ZeroCopyMMapMemStoreFallback : public ZeroCopyMemStore {
   void put(ZeroCopyMemStore::Entry* /*entry*/) override {}
 };
 
-#if TCP_ZEROCOPY_RECEIVE
+#if defined(TCP_ZEROCOPY_RECEIVE)
 std::unique_ptr<folly::IOBuf> getRXZeroCopyIOBuf(
     ZeroCopyMemStore::EntryPtr&& ptr) {
   auto* entry = ptr.release();
@@ -104,7 +104,7 @@ class ZeroCopyMMapMemStoreReal : public ZeroCopyMemStore {
   }
 
   ZeroCopyMemStore::EntryPtr get() override {
-    std::unique_lock<std::mutex> lk(availMutex_);
+    std::unique_lock lk(availMutex_);
     if (!avail_.empty()) {
       auto* entry = avail_.front();
       avail_.pop_front();
@@ -128,7 +128,7 @@ class ZeroCopyMMapMemStoreReal : public ZeroCopyMemStore {
         DCHECK(!ret);
       }
 
-      std::unique_lock<std::mutex> lk(availMutex_);
+      std::unique_lock lk(availMutex_);
       avail_.push_back(entry);
     }
   }
@@ -647,7 +647,9 @@ void disableTransparentFunctions(
   if (noTransparentTls) {
     // Ignore return value, errors are ok
     VLOG(5) << "Disabling TTLS for fd " << fd;
-    netops::setsockopt(fd, SOL_SOCKET, SO_NO_TRANSPARENT_TLS, nullptr, 0);
+    __u8 optval = FOLLY_SO_TTLS_TRUSTED_VAL_ENCRYPTED;
+    netops::setsockopt(
+        fd, SOL_SOCKET, FOLLY_SO_TTLS_TRUSTED, &optval, sizeof(optval));
   }
   if (noTSocks) {
     VLOG(5) << "Disabling TSOCKS for fd " << fd;
@@ -930,6 +932,9 @@ void AsyncSocket::connect(
           withAddr("failed to put socket in non-blocking mode"),
           errnoCopy);
     }
+    if (tosOrTrafficClass_) {
+      setTosOrTrafficClass(*tosOrTrafficClass_);
+    }
 
 #if !defined(MSG_NOSIGNAL) && defined(F_SETNOSIGPIPE)
     // iOS and OS X don't support MSG_NOSIGNAL; set F_SETNOSIGPIPE instead
@@ -982,15 +987,18 @@ void AsyncSocket::connect(
     // bind the socket
     if (bindAddr != anyAddress()) {
       int one = 1;
-#if defined(IP_BIND_ADDRESS_NO_PORT) && !FOLLY_MOBILE
+#if defined(IP_BIND_ADDRESS_NO_PORT) && !FOLLY_MOBILE && !defined(_WIN32) && \
+    !defined(__APPLE__)
       // If the any port is specified with a non-any address this is typically
       // a client socket. However, calling bind before connect without
       // IP_BIND_ADDRESS_NO_PORT forces the OS to find a unique port relying
       // on only the local tuple. This limits the range of available ephemeral
       // ports.  Using the IP_BIND_ADDRESS_NO_PORT delays assigning a port until
-      // connect expanding the available port range.
+      // connect expanding the available port range, unless
+      // setBindAddressNoPort() is called.
       if (bindAddr.getPort() == 0) {
-        if (netops_->setsockopt(
+        if (bindAddressNoPort_ &&
+            netops_->setsockopt(
                 fd_, IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, &one, sizeof(one))) {
           auto errnoCopy = errno;
           doClose();
@@ -1588,8 +1596,9 @@ void AsyncSocket::enableByteEvents() {
     if (NetworkSocket() == fd_ || !good()) {
       throw AsyncSocketException(
           AsyncSocketException::INVALID_STATE,
-          withAddr("failed to enable byte events: "
-                   "socket is not open or not in a good state"));
+          withAddr(
+              "failed to enable byte events: "
+              "socket is not open or not in a good state"));
     }
     folly::SocketAddress addr = {};
     try {
@@ -1599,8 +1608,9 @@ void AsyncSocket::enableByteEvents() {
     } catch (const std::system_error&) {
       throw AsyncSocketException(
           AsyncSocketException::INVALID_STATE,
-          withAddr("failed to enable byte events: "
-                   "socket is not open or not in a good state"));
+          withAddr(
+              "failed to enable byte events: "
+              "socket is not open or not in a good state"));
     }
     const auto family = addr.getFamily();
     if (family != AF_INET && family != AF_INET6) {
@@ -1619,16 +1629,18 @@ void AsyncSocket::enableByteEvents() {
       if (0 != ret) {
         throw AsyncSocketException(
             AsyncSocketException::INTERNAL_ERROR,
-            withAddr("failed to enable byte events: "
-                     "timestamps may not be supported for this socket type "
-                     "or socket be closed"),
+            withAddr(
+                "failed to enable byte events: "
+                "timestamps may not be supported for this socket type "
+                "or socket be closed"),
             getSockOptErrno);
       }
       if (0 != flags) {
         throw AsyncSocketException(
             AsyncSocketException::INTERNAL_ERROR,
-            withAddr("failed to enable byte events: "
-                     "timestamps may have already been enabled"),
+            withAddr(
+                "failed to enable byte events: "
+                "timestamps may have already been enabled"),
             getSockOptErrno);
       }
     }
@@ -1692,7 +1704,7 @@ void AsyncSocket::enableByteEvents() {
     // [1]
     // https://github.com/torvalds/linux/commit/b534dc46c8ae0165b1b2509be24dbea4fa9c4011
 
-    while (byteEventsEnabledMaxAttempts++ < SO_MAX_ATTEMPTS_ENABLE_BYTEEVENTS) {
+    while (byteEventsEnabledMaxAttempts++ < kMaxAttemptsEnableByteEvents) {
       folly::TcpInfo::LookupOptions options = {};
       options.getMemInfo = true;
       const auto expectTInfoBefore = getTcpInfo(options);
@@ -1752,7 +1764,7 @@ void AsyncSocket::enableByteEvents() {
       }
     }
 
-    if (byteEventsEnabledMaxAttempts > SO_MAX_ATTEMPTS_ENABLE_BYTEEVENTS) {
+    if (byteEventsEnabledMaxAttempts > kMaxAttemptsEnableByteEvents) {
       throw AsyncSocketException(
           AsyncSocketException::INTERNAL_ERROR,
           withAddr(
@@ -2424,7 +2436,7 @@ void AsyncSocket::getPeerAddress(folly::SocketAddress* address) const {
   *address = addr_;
 }
 
-bool AsyncSocket::getTFOSucceded() const {
+bool AsyncSocket::getTFOSucceeded() const {
   return detail::tfo_succeeded(fd_);
 }
 
@@ -2691,7 +2703,7 @@ AsyncSocket::ReadResult AsyncSocket::performReadMsg(
     struct ::msghdr& msg,
     // This is here only to preserve AsyncSSLSocket's legacy semi-broken
     // behavior (D43648653 for context).
-    AsyncReader::ReadCallback::ReadMode) {
+    AsyncReader::ReadCallback::ReadMode readMode) {
   VLOG(5) << "AsyncSocket::performReadMsg() this=" << this
           << ", iovs=" << msg.msg_iov << ", num=" << msg.msg_iovlen;
 
@@ -2725,7 +2737,32 @@ AsyncSocket::ReadResult AsyncSocket::performReadMsg(
   }
 
   ssize_t bytes = 0;
-  if (readAncillaryDataCallback_ == nullptr && msg.msg_iovlen == 1) {
+  if (readMode == AsyncReader::ReadCallback::ReadMode::ReadZC) {
+    DestructorGuard dg(this);
+    // ReadZC is async, where the current code path triggered from POLLIN will
+    // issue the request but the completion happens at a later point.
+    // AsyncSocket reads are level triggered so it is possible for another
+    // ReadZC request to be issued before an already issued request has
+    // completed. To fix this, unset the readCB.
+    auto readCallback = readCallback_;
+    setReadCB(nullptr);
+    auto backend = getEventBase()->getBackend();
+    auto readZcCallback = [guard = std::move(dg), readCallback](ssize_t len) {
+      if (len < 0) {
+        AsyncSocketException ex(
+            AsyncSocketException::INTERNAL_ERROR, "ReadZC failed", len);
+        readCallback->readErr(ex);
+      } else {
+        readCallback->readDataAvailable(len);
+      }
+    };
+    backend->queueRecvZc(
+        fd_.toFd(),
+        msg.msg_iov[0].iov_base,
+        msg.msg_iov[0].iov_len,
+        std::move(readZcCallback));
+    return ReadResult(READ_ASYNC);
+  } else if (readAncillaryDataCallback_ == nullptr && msg.msg_iovlen == 1) {
     bytes = netops_->recv(
         fd_, msg.msg_iov[0].iov_base, msg.msg_iov[0].iov_len, MSG_DONTWAIT);
   } else {
@@ -2899,24 +2936,27 @@ size_t AsyncSocket::handleErrMessages() noexcept {
           AsyncSocketException ex(
               AsyncSocketException::INTERNAL_ERROR,
               withAddr(
-                  string("AsyncSocket::handleErrMessages(), "
-                         "internal exception during ByteEvent processing: ") +
+                  string(
+                      "AsyncSocket::handleErrMessages(), "
+                      "internal exception during ByteEvent processing: ") +
                   behEx.what()));
           failByteEvents(ex);
         } catch (const std::exception& ex) {
           AsyncSocketException tex(
               AsyncSocketException::UNKNOWN,
-              string("AsyncSocket::handleErrMessages(), "
-                     "unhandled exception during ByteEvent processing, "
-                     "threw exception: ") +
+              string(
+                  "AsyncSocket::handleErrMessages(), "
+                  "unhandled exception during ByteEvent processing, "
+                  "threw exception: ") +
                   ex.what());
           failByteEvents(tex);
         } catch (...) {
           AsyncSocketException tex(
               AsyncSocketException::UNKNOWN,
-              string("AsyncSocket::handleErrMessages(), "
-                     "unhandled exception during ByteEvent processing, "
-                     "threw non-exception type"));
+              string(
+                  "AsyncSocket::handleErrMessages(), "
+                  "unhandled exception during ByteEvent processing, "
+                  "threw non-exception type"));
           failByteEvents(tex);
         }
       }
@@ -3052,7 +3092,7 @@ void AsyncSocket::splitIovecArray(
 }
 
 AsyncSocket::ReadCode AsyncSocket::processZeroCopyRead() {
-#if TCP_ZEROCOPY_RECEIVE
+#if defined(TCP_ZEROCOPY_RECEIVE)
   if (zerocopyReadDisabled_) {
     return ReadCode::READ_NOT_SUPPORTED;
   }
@@ -3088,6 +3128,8 @@ AsyncSocket::ReadCode AsyncSocket::processZeroCopyRead() {
 
   zc.address = reinterpret_cast<uint64_t>(ptr->data);
   zc.length = ptr->capacity;
+  assert(uintptr_t(zc.address) % sysconf(_SC_PAGESIZE) == 0);
+  assert(zc.length % sysconf(_SC_PAGESIZE) == 0);
   auto zc_length = zc.length;
 
   zc.copybuf_address = reinterpret_cast<__u64>(copybuf);
@@ -3103,8 +3145,10 @@ AsyncSocket::ReadCode AsyncSocket::processZeroCopyRead() {
     // the kernel. Only once we have seen 0 bytes returned from the kernel do we
     // want to return the error to the caller.
     if (zc.err) {
-      zerocopyReadErr_ = zc.err;
+      zerocopyReadErr_ = -zc.err; // note: zc.err <= 0
     }
+
+    assert(zc.length % sysconf(_SC_PAGESIZE) == 0);
 
     auto len = zc.length + zc.copybuf_len;
 
@@ -3197,8 +3241,9 @@ AsyncSocket::ReadCode AsyncSocket::processNormalRead() {
   } catch (const std::exception& ex) {
     AsyncSocketException tex(
         AsyncSocketException::BAD_ARGS,
-        string("ReadCallback::getReadBuffer() "
-               "threw exception: ") +
+        string(
+            "ReadCallback::getReadBuffer() "
+            "threw exception: ") +
             ex.what());
     return failRead(__func__, tex);
   } catch (...) {
@@ -3222,7 +3267,7 @@ AsyncSocket::ReadCode AsyncSocket::processNormalRead() {
   // `performReadMsg` go through `recvmsg` (e.g., "pre-received data" and
   // "recv" are possibilities).  For those that do not, we want at a minimum
   // `msg_controllen` and `msg_flags` to be zero.
-  struct ::msghdr msg {};
+  struct ::msghdr msg{};
   // Dest address info
   msg.msg_name = nullptr;
   msg.msg_namelen = 0;
@@ -3245,7 +3290,12 @@ AsyncSocket::ReadCode AsyncSocket::processNormalRead() {
     DCHECK(readCallback_);
     if (readAncillaryDataCallback_) {
       auto prevReadCallback = readCallback_;
-      readAncillaryDataCallback_->ancillaryData(msg);
+
+      auto ancillaryDataRes = readAncillaryDataCallback_->ancillaryData(msg);
+      if (ancillaryDataRes.hasError()) {
+        return failRead(__func__, ancillaryDataRes.error());
+      }
+
       if (FOLLY_UNLIKELY(readCallback_ != prevReadCallback)) {
         // The `ancillaryData` callback is allowed to close the socket,
         // but otherwise is not allowed to change/replace the read callback.
@@ -3257,7 +3307,7 @@ AsyncSocket::ReadCode AsyncSocket::processNormalRead() {
       }
       // `ancillaryData()` is expected to check and error on this, since
       // it's probably incorrect to process truncated ancillary data.  If
-      // some bizarro callback wants to treat this as recoverable, it can
+      // some bizarre callback wants to treat this as recoverable, it can
       // clear `MSG_CTRUNC` on `msg_flags` before returning.
       //
       // Don't move this: `performReadMsg` doesn't guarantee that `msg_flags`
@@ -3295,6 +3345,8 @@ AsyncSocket::ReadCode AsyncSocket::processNormalRead() {
         withAddr("recv() failed"),
         errnoCopy);
     return failRead(__func__, ex);
+  } else if (bytesRead == READ_ASYNC) {
+    return ReadCode::READ_DONE;
   } else {
     assert(bytesRead == READ_EOF);
     readErr_ = READ_EOF;
@@ -3312,8 +3364,6 @@ AsyncSocket::ReadCode AsyncSocket::processNormalRead() {
     callback->readEOF();
     return ReadCode::READ_DONE;
   }
-
-  return ReadCode::READ_DONE; // redundant
 }
 
 void AsyncSocket::handleRead() noexcept {
@@ -3537,7 +3587,7 @@ void AsyncSocket::handleInitialReadWrite() noexcept {
   DestructorGuard dg(this);
   // If we have a readCallback_, make sure we enable read events.  We
   // may already be registered for reads if connectSuccess() set
-  // the read calback.
+  // the read callback.
   if (readCallback_ && !(eventFlags_ & EventHandler::READ)) {
     assert(state_ == StateEnum::ESTABLISHED);
     assert((shutdownFlags_ & SHUT_READ) == 0);
@@ -3594,20 +3644,16 @@ void AsyncSocket::handleConnect() noexcept {
         AsyncSocketException::INTERNAL_ERROR,
         withAddr("error calling getsockopt() after connect"),
         errnoCopy);
-    if (std::getenv("DISABLE_ASYNC_SOCKET_PRINT") == nullptr) {
-      VLOG(4) << "AsyncSocket::handleConnect(this=" << this << ", fd=" << fd_
-              << " host=" << addr_.describe() << ") exception:" << ex.what();
-    }
+    VLOG(4) << "AsyncSocket::handleConnect(this=" << this << ", fd=" << fd_
+            << " host=" << addr_.describe() << ") exception:" << ex.what();
     return failConnect(__func__, ex);
   }
 
   if (error != 0) {
     AsyncSocketException ex(
         AsyncSocketException::NOT_OPEN, "connect failed", error);
-    if (std::getenv("DISABLE_ASYNC_SOCKET_PRINT") == nullptr) {
-      VLOG(2) << "AsyncSocket::handleConnect(this=" << this << ", fd=" << fd_
-              << " host=" << addr_.describe() << ") exception: " << ex.what();
-    }
+    VLOG(2) << "AsyncSocket::handleConnect(this=" << this << ", fd=" << fd_
+            << " host=" << addr_.describe() << ") exception: " << ex.what();
     return failConnect(__func__, ex);
   }
 
@@ -3662,8 +3708,7 @@ void AsyncSocket::timeoutExpired() noexcept {
     if (connectCallback_) {
       AsyncSocketException ex(
           AsyncSocketException::TIMED_OUT,
-          folly::sformat(
-              "connect timed out after {}ms", connectTimeout_.count()));
+          fmt::format("connect timed out after {}ms", connectTimeout_.count()));
       failConnect(__func__, ex);
     } else {
       // we faced a connect error without a connect callback, which could
@@ -3676,7 +3721,7 @@ void AsyncSocket::timeoutExpired() noexcept {
     // a normal write operation timed out
     AsyncSocketException ex(
         AsyncSocketException::TIMED_OUT,
-        folly::sformat("write timed out after {}ms", sendTimeout_));
+        fmt::format("write timed out after {}ms", sendTimeout_));
     failWrite(__func__, ex);
   }
 }
@@ -3895,7 +3940,7 @@ AsyncSocket::WriteResult AsyncSocket::sendSocketMessage(
     if (totalWritten >= 0) {
       tfoInfo_.finished = true;
       state_ = StateEnum::ESTABLISHED;
-      // We schedule this asynchrously so that we don't end up
+      // We schedule this asynchronously so that we don't end up
       // invoking initial read or write while a write is in progress.
       scheduleInitialReadWrite();
     } else if (errno == EINPROGRESS) {
@@ -4474,6 +4519,42 @@ std::string AsyncSocket::withAddr(folly::StringPiece s) {
       s,
       peer.describe(),
       kIsMobile ? "" : fmt::format(", local={}", local.describe()));
+}
+
+void AsyncSocket::setTosOrTrafficClass(int tosOrTrafficClass) {
+#if defined(_WIN32)
+  throw AsyncSocketException(
+      AsyncSocketException::INTERNAL_ERROR,
+      withAddr("setting tos or traffic class not supported on windows"));
+#else
+  tosOrTrafficClass_ = tosOrTrafficClass;
+  cachePeerAddress();
+  if (!addr_.isInitialized()) {
+    return;
+  }
+  auto family = addr_.getFamily();
+  int ret = 0;
+  if (family == AF_INET6) {
+    // For IPv6 set the traffic class field
+    ret = netops_->setsockopt(
+        fd_,
+        IPPROTO_IPV6,
+        IPV6_TCLASS,
+        &tosOrTrafficClass,
+        sizeof(tosOrTrafficClass));
+  } else {
+    // For IPv4 set the TOS field
+    ret = netops_->setsockopt(
+        fd_, IPPROTO_IP, IP_TOS, &tosOrTrafficClass, sizeof(tosOrTrafficClass));
+  }
+  if (ret != 0) {
+    auto errnoCopy = errno;
+    throw AsyncSocketException(
+        AsyncSocketException::INTERNAL_ERROR,
+        withAddr("failed to set tos"),
+        errnoCopy);
+  }
+#endif
 }
 
 void AsyncSocket::setBufferCallback(BufferCallback* cb) {

@@ -170,9 +170,8 @@ class EventBase
     bool isLoopCallbackScheduled() const { return is_linked(); }
 
    private:
-    typedef boost::intrusive::
-        list<LoopCallback, boost::intrusive::constant_time_size<false>>
-            List;
+    using List = boost::intrusive::
+        list<LoopCallback, boost::intrusive::constant_time_size<false>>;
 
     // EventBase needs access to LoopCallbackList (and therefore to hook_)
     friend class EventBase;
@@ -803,6 +802,7 @@ class EventBase
    */
   size_t getNumLoopCallbacks() const;
 
+  uint32_t getMaxReadAtOnce() const;
   void setMaxReadAtOnce(uint32_t maxAtOnce);
 
   /**
@@ -1003,6 +1003,7 @@ class EventBase
   WorkerProvider* getThreadIdCollector() override;
 
   static std::unique_ptr<EventBaseBackendBase> getDefaultBackend();
+  static std::unique_ptr<EventBaseBackendBase> getTestBackend(int napiId);
 
  protected:
   bool keepAliveAcquire() noexcept override;
@@ -1027,7 +1028,7 @@ class EventBase
    */
   bool nothingHandledYet() const noexcept;
 
-  typedef LoopCallback::List LoopCallbackList;
+  using LoopCallbackList = LoopCallback::List;
 
   bool isSuccess(LoopStatus status);
 

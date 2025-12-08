@@ -125,6 +125,20 @@ Optional<typename Map::mapped_type> get_optional(
 }
 
 /**
+ * Given a map and a key, return a OptionalValue if the key exists and None if
+ * the key does not exist in the map.
+ */
+template <class OptionalValue, class Map, typename Key = typename Map::key_type>
+OptionalValue get_optional(const Map& map, const Key& key) {
+  auto pos = map.find(key);
+  if (pos != map.end()) {
+    return OptionalValue(pos->second);
+  } else {
+    return {};
+  }
+}
+
+/**
  * Given a map and a key, return a reference to the value corresponding to the
  * key in the map, or the given default reference if the key doesn't exist in
  * the map.
@@ -327,9 +341,8 @@ auto get_ptr(
     Map* FOLLY_NULLABLE map,
     const Key1& key1,
     const Key2& key2,
-    const Keys&... keys) ->
-    typename detail::NestedMapType<Map, 2 + sizeof...(Keys)>::
-        type* FOLLY_NULLABLE {
+    const Keys&... keys) -> typename detail::
+    NestedMapType<Map, 2 + sizeof...(Keys)>::type* FOLLY_NULLABLE {
   return map ? get_ptr(*map, key1, key2, keys...) : nullptr;
 }
 

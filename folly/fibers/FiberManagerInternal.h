@@ -100,7 +100,7 @@ class FiberManager : public ::folly::Executor {
      * due to reduced inlining.
      *
      */
-    size_t stackSizeMultiplier{kIsSanitize ? 4 : (kIsDebug ? 2 : 1)};
+    size_t stackSizeMultiplier{kIsSanitize ? 4 : (!kIsOptimize ? 2 : 1)};
 
     /**
      * Record exact amount of stack used.
@@ -482,9 +482,9 @@ class FiberManager : public ::folly::Executor {
 
   size_t recordStackPosition(size_t position);
 
-  typedef folly::IntrusiveList<Fiber, &Fiber::listHook_> FiberTailQueue;
-  typedef folly::IntrusiveList<Fiber, &Fiber::globalListHook_>
-      GlobalFiberTailQueue;
+  using FiberTailQueue = folly::IntrusiveList<Fiber, &Fiber::listHook_>;
+  using GlobalFiberTailQueue =
+      folly::IntrusiveList<Fiber, &Fiber::globalListHook_>;
 
   Fiber* activeFiber_{nullptr}; /**< active fiber, nullptr on main context */
   /**

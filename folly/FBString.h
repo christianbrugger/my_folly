@@ -80,7 +80,7 @@ template <class Pod, class T>
 inline void podFill(Pod* b, Pod* e, T c) {
   assert(b && e && b <= e);
   constexpr auto kUseMemset = sizeof(T) == 1;
-  if /* constexpr */ (kUseMemset) {
+  if constexpr (kUseMemset) {
     memset(b, c, size_t(e - b));
   } else {
     auto const ee = b + ((e - b) & ~7u);
@@ -344,8 +344,9 @@ class fbstring_core {
         return ml_.data_;
       case Category::isLarge:
         return mutableDataLarge();
+      default:
+        folly::assume_unreachable();
     }
-    folly::assume_unreachable();
   }
 
   const Char* c_str() const {
@@ -396,7 +397,7 @@ class fbstring_core {
 
   size_t size() const {
     size_t ret = ml_.size_;
-    if /* constexpr */ (kIsLittleEndian) {
+    if constexpr (kIsLittleEndian) {
       // We can save a couple instructions, because the category is
       // small iff the last char, as unsigned, is <= maxSmallSize.
       typedef typename std::make_unsigned<Char>::type UChar;
@@ -683,31 +684,14 @@ inline void fbstring_core<Char>::initSmall(
       (sizeof(size_t) & (sizeof(size_t) - 1)) == 0,
       "fbstring size assumption violation");
 
-// If data is aligned, use fast word-wise copying. Otherwise,
-// use conservative memcpy.
-// The word-wise path reads bytes which are outside the range of
-// the string, and makes ASan unhappy, so we disable it when
-// compiling with ASan.
-#ifndef FOLLY_SANITIZE_ADDRESS
-  if ((reinterpret_cast<size_t>(data) & (sizeof(size_t) - 1)) == 0) {
-    const size_t byteSize = size * sizeof(Char);
-    constexpr size_t wordWidth = sizeof(size_t);
-    switch ((byteSize + wordWidth - 1) / wordWidth) { // Number of words.
-      case 3:
-        ml_.capacity_ = reinterpret_cast<const size_t*>(data)[2];
-        [[fallthrough]];
-      case 2:
-        ml_.size_ = reinterpret_cast<const size_t*>(data)[1];
-        [[fallthrough]];
-      case 1:
-        ml_.data_ = *reinterpret_cast<Char**>(const_cast<Char*>(data));
-        [[fallthrough]];
-      case 0:
-        break;
-    }
-  } else
-#endif
-  {
+  constexpr size_t kPageSize = 4096;
+
+  const auto addr = reinterpret_cast<uintptr_t>(data);
+  if (!kIsSanitize && // sanitizer would trap on over-reads
+      size && (addr ^ (addr + sizeof(small_) - 1)) < kPageSize) {
+    // the input data is all within one page so over-reads will not segfault
+    std::memcpy(small_, data, sizeof(small_)); // lowers to a 4-insn sequence
+  } else {
     if (size != 0) {
       fbstring_detail::podCopy(data, data + size, small_);
     }
@@ -2841,12 +2825,12 @@ inline std::string&& toStdString(std::string&& s) {
 
 // Hash functions to make fbstring usable with e.g. unordered_map
 
-#define FOLLY_FBSTRING_HASH1(T)                                        \
-  template <>                                                          \
-  struct hash<::folly::basic_fbstring<T>> {                            \
-    size_t operator()(const ::folly::basic_fbstring<T>& s) const {     \
-      return ::folly::hash::fnv32_buf(s.data(), s.size() * sizeof(T)); \
-    }                                                                  \
+#define FOLLY_FBSTRING_HASH1(T)                                               \
+  template <>                                                                 \
+  struct hash<::folly::basic_fbstring<T>> {                                   \
+    size_t operator()(const ::folly::basic_fbstring<T>& s) const {            \
+      return ::folly::hash::fnv32_buf_BROKEN(s.data(), s.size() * sizeof(T)); \
+    }                                                                         \
   };
 
 // The C++11 standard says that these four are defined for basic_string

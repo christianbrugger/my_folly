@@ -21,7 +21,6 @@
 #include <folly/Conv.h>
 
 #include <algorithm>
-#include <cinttypes>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -111,8 +110,8 @@ void testIntegral2String() {}
 
 template <class String, class Int, class... Ints>
 void testIntegral2String() {
-  typedef folly::make_unsigned_t<Int> Uint;
-  typedef folly::make_signed_t<Int> Sint;
+  using Uint = folly::make_unsigned_t<Int>;
+  using Sint = folly::make_signed_t<Int>;
 
   Uint value = 123;
   EXPECT_EQ(to<String>(value), "123");
@@ -137,8 +136,8 @@ void testIntegral2String() {
 #if FOLLY_HAVE_INT128_T
 template <class String>
 void test128Bit2String() {
-  typedef unsigned __int128 Uint;
-  typedef __int128 Sint;
+  using Uint = unsigned __int128;
+  using Sint = __int128;
 
   EXPECT_EQ(detail::digitsEnough<unsigned __int128>(), 39);
 
@@ -227,8 +226,8 @@ void testString2Integral() {}
 
 template <class String, class Int, class... Ints>
 void testString2Integral() {
-  typedef folly::make_unsigned_t<Int> Uint;
-  typedef folly::make_signed_t<Int> Sint;
+  using Uint = folly::make_unsigned_t<Int>;
+  using Sint = folly::make_signed_t<Int>;
 
   // Unsigned numbers small enough to fit in a signed type
   static const String strings[] = {
@@ -977,7 +976,7 @@ TEST(Conv, StringPieceToDouble) {
 }
 
 TEST(Conv, EmptyStringToInt) {
-  string s = "";
+  string s;
   StringPiece pc(s);
 
   try {
@@ -999,7 +998,7 @@ TEST(Conv, CorruptedStringToInt) {
 }
 
 TEST(Conv, EmptyStringToDouble) {
-  string s = "";
+  string s;
   StringPiece pc(s);
 
   try {
@@ -1703,33 +1702,44 @@ void tryStringToFloat(const StrToFloat<String>& strToFloat) {
   }
 
   // NaN
-  const std::array<String, 6> kNanInputs{{
+  const std::array<String, 9> kNanInputs{{
       "nan",
       "NaN",
       "NAN",
       "-nan",
       "-NaN",
       "-NAN",
+      "+nan",
+      "+NaN",
+      "+NAN",
   }};
   for (const auto& input : kNanInputs) {
     auto rv = strToFloat(input);
     EXPECT_TRUE(std::isnan(rv.value())) << input;
   }
 
-  EXPECT_EQ(strToFloat("+nan").error(), ConversionCode::STRING_TO_FLOAT_ERROR);
-
-  const std::array<String, 6> kInfinityInputs{{
+  const std::array<String, 12> kInfinityInputs{{
       "-inf",
       "-INF",
       "-iNf",
       "-infinity",
       "-INFINITY",
       "-INFInITY",
+      "+inf",
+      "+INF",
+      "+iNf",
+      "+infinity",
+      "+INFINITY",
+      "+INFInITY",
   }};
   for (const auto& input : kInfinityInputs) {
     {
       auto rv = strToFloat(input);
-      EXPECT_EQ(rv.value(), -numeric_limits<float>::infinity()) << input;
+      if (input[0] == '-') {
+        EXPECT_EQ(rv.value(), -numeric_limits<float>::infinity()) << input;
+      } else {
+        EXPECT_EQ(rv.value(), numeric_limits<float>::infinity()) << input;
+      }
     }
 
     {
@@ -1738,10 +1748,6 @@ void tryStringToFloat(const StrToFloat<String>& strToFloat) {
       EXPECT_EQ(rv.value(), numeric_limits<float>::infinity()) << positiveInput;
     }
   }
-
-  EXPECT_EQ(
-      strToFloat("+infinity").error(), ConversionCode::STRING_TO_FLOAT_ERROR);
-  EXPECT_EQ(strToFloat("+inf").error(), ConversionCode::STRING_TO_FLOAT_ERROR);
 
   const std::array<String, 15> kScientificNotation{{
       "123.4560e0",

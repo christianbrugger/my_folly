@@ -30,6 +30,17 @@
 namespace folly {
 namespace observer_detail {
 
+#define DEFINE_HAS_MEMBER_FUNC(Member)                                         \
+  template <typename T, typename = std::void_t<>>                              \
+  struct Has_##Member##T : std::false_type {};                                 \
+  template <typename T>                                                        \
+  struct Has_##Member##T<T, std::void_t<decltype(std::declval<T>().Member())>> \
+      : std::true_type {};                                                     \
+  template <typename T>                                                        \
+  constexpr bool Has_##Member##T_v = Has_##Member##T<T>::value;
+
+DEFINE_HAS_MEMBER_FUNC(getName)
+
 class ObserverManager;
 
 /**
@@ -41,22 +52,45 @@ class Core : public std::enable_shared_from_this<Core> {
   using Ptr = std::shared_ptr<Core>;
   using WeakPtr = std::weak_ptr<Core>;
 
+  struct CreatorContext {
+    // type info for the creator function
+    const std::type_info* typeInfo;
+    // type info for the return type of the creator function
+    const std::type_info* invokeResultTypeInfo;
+    std::string name;
+
+    template <typename F>
+    static CreatorContext create(const F& creator) {
+      CreatorContext context;
+      context.typeInfo = &typeid(F);
+      context.invokeResultTypeInfo = &typeid(decltype(FOLLY_DECLVAL(F&&)()));
+      if constexpr (Has_getNameT_v<F>) {
+        context.name = creator.getName();
+      }
+      return context;
+    }
+  };
   /**
    * Blocks until creator is successfully run by ObserverManager
    */
-  static Ptr create(folly::Function<std::shared_ptr<const void>()> creator);
+  static Ptr create(
+      folly::Function<std::shared_ptr<const void>()> creator,
+      CreatorContext creatorContext);
 
   /**
-   * View of the observed object and its version
+   * View of the observed object as well as its version and created time
    */
   struct VersionedData {
+    using TimePoint = std::chrono::system_clock::time_point;
+
     VersionedData() {}
 
-    VersionedData(std::shared_ptr<const void> dat, size_t ver)
-        : data(std::move(dat)), version(ver) {}
+    VersionedData(std::shared_ptr<const void> dat, size_t ver, TimePoint timeC)
+        : data(std::move(dat)), version(ver), timeCreated(timeC) {}
 
     std::shared_ptr<const void> data;
     size_t version{0};
+    TimePoint timeCreated;
   };
 
   /**
@@ -90,10 +124,14 @@ class Core : public std::enable_shared_from_this<Core> {
    */
   void setForceRefresh();
 
+  const CreatorContext& getCreatorContext() const { return creatorContext_; }
+
   ~Core();
 
  private:
-  explicit Core(folly::Function<std::shared_ptr<const void>()> creator);
+  Core(
+      folly::Function<std::shared_ptr<const void>()> creator,
+      CreatorContext creatorContext);
 
   void addDependent(Core::WeakPtr dependent);
   void maybeRemoveStaleDependents();
@@ -114,9 +152,16 @@ class Core : public std::enable_shared_from_this<Core> {
 
   folly::Function<std::shared_ptr<const void>()> creator_;
 
+  CreatorContext creatorContext_;
+
   mutable SharedMutex refreshMutex_;
 
   bool forceRefresh_{false};
+
+ public:
+  Dependencies getSnapshotOfDependencies() const {
+    return dependencies_.copy();
+  }
 };
 } // namespace observer_detail
 } // namespace folly

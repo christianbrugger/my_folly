@@ -18,15 +18,21 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <new>
 
+#include <folly/ScopeGuard.h>
 #include <folly/container/HeterogeneousAccess.h>
 #include <folly/container/detail/F14Mask.h>
+#include <folly/lang/Align.h>
 #include <folly/lang/Exception.h>
 #include <folly/synchronization/Hazptr.h>
 
-#if FOLLY_SSE_PREREQ(4, 2) && !FOLLY_MOBILE
+#if FOLLY_AARCH64 && FOLLY_F14_CRC_INTRINSIC_AVAILABLE
+#include <arm_acle.h>
+#include <arm_neon.h>
+#elif FOLLY_SSE_PREREQ(4, 2) && !FOLLY_MOBILE
 #include <nmmintrin.h>
 #endif
 
@@ -36,6 +42,44 @@ namespace detail {
 
 namespace concurrenthashmap {
 
+template <typename Class, typename ValueType, typename Allocator>
+class alignas(alignof(ValueType)) AlignedStorage {
+  struct alignas(alignof(Class)) Dummy {};
+
+  using DummyAllocator =
+      typename std::allocator_traits<Allocator>::template rebind_alloc<Dummy>;
+  using DummyAllocTraits = std::allocator_traits<DummyAllocator>;
+
+  static size_t calculateNeededDummyCount(size_t count) {
+    const size_t sz = sizeof(Class) + sizeof(ValueType) * count;
+    static_assert(alignof(Dummy) % alignof(ValueType) == 0);
+    static_assert(alignof(Dummy) % alignof(Class) == 0);
+    const size_t aligned_sz = align_ceil(sz, alignof(Dummy));
+    return aligned_sz / sizeof(Dummy);
+  }
+
+ public:
+  ValueType* array() noexcept {
+    return reinterpret_cast<ValueType*>(static_cast<Class*>(this) + 1);
+  }
+
+ protected:
+  static Class* allocate(size_t count) {
+    auto allocator = DummyAllocator();
+    auto* buf =
+        DummyAllocTraits::allocate(allocator, calculateNeededDummyCount(count));
+    return reinterpret_cast<Class*>(buf);
+  }
+
+  void deallocate(size_t count) {
+    auto allocator = DummyAllocator();
+    DummyAllocTraits::deallocate(
+        allocator,
+        reinterpret_cast<Dummy*>(static_cast<Class*>(this)),
+        calculateNeededDummyCount(count));
+  }
+};
+
 enum class InsertType {
   DOES_NOT_EXIST, // insert/emplace operations.  If key exists, return false.
   MUST_EXIST, // assign operations.  If key does not exist, return false.
@@ -43,18 +87,19 @@ enum class InsertType {
   MATCH, // assign_if_equal (not in std).  For concurrent maps, a
          // way to atomically change a value if equal to some other
          // value.
+  MATCH_OR_DOES_NOT_EXIST, // behaves like MATCH if key exists, inserts if key
+                           // does not exist.
 };
 
 template <
     typename KeyType,
     typename ValueType,
     typename Allocator,
-    template <typename>
-    class Atom,
+    template <typename> class Atom,
     typename Enabled = void>
 class ValueHolder {
  public:
-  typedef std::pair<const KeyType, ValueType> value_type;
+  using value_type = std::pair<const KeyType, ValueType>;
 
   explicit ValueHolder(const ValueHolder& other) : item_(other.item_) {}
 
@@ -77,8 +122,7 @@ template <
     typename KeyType,
     typename ValueType,
     typename Allocator,
-    template <typename>
-    class Atom>
+    template <typename> class Atom>
 class ValueHolder<
     KeyType,
     ValueType,
@@ -87,7 +131,7 @@ class ValueHolder<
     std::enable_if_t<
         !std::is_nothrow_copy_constructible<ValueType>::value ||
         !std::is_nothrow_copy_constructible<KeyType>::value>> {
-  typedef std::pair<const KeyType, ValueType> value_type;
+  using value_type = std::pair<const KeyType, ValueType>;
 
   struct CountedItem {
     value_type kv_;
@@ -131,10 +175,14 @@ class ValueHolder<
   template <typename Arg, typename... Args>
   ValueHolder(std::piecewise_construct_t, Arg&& k, Args&&... args) {
     item_ = (CountedItem*)Allocator().allocate(sizeof(CountedItem));
+    auto g = makeGuard([&] {
+      Allocator().deallocate((uint8_t*)item_, sizeof(CountedItem));
+    });
     new (item_) CountedItem(
         std::piecewise_construct,
         std::forward<Arg>(k),
         std::forward<Args>(args)...);
+    g.dismiss();
   }
 
   ~ValueHolder() {
@@ -150,6 +198,37 @@ class ValueHolder<
     return item_->getItem();
   }
 }; // ValueHolder specialization
+
+template <typename Node, typename Allocator>
+struct AllocNodeGuard : NonCopyableNonMovable {
+  Allocator alloc;
+  Node* node{};
+
+  void dismiss() { node = nullptr; }
+  Node* release() { return std::exchange(node, nullptr); }
+
+  template <typename... Arg>
+  explicit AllocNodeGuard(Allocator alloc_, Arg&&... arg)
+      : alloc{std::move(alloc_)}, node{(Node*)alloc.allocate(sizeof(Node))} {
+    auto guard = makeGuard([&] {
+      alloc.deallocate((uint8_t*)node, sizeof(Node));
+    });
+    new (node) Node(std::forward<Arg>(arg)...);
+    guard.dismiss();
+  }
+
+  ~AllocNodeGuard() {
+    if (node) {
+      node->~Node();
+      alloc.deallocate((uint8_t*)node, sizeof(Node));
+    }
+  }
+
+  template <typename... Arg>
+  static Node* make(Allocator alloc_, Arg&&... arg) {
+    return AllocNodeGuard(alloc_, std::forward<Arg>(arg)...).release();
+  }
+};
 
 // hazptr deleter that can use an allocator.
 template <typename Allocator>
@@ -187,7 +266,7 @@ class NodeT
           Atom,
           concurrenthashmap::HazptrDeleter<Allocator>> {
  public:
-  typedef std::pair<const KeyType, ValueType> value_type;
+  using value_type = std::pair<const KeyType, ValueType>;
 
   explicit NodeT(hazptr_obj_cohort<Atom>* cohort, NodeT* other)
       : item_(other->item_) {
@@ -246,7 +325,7 @@ class alignas(64) BucketTable {
   // perfectly balanced, reserve(size) will still work without
   // rehashing.
   static constexpr float kDefaultLoadFactor = 1.05f;
-  typedef std::pair<const KeyType, ValueType> value_type;
+  using value_type = std::pair<const KeyType, ValueType>;
 
   using Node =
       concurrenthashmap::bucket::NodeT<KeyType, ValueType, Allocator, Atom>;
@@ -339,7 +418,7 @@ class alignas(64) BucketTable {
     load_factor_nodes_ =
         to_integral(static_cast<float>(bucket_count) * load_factor_);
     for (size_t i = 0; i < oldcount; i++) {
-      auto bucket = &buckets->buckets_[i]();
+      auto bucket = &buckets->array()[i]();
       auto node = bucket->load(std::memory_order_relaxed);
       if (!node) {
         continue;
@@ -363,14 +442,14 @@ class alignas(64) BucketTable {
       }
       // Set longest last run in new bucket, incrementing the refcount.
       lastrun->acquire_link(); // defined in hazptr_obj_base_linked
-      newbuckets->buckets_[lastidx]().store(lastrun, std::memory_order_relaxed);
+      newbuckets->array()[lastidx]().store(lastrun, std::memory_order_relaxed);
       // Clone remaining nodes
       for (; node != lastrun;
            node = node->next_.load(std::memory_order_relaxed)) {
         auto newnode = (Node*)Allocator().allocate(sizeof(Node));
         new (newnode) Node(cohort, node);
         auto k = getIdx(bucket_count, HashFn()(node->getItem().first));
-        auto prevhead = &newbuckets->buckets_[k]();
+        auto prevhead = &newbuckets->array()[k]();
         newnode->next_.store(prevhead->load(std::memory_order_relaxed));
         prevhead->store(newnode, std::memory_order_relaxed);
       }
@@ -394,7 +473,7 @@ class alignas(64) BucketTable {
     getBucketsAndCount(bcount, buckets, res.hazptrs_[0]);
 
     auto idx = getIdx(bcount, h);
-    auto prev = &buckets->buckets_[idx]();
+    auto prev = &buckets->array()[idx]();
     auto node = hazcurr.protect(*prev);
     while (node) {
       if (KeyEqual()(k, node->getItem().first)) {
@@ -411,13 +490,13 @@ class alignas(64) BucketTable {
   std::size_t erase(size_t h, const K& key, Iterator* iter, MatchFunc match) {
     Node* node{nullptr};
     {
-      std::lock_guard<Mutex> g(m_);
+      std::lock_guard g(m_);
 
       size_t bcount = bucket_count_.load(std::memory_order_relaxed);
       auto buckets = buckets_.load(std::memory_order_relaxed);
       DCHECK(buckets); // Use-after-destruction by user.
       auto idx = getIdx(bcount, h);
-      auto head = &buckets->buckets_[idx]();
+      auto head = &buckets->array()[idx]();
       node = head->load(std::memory_order_relaxed);
       Node* prev = nullptr;
       while (node) {
@@ -465,7 +544,7 @@ class alignas(64) BucketTable {
     size_t bcount;
     Buckets* buckets;
     {
-      std::lock_guard<Mutex> g(m_);
+      std::lock_guard g(m_);
       bcount = bucket_count_.load(std::memory_order_relaxed);
       auto newbuckets = Buckets::create(bcount, cohort);
       buckets = buckets_.load(std::memory_order_relaxed);
@@ -477,7 +556,7 @@ class alignas(64) BucketTable {
   }
 
   void max_load_factor(float factor) {
-    std::lock_guard<Mutex> g(m_);
+    std::lock_guard g(m_);
     load_factor_ = factor;
     load_factor_nodes_ =
         bucket_count_.load(std::memory_order_relaxed) * load_factor_;
@@ -496,45 +575,41 @@ class alignas(64) BucketTable {
   Iterator cend() { return Iterator(nullptr); }
 
  private:
-  // Could be optimized to avoid an extra pointer dereference by
-  // allocating buckets_ at the same time.
+  using BucketRoot = hazptr_root<Node, Atom>;
   class Buckets
       : public hazptr_obj_base<
             Buckets,
             Atom,
-            concurrenthashmap::HazptrTableDeleter> {
-    using BucketRoot = hazptr_root<Node, Atom>;
-
-    Buckets() {}
-    ~Buckets() {}
+            concurrenthashmap::HazptrTableDeleter>,
+        public AlignedStorage<Buckets, BucketRoot, Allocator> {
+    Buckets() = default;
+    ~Buckets() = default;
 
    public:
     static Buckets* create(size_t count, hazptr_obj_cohort<Atom>* cohort) {
-      auto buf =
-          Allocator().allocate(sizeof(Buckets) + sizeof(BucketRoot) * count);
-      auto buckets = new (buf) Buckets();
+      auto* buf = Buckets::allocate(count);
+      auto* buckets = new (buf) Buckets();
       DCHECK(cohort);
       buckets->set_cohort_tag(cohort); // defined in hazptr_obj
       for (size_t i = 0; i < count; i++) {
-        new (&buckets->buckets_[i]) BucketRoot;
+        new (&buckets->array()[i]) BucketRoot;
       }
       return buckets;
     }
 
     void destroy(size_t count) {
       for (size_t i = 0; i < count; i++) {
-        buckets_[i].~BucketRoot();
+        Buckets::array()[i].~BucketRoot();
       }
       this->~Buckets();
-      Allocator().deallocate(
-          (uint8_t*)this, sizeof(BucketRoot) * count + sizeof(*this));
+      Buckets::deallocate(count);
     }
 
     void unlink_and_reclaim_nodes(size_t count) {
       for (size_t i = 0; i < count; i++) {
-        auto node = buckets_[i]().load(std::memory_order_relaxed);
+        auto node = Buckets::array()[i]().load(std::memory_order_relaxed);
         if (node) {
-          buckets_[i]().store(nullptr, std::memory_order_relaxed);
+          Buckets::array()[i]().store(nullptr, std::memory_order_relaxed);
           while (node) {
             auto next = node->next_.load(std::memory_order_relaxed);
             if (next) {
@@ -546,8 +621,6 @@ class alignas(64) BucketTable {
         }
       }
     }
-
-    BucketRoot buckets_[0];
   };
 
  public:
@@ -593,7 +666,7 @@ class alignas(64) BucketTable {
           break;
         }
         DCHECK(buckets_);
-        node_ = hazptrs_[1].protect(buckets_->buckets_[idx_]());
+        node_ = hazptrs_[1].protect(buckets_->array()[idx_]());
         if (node_) {
           break;
         }
@@ -667,12 +740,14 @@ class alignas(64) BucketTable {
       Node* cur,
       hazptr_obj_cohort<Atom>* cohort,
       Args&&... args) {
-    std::unique_lock<Mutex> g(m_);
+    std::unique_lock g(m_);
 
     size_t bcount = bucket_count_.load(std::memory_order_relaxed);
     auto buckets = buckets_.load(std::memory_order_relaxed);
     // Check for rehash needed for DOES_NOT_EXIST
-    if (size() >= load_factor_nodes_ && type == InsertType::DOES_NOT_EXIST) {
+    if (size() >= load_factor_nodes_ &&
+        (type == InsertType::DOES_NOT_EXIST ||
+         type == InsertType::MATCH_OR_DOES_NOT_EXIST)) {
       if (max_size_ && size() << 1 > max_size_) {
         // Would exceed max size.
         throw_exception<std::bad_alloc>();
@@ -684,29 +759,33 @@ class alignas(64) BucketTable {
 
     DCHECK(buckets) << "Use-after-destruction by user.";
     auto idx = getIdx(bcount, h);
-    auto head = &buckets->buckets_[idx]();
+    auto head = &buckets->array()[idx]();
     auto node = head->load(std::memory_order_relaxed);
     auto headnode = node;
     auto prev = head;
     auto& hazbuckets = it.hazptrs_[0];
     auto& haznode = it.hazptrs_[1];
     hazbuckets.reset_protection(buckets);
+    bool matched = false;
     while (node) {
       // Is the key found?
       if (KeyEqual()(k, node->getItem().first)) {
         it.setNode(node, buckets, bcount, idx);
         haznode.reset_protection(node);
-        if (type == InsertType::MATCH) {
+        if (type == InsertType::MATCH ||
+            type == InsertType::MATCH_OR_DOES_NOT_EXIST) {
           if (!match(node->getItem().second)) {
             return false;
           }
+          matched = true;
         }
-        if (type == InsertType::DOES_NOT_EXIST) {
+        if (type == InsertType::DOES_NOT_EXIST ||
+            (type == InsertType::MATCH_OR_DOES_NOT_EXIST && !matched)) {
           return false;
         } else {
           if (!cur) {
-            cur = (Node*)Allocator().allocate(sizeof(Node));
-            new (cur) Node(cohort, std::forward<Args>(args)...);
+            cur = AllocNodeGuard<Node, Allocator>::make(
+                Allocator(), cohort, std::forward<Args>(args)...);
           }
           auto next = node->next_.load(std::memory_order_relaxed);
           cur->next_.store(next, std::memory_order_relaxed);
@@ -726,7 +805,9 @@ class alignas(64) BucketTable {
       prev = &node->next_;
       node = node->next_.load(std::memory_order_relaxed);
     }
-    if (type != InsertType::DOES_NOT_EXIST && type != InsertType::ANY) {
+    if (type != InsertType::DOES_NOT_EXIST &&
+        (type != InsertType::MATCH_OR_DOES_NOT_EXIST || matched) &&
+        type != InsertType::ANY) {
       haznode.reset_protection();
       hazbuckets.reset_protection();
       return false;
@@ -745,7 +826,7 @@ class alignas(64) BucketTable {
       bcount <<= 1;
       hazbuckets.reset_protection(buckets);
       idx = getIdx(bcount, h);
-      head = &buckets->buckets_[idx]();
+      head = &buckets->array()[idx]();
       headnode = head->load(std::memory_order_relaxed);
     }
 
@@ -754,9 +835,11 @@ class alignas(64) BucketTable {
     if (!cur) {
       // InsertType::ANY
       // OR DOES_NOT_EXIST, but only in the try_emplace case
-      DCHECK(type == InsertType::ANY || type == InsertType::DOES_NOT_EXIST);
-      cur = (Node*)Allocator().allocate(sizeof(Node));
-      new (cur) Node(cohort, std::forward<Args>(args)...);
+      DCHECK(
+          type == InsertType::ANY || type == InsertType::DOES_NOT_EXIST ||
+          (type == InsertType::MATCH_OR_DOES_NOT_EXIST && !matched));
+      cur = AllocNodeGuard<Node, Allocator>::make(
+          Allocator(), cohort, std::forward<Args>(args)...);
     }
     cur->next_.store(headnode, std::memory_order_relaxed);
     head->store(cur, std::memory_order_release);
@@ -779,7 +862,10 @@ class alignas(64) BucketTable {
 
 } // namespace bucket
 
-#if FOLLY_SSE_PREREQ(4, 2) && FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
+#if (                                                        \
+    FOLLY_SSE_PREREQ(4, 2) ||                                \
+    (FOLLY_AARCH64 && FOLLY_F14_CRC_INTRINSIC_AVAILABLE)) && \
+    FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 
 namespace simd {
 
@@ -803,7 +889,7 @@ class NodeT
           Atom,
           HazptrDeleter<Allocator>> {
  public:
-  typedef std::pair<const KeyType, ValueType> value_type;
+  using value_type = std::pair<const KeyType, ValueType>;
 
   template <typename Arg, typename... Args>
   NodeT(hazptr_obj_cohort<Atom>* cohort, Arg&& k, Args&&... args)
@@ -912,6 +998,40 @@ class alignas(64) SIMDTable {
       setNodeAndTag(index, nullptr, 0);
     }
 
+#ifdef __aarch64__
+
+    ////////
+    // Tag filtering using NEON intrinsics
+
+    SparseMaskIter tagMatchIter(std::size_t needle) const {
+      FOLLY_SAFE_DCHECK(needle >= 0x80 && needle < 0x100, "");
+      uint64_t low = tags_low_.load(std::memory_order_acquire);
+      uint64_t hi = tags_hi_.load(std::memory_order_acquire);
+      uint8x16_t needleV = vdupq_n_u8(static_cast<uint8_t>(needle));
+      uint64x2_t vec;
+      vec[0] = low;
+      vec[1] = hi;
+      auto eqV = vceqq_u8(vreinterpretq_u8_u64(vec), needleV);
+      uint8x8_t maskV = vshrn_n_u16(vreinterpretq_u16_u8(eqV), 4);
+      uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(maskV), 0) & kFullMask;
+      return SparseMaskIter{mask};
+    }
+
+    MaskType occupiedMask() const {
+      uint64_t low = tags_low_.load(std::memory_order_relaxed);
+      uint64_t hi = tags_hi_.load(std::memory_order_relaxed);
+      uint64x2_t vec;
+      vec[0] = low;
+      vec[1] = hi;
+      // signed shift extends top bit to all bits
+      auto occupiedV =
+          vreinterpretq_u8_s8(vshrq_n_s8(vreinterpretq_s8_u64(vec), 7));
+      uint8x8_t maskV = vshrn_n_u16(vreinterpretq_u16_u8(occupiedV), 4);
+      return vget_lane_u64(vreinterpret_u64_u8(maskV), 0) & kFullMask;
+    }
+
+#else
+
     ////////
     // Tag filtering using SSE2 intrinsics
 
@@ -932,6 +1052,8 @@ class alignas(64) SIMDTable {
       auto tagV = _mm_set_epi64x(hi, low);
       return _mm_movemask_epi8(tagV) & kFullMask;
     }
+
+#endif
 
     DenseMaskIter occupiedIter() const {
       // Currently only invoked when relaxed semantics are sufficient.
@@ -994,35 +1116,36 @@ class alignas(64) SIMDTable {
     }
   };
 
-  class Chunks : public hazptr_obj_base<Chunks, Atom, HazptrTableDeleter> {
-    Chunks() {}
-    ~Chunks() {}
+  class Chunks
+      : public hazptr_obj_base<Chunks, Atom, HazptrTableDeleter>,
+        public AlignedStorage<Chunks, Chunk, Allocator> {
+    Chunks() = default;
+    ~Chunks() = default;
 
    public:
     static Chunks* create(size_t count, hazptr_obj_cohort<Atom>* cohort) {
-      auto buf = Allocator().allocate(sizeof(Chunks) + sizeof(Chunk) * count);
-      auto chunks = new (buf) Chunks();
+      auto* buf = Chunks::allocate(count);
+      auto* chunks = new (buf) Chunks();
       DCHECK(cohort);
       chunks->set_cohort_tag(cohort); // defined in hazptr_obj
       for (size_t i = 0; i < count; i++) {
-        new (&chunks->chunks_[i]) Chunk;
-        chunks->chunks_[i].clear();
+        new (&chunks->array()[i]) Chunk;
+        chunks->array()[i].clear();
       }
       return chunks;
     }
 
     void destroy(size_t count) {
       for (size_t i = 0; i < count; i++) {
-        chunks_[i].~Chunk();
+        Chunks::array()[i].~Chunk();
       }
       this->~Chunks();
-      Allocator().deallocate(
-          (uint8_t*)this, sizeof(Chunk) * count + sizeof(*this));
+      Chunks::deallocate(count);
     }
 
     void reclaim_nodes(size_t count) {
       for (size_t i = 0; i < count; i++) {
-        Chunk& chunk = chunks_[i];
+        Chunk& chunk = Chunks::array()[i];
         auto occupied = chunk.occupiedIter();
         while (occupied.hasNext()) {
           auto idx = occupied.next();
@@ -1038,18 +1161,15 @@ class alignas(64) SIMDTable {
 
     Chunk* getChunk(size_t index, size_t ccount) {
       DCHECK(isPowTwo(ccount));
-      return &chunks_[index & (ccount - 1)];
+      return &Chunks::array()[index & (ccount - 1)];
     }
-
-   private:
-    Chunk chunks_[0];
   };
 
  public:
   static constexpr float kDefaultLoadFactor =
       Chunk::kDesiredCapacity / (float)Chunk::kCapacity;
 
-  typedef std::pair<const KeyType, ValueType> value_type;
+  using value_type = std::pair<const KeyType, ValueType>;
 
   using InsertType = concurrenthashmap::InsertType;
 
@@ -1221,7 +1341,7 @@ class alignas(64) SIMDTable {
 
     auto hp = splitHash(h);
 
-    std::unique_lock<Mutex> g(m_);
+    std::unique_lock g(m_);
 
     if (!prepare_insert(
             it,
@@ -1238,8 +1358,8 @@ class alignas(64) SIMDTable {
       return false;
     }
 
-    auto cur = (Node*)Allocator().allocate(sizeof(Node));
-    new (cur) Node(cohort, std::forward<Args>(args)...);
+    auto cur = AllocNodeGuard<Node, Allocator>::make(
+        Allocator(), cohort, std::forward<Args>(args)...);
 
     if (!node) {
       std::tie(chunk_idx, tag_idx) =
@@ -1276,7 +1396,7 @@ class alignas(64) SIMDTable {
 
     auto hp = splitHash(h);
 
-    std::unique_lock<Mutex> g(m_);
+    std::unique_lock g(m_);
 
     if (!prepare_insert(
             it,
@@ -1353,7 +1473,7 @@ class alignas(64) SIMDTable {
   std::size_t erase(size_t h, const K& key, Iterator* iter, MatchFunc match) {
     const HashPair hp = splitHash(h);
 
-    std::unique_lock<Mutex> g(m_);
+    std::unique_lock g(m_);
 
     size_t ccount = chunk_count_.load(std::memory_order_relaxed);
     auto chunks = chunks_.load(std::memory_order_relaxed);
@@ -1409,7 +1529,7 @@ class alignas(64) SIMDTable {
     size_t ccount;
     Chunks* chunks;
     {
-      std::lock_guard<Mutex> g(m_);
+      std::lock_guard g(m_);
       ccount = chunk_count_.load(std::memory_order_relaxed);
       auto newchunks = Chunks::create(ccount, cohort);
       chunks = chunks_.load(std::memory_order_relaxed);
@@ -1426,7 +1546,7 @@ class alignas(64) SIMDTable {
     if (factor > 1.0) {
       throw_exception<std::invalid_argument>("load factor must be <= 1.0");
     }
-    std::lock_guard<Mutex> g(m_);
+    std::lock_guard g(m_);
     load_factor_ = factor;
     auto ccount = chunk_count_.load(std::memory_order_relaxed);
     grow_threshold_ = ccount * Chunk::kCapacity * load_factor_;
@@ -1446,7 +1566,11 @@ class alignas(64) SIMDTable {
 
  private:
   static HashPair splitHash(std::size_t hash) {
+#ifdef __aarch64__
+    std::size_t c = __crc32cd(0, hash);
+#else
     std::size_t c = _mm_crc32_u64(0, hash);
+#endif
     size_t tag = (c >> 24) | 0x80;
     hash += c;
     return std::make_pair(hash, tag);
@@ -1502,7 +1626,9 @@ class alignas(64) SIMDTable {
     ccount = chunk_count_.load(std::memory_order_relaxed);
     chunks = chunks_.load(std::memory_order_relaxed);
 
-    if (size() >= grow_threshold_ && type == InsertType::DOES_NOT_EXIST) {
+    if (size() >= grow_threshold_ &&
+        (type == InsertType::DOES_NOT_EXIST ||
+         type == InsertType::MATCH_OR_DOES_NOT_EXIST)) {
       if (max_size_ && size() << 1 > max_size_) {
         // Would exceed max size.
         throw_exception<std::bad_alloc>();
@@ -1519,7 +1645,8 @@ class alignas(64) SIMDTable {
     if (node) {
       it.hazptrs_[1].reset_protection(node);
       it.setNode(node, chunks, ccount, chunk_idx, tag_idx);
-      if (type == InsertType::MATCH) {
+      if (type == InsertType::MATCH ||
+          type == InsertType::MATCH_OR_DOES_NOT_EXIST) {
         if (!match(node->getItem().second)) {
           return false;
         }
@@ -1527,7 +1654,9 @@ class alignas(64) SIMDTable {
         return false;
       }
     } else {
-      if (type != InsertType::DOES_NOT_EXIST && type != InsertType::ANY) {
+      if (type != InsertType::DOES_NOT_EXIST &&
+          type != InsertType::MATCH_OR_DOES_NOT_EXIST &&
+          type != InsertType::ANY) {
         it.hazptrs_[0].reset_protection();
         return false;
       }
@@ -1676,10 +1805,8 @@ template <
         typename,
         typename,
         typename,
-        template <typename>
-        class,
-        class>
-    class Impl = concurrenthashmap::bucket::BucketTable>
+        template <typename> class,
+        class> class Impl = concurrenthashmap::bucket::BucketTable>
 class alignas(64) ConcurrentHashMapSegment {
   using ImplT = Impl<
       KeyType,
@@ -1692,10 +1819,10 @@ class alignas(64) ConcurrentHashMapSegment {
       Mutex>;
 
  public:
-  typedef KeyType key_type;
-  typedef ValueType mapped_type;
-  typedef std::pair<const KeyType, ValueType> value_type;
-  typedef std::size_t size_type;
+  using key_type = KeyType;
+  using mapped_type = ValueType;
+  using value_type = std::pair<const KeyType, ValueType>;
+  using size_type = std::size_t;
 
   using InsertType = concurrenthashmap::InsertType;
   using Iterator = typename ImplT::Iterator;
@@ -1724,18 +1851,17 @@ class alignas(64) ConcurrentHashMapSegment {
 
   template <typename Key, typename Value>
   bool insert(Iterator& it, size_t h, Key&& k, Value&& v) {
-    auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node) Node(cohort_, std::forward<Key>(k), std::forward<Value>(v));
+    concurrenthashmap::AllocNodeGuard<Node, Allocator> g(
+        Allocator(), cohort_, std::forward<Key>(k), std::forward<Value>(v));
     auto res = insert_internal(
         it,
         h,
-        node->getItem().first,
+        g.node->getItem().first,
         InsertType::DOES_NOT_EXIST,
         [](const ValueType&) { return false; },
-        node);
-    if (!res) {
-      node->~Node();
-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
+        g.node);
+    if (res) {
+      g.dismiss();
     }
     return res;
   }
@@ -1767,55 +1893,76 @@ class alignas(64) ConcurrentHashMapSegment {
 
   template <typename Key, typename Value>
   bool insert_or_assign(Iterator& it, size_t h, Key&& k, Value&& v) {
-    auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node) Node(cohort_, std::forward<Key>(k), std::forward<Value>(v));
+    concurrenthashmap::AllocNodeGuard<Node, Allocator> g(
+        Allocator(), cohort_, std::forward<Key>(k), std::forward<Value>(v));
     auto res = insert_internal(
         it,
         h,
-        node->getItem().first,
+        g.node->getItem().first,
         InsertType::ANY,
         [](const ValueType&) { return false; },
-        node);
-    if (!res) {
-      node->~Node();
-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
+        g.node);
+    if (res) {
+      g.dismiss();
+    }
+    return res;
+  }
+
+  template <typename Key, typename Value, typename Predicate>
+  bool insert_or_assign_if(
+      Iterator& it, size_t h, Key&& k, Value&& desired, Predicate&& predicate) {
+    concurrenthashmap::AllocNodeGuard<Node, Allocator> g(
+        Allocator(),
+        cohort_,
+        std::forward<Key>(k),
+        std::forward<Value>(desired));
+    auto res = insert_internal(
+        it,
+        h,
+        g.node->getItem().first,
+        InsertType::MATCH_OR_DOES_NOT_EXIST,
+        std::forward<Predicate>(predicate),
+        g.node);
+    if (res) {
+      g.dismiss();
     }
     return res;
   }
 
   template <typename Key, typename Value>
   bool assign(Iterator& it, size_t h, Key&& k, Value&& v) {
-    auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node) Node(cohort_, std::forward<Key>(k), std::forward<Value>(v));
+    concurrenthashmap::AllocNodeGuard<Node, Allocator> g(
+        Allocator(), cohort_, std::forward<Key>(k), std::forward<Value>(v));
     auto res = insert_internal(
         it,
         h,
-        node->getItem().first,
+        g.node->getItem().first,
         InsertType::MUST_EXIST,
         [](const ValueType&) { return false; },
-        node);
-    if (!res) {
-      node->~Node();
-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
+        g.node);
+    if (res) {
+      g.dismiss();
     }
     return res;
   }
+
   template <typename Key, typename Value, typename Predicate>
   bool assign_if(
       Iterator& it, size_t h, Key&& k, Value&& desired, Predicate&& predicate) {
-    auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node)
-        Node(cohort_, std::forward<Key>(k), std::forward<Value>(desired));
+    concurrenthashmap::AllocNodeGuard<Node, Allocator> g(
+        Allocator(),
+        cohort_,
+        std::forward<Key>(k),
+        std::forward<Value>(desired));
     auto res = insert_internal(
         it,
         h,
-        node->getItem().first,
+        g.node->getItem().first,
         InsertType::MATCH,
         std::forward<Predicate>(predicate),
-        node);
-    if (!res) {
-      node->~Node();
-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
+        g.node);
+    if (res) {
+      g.dismiss();
     }
     return res;
   }

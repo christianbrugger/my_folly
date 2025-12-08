@@ -253,6 +253,19 @@ struct identity_fn {
 using Identity = identity_fn;
 inline constexpr identity_fn identity{};
 
+#if FOLLY_CPLUSPLUS >= 202002 && !defined(__NVCC__)
+
+/// literal_c_str
+///
+/// This can only wrap literal strings, since the constructor is marked
+/// consteval.  Like with fmt::format_string.
+struct literal_c_str {
+  const char* const ptr;
+  /* implicit */ consteval literal_c_str(const char* p) : ptr(p) {}
+};
+
+#endif
+
 /// literal_string
 ///
 /// A structural type representing a literal string. A structural type may be
@@ -342,26 +355,30 @@ struct inheritable_contain_ {
   }
 };
 
+template <typename T>
+constexpr bool is_inheritable_v_ = //
+    (std::is_class_v<T> || std::is_union_v<T>) &&
+    !(std::is_abstract_v<T> || std::is_final_v<T>);
+
 template <bool>
 struct inheritable_;
 template <>
 struct inheritable_<false> {
   template <typename T>
-  using apply = inheritable_inherit_<T>;
+  using apply = inheritable_contain_<T>;
 };
 template <>
 struct inheritable_<true> {
   template <typename T>
-  using apply = inheritable_contain_<T>;
+  using apply = inheritable_inherit_<T>;
 };
 
 //  inheritable
 //
 //  A class wrapping an arbitrary type T which is always inheritable, and which
 //  enables empty-base-optimization when possible.
-template <typename T>
-using inheritable =
-    typename inheritable_<std::is_final<T>::value>::template apply<T>;
+template <typename T, bool C = is_inheritable_v_<T>>
+using inheritable = typename inheritable_<C>::template apply<T>;
 
 } // namespace detail
 
@@ -422,7 +439,7 @@ using moveonly_::NonCopyableNonMovable;
 /// May be invoked with any arguments. Returns void.
 struct variadic_noop_fn {
   template <typename... A>
-  constexpr void operator()(A&&...) const noexcept {}
+  constexpr void operator()(A&&... /*unused*/) const noexcept {}
 };
 inline constexpr variadic_noop_fn variadic_noop;
 
@@ -437,7 +454,7 @@ struct variadic_constant_of_fn {
   using value_type = decltype(Value);
   static inline constexpr value_type value = Value;
   template <typename... A>
-  constexpr value_type operator()(A&&...) const noexcept {
+  constexpr value_type operator()(A&&... /*unused*/) const noexcept {
     return value;
   }
 };
@@ -484,6 +501,8 @@ struct unsafe_default_initialized_cv {
   FOLLY_MSVC_DISABLE_WARNING(4701)
   // Potentially uninitialized local pointer variable 'uninit' used
   FOLLY_MSVC_DISABLE_WARNING(4703)
+  // Using uninitialized memory `uninit`
+  FOLLY_MSVC_DISABLE_WARNING(6001)
   FOLLY_GNU_DISABLE_WARNING("-Wuninitialized")
   // Clang doesn't implement -Wmaybe-uninitialized and warns about it
   FOLLY_GCC_DISABLE_WARNING("-Wmaybe-uninitialized")
@@ -738,6 +757,8 @@ class invocable_to_convertible : private inheritable<F> {
  private:
   static_assert(std::is_same<F, decay_t<F>>::value, "mismatch");
 
+  using base = inheritable<F>;
+
   template <typename R>
   using result_t = detected_t<invocable_to_detect, R>;
   template <typename R>
@@ -758,6 +779,11 @@ class invocable_to_convertible : private inheritable<F> {
   static_assert(std::is_same<TMR, result_t<FMR>>::value, "mismatch");
   static_assert(std::is_same<TCR, result_t<FCR>>::value, "mismatch");
 
+  using BML = base&;
+  using BCL = base const&;
+  using BMR = base&&;
+  using BCR = base const&&;
+
  public:
   template <typename G, std::enable_if_t<constructible_v<G&&>, int> = 0>
   FOLLY_ERASE explicit constexpr invocable_to_convertible(G&& g) noexcept(
@@ -766,19 +792,19 @@ class invocable_to_convertible : private inheritable<F> {
 
   template <typename..., typename R = FML, if_invocable_as_v<R> = 0>
   FOLLY_ERASE constexpr operator TML() & noexcept(nx_v<R>) {
-    return static_cast<FML>(*this)();
+    return static_cast<FML>(static_cast<BML>(*this))();
   }
   template <typename..., typename R = FCL, if_invocable_as_v<R> = 0>
   FOLLY_ERASE constexpr operator TCL() const& noexcept(nx_v<R>) {
-    return static_cast<FCL>(*this)();
+    return static_cast<FCL>(static_cast<BCL>(*this))();
   }
   template <typename..., typename R = FMR, if_invocable_as_v<R> = 0>
   FOLLY_ERASE constexpr operator TMR() && noexcept(nx_v<R>) {
-    return static_cast<FMR>(*this)();
+    return static_cast<FMR>(static_cast<BMR>(*this))();
   }
   template <typename..., typename R = FCR, if_invocable_as_v<R> = 0>
   FOLLY_ERASE constexpr operator TCR() const&& noexcept(nx_v<R>) {
-    return static_cast<FCR>(*this)();
+    return static_cast<FCR>(static_cast<BCR>(*this))();
   }
 };
 } // namespace detail
@@ -844,6 +870,59 @@ struct invocable_to_fn {
   }
 };
 inline constexpr invocable_to_fn invocable_to{};
+
+/// object_from_member
+/// object_from_member_fn
+///
+/// Returns the object containing the given field.
+///
+/// Similar to container_of (linux kernel).
+///
+/// Example:
+///
+///   using obj_t = std::pair<int, float>;
+///   obj_t obj = {1, 3.0};
+///   assert(&obj == object_from_member(obj_t::second, &obj.second);
+struct object_from_member_fn {
+ private:
+  template <typename M, typename O>
+  using ptr_t = M O::*;
+
+  template <typename M, typename O>
+  static std::ptrdiff_t off(ptr_t<M, O> const p) noexcept {
+    O* o = nullptr;
+    M* m = &(o->*p);
+    return reinterpret_cast<char*>(m) - reinterpret_cast<char*>(o);
+  }
+
+ public:
+  template <typename M, typename O>
+  O* operator()(ptr_t<M, O> const p, M* m) const noexcept {
+    return reinterpret_cast<O*>(reinterpret_cast<char*>(m) - off(p));
+  }
+  template <typename M, typename O>
+  O const* operator()(ptr_t<M, O> const p, M const* m) const noexcept {
+    return reinterpret_cast<O*>(reinterpret_cast<char const*>(m) - off(p));
+  }
+
+  template <typename M, typename O>
+  O& operator()(ptr_t<M, O> const p, M& m) const noexcept {
+    return *operator()(p, &m);
+  }
+  template <typename M, typename O>
+  O const& operator()(ptr_t<M, O> const p, M const& m) const noexcept {
+    return *operator()(p, &m);
+  }
+  template <typename M, typename O>
+  O&& operator()(ptr_t<M, O> const p, M&& m) const noexcept {
+    return static_cast<O&&>(*operator()(p, &m));
+  }
+  template <typename M, typename O>
+  O const&& operator()(ptr_t<M, O> const p, M const& m) const noexcept {
+    return static_cast<O const&&>(*operator()(p, &m));
+  }
+};
+inline constexpr object_from_member_fn object_from_member{};
 
 #define FOLLY_DETAIL_FORWARD_BODY(...)                     \
   noexcept(noexcept(__VA_ARGS__))->decltype(__VA_ARGS__) { \

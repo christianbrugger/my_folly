@@ -19,9 +19,7 @@
 #include <atomic>
 #include <cassert>
 #include <condition_variable>
-#include <cstdio>
 #include <cstdlib>
-#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -36,6 +34,7 @@
 #include <folly/portability/GTest.h>
 #include <folly/portability/PThread.h>
 #include <folly/portability/Unistd.h>
+#include <folly/system/HardwareConcurrency.h>
 #include <folly/test/TestUtils.h>
 
 using folly::MicroLock;
@@ -99,7 +98,7 @@ struct PslTest {
     using UT = typename std::make_unsigned<T>::type;
     T ourVal = rand() % T(UT(1) << (sizeof(UT) * 8 - 1));
     for (int i = 0; i < 100; ++i) {
-      std::lock_guard<PicoSpinLock<T>> guard(lock);
+      std::lock_guard guard(lock);
       lock.setData(ourVal);
       for (int n = 0; n < 10; ++n) {
         folly::asm_volatile_pause();
@@ -127,7 +126,7 @@ struct TestClobber {
   TestClobber() { lock_.init(); }
 
   void go() {
-    std::lock_guard<MicroSpinLock> g(lock_);
+    std::lock_guard g(lock_);
     // This bug depends on gcc register allocation and is very sensitive. We
     // have to use DCHECK instead of EXPECT_*.
     DCHECK(!lock_.try_lock());
@@ -165,13 +164,13 @@ TEST(SmallLocks, PicoSpinCorrectness) {
 }
 
 TEST(SmallLocks, PicoSpinSigned) {
-  typedef PicoSpinLock<int16_t, 0> Lock;
+  using Lock = PicoSpinLock<int16_t, 0>;
   Lock val;
   val.init(-4);
   EXPECT_EQ(val.getData(), -4);
 
   {
-    std::lock_guard<Lock> guard(val);
+    std::lock_guard guard(val);
     EXPECT_EQ(val.getData(), -4);
     val.setData(-8);
     EXPECT_EQ(val.getData(), -8);
@@ -179,9 +178,9 @@ TEST(SmallLocks, PicoSpinSigned) {
   EXPECT_EQ(val.getData(), -8);
 }
 
-TEST(SmallLocks, PicoSpinLockThreadSanitizer) {
-  SKIP_IF(!folly::kIsSanitizeThread) << "Enabled in TSAN mode only";
+#if FOLLY_SANITIZE_THREAD
 
+TEST(SmallLocks, PicoSpinLockThreadSanitizer) {
   typedef PicoSpinLock<int16_t, 0> Lock;
 
   {
@@ -190,14 +189,14 @@ TEST(SmallLocks, PicoSpinLockThreadSanitizer) {
     a.init(-8);
     b.init(-8);
     {
-      std::lock_guard<Lock> ga(a);
-      std::lock_guard<Lock> gb(b);
+      std::lock_guard ga(a);
+      std::lock_guard gb(b);
     }
     {
-      std::lock_guard<Lock> gb(b);
+      std::lock_guard gb(b);
       EXPECT_DEATH(
           [&]() {
-            std::lock_guard<Lock> ga(a);
+            std::lock_guard ga(a);
             // If halt_on_error is turned off for TSAN, then death would
             // happen on exit, so give that a chance as well.
             std::_Exit(1);
@@ -206,6 +205,8 @@ TEST(SmallLocks, PicoSpinLockThreadSanitizer) {
     }
   }
 }
+
+#endif
 
 TEST(SmallLocks, RegClobber) {
   TestClobber().go();
@@ -219,7 +220,7 @@ struct SimpleBarrier {
   SimpleBarrier() : lock_(), cv_(), ready_(false) {}
 
   void wait() {
-    std::unique_lock<std::mutex> lockHeld(lock_);
+    std::unique_lock lockHeld(lock_);
     while (!ready_) {
       cv_.wait(lockHeld);
     }
@@ -227,7 +228,7 @@ struct SimpleBarrier {
 
   void run() {
     {
-      std::unique_lock<std::mutex> lockHeld(lock_);
+      std::unique_lock lockHeld(lock_);
       ready_ = true;
     }
 
@@ -372,7 +373,7 @@ void simpleStressTest(Duration duration, int numThreads) {
   for (auto i = 0; i < numThreads; ++i) {
     threads.emplace_back([&mutex, &data, &stop] {
       while (!stop.load(std::memory_order_relaxed)) {
-        auto lck = std::unique_lock<Mutex>{mutex};
+        auto lck = std::unique_lock{mutex};
         EXPECT_EQ(data.fetch_add(1, std::memory_order_relaxed), 0);
         EXPECT_EQ(data.fetch_sub(1, std::memory_order_relaxed), 1);
       }
@@ -394,7 +395,7 @@ TEST(SmallLocks, MicroSpinLockStressTestLockTwoThreads) {
 
 TEST(SmallLocks, MicroSpinLockStressTestLockHardwareConcurrency) {
   auto duration = std::chrono::seconds{FLAGS_stress_test_seconds};
-  auto threads = std::thread::hardware_concurrency();
+  auto threads = folly::hardware_concurrency();
   simpleStressTest<MicroSpinLock>(duration, threads);
 }
 
@@ -405,7 +406,7 @@ TEST(SmallLocks, PicoSpinLockStressTestLockTwoThreads) {
 
 TEST(SmallLocks, PicoSpinLockStressTestLockHardwareConcurrency) {
   auto duration = std::chrono::seconds{FLAGS_stress_test_seconds};
-  auto threads = std::thread::hardware_concurrency();
+  auto threads = folly::hardware_concurrency();
   simpleStressTest<PicoSpinLock<std::uint16_t>>(duration, threads);
 }
 
@@ -435,20 +436,20 @@ TEST(SmallLocks, MicroSpinLockStressTestTryLockTwoThreads) {
 
 TEST(SmallLocks, MicroSpinLockStressTestTryLockHardwareConcurrency) {
   auto duration = std::chrono::seconds{FLAGS_stress_test_seconds};
-  auto threads = std::thread::hardware_concurrency();
+  auto threads = folly::hardware_concurrency();
   simpleStressTestTryLock<MicroSpinLock>(duration, threads);
 }
 
-TEST(SmallLocksk, MicroSpinLockThreadSanitizer) {
-  SKIP_IF(!folly::kIsSanitizeThread) << "Enabled in TSAN mode only";
+#if FOLLY_SANITIZE_THREAD
 
+TEST(SmallLocks, MicroSpinLockThreadSanitizer) {
   uint8_t val = 0;
   static_assert(sizeof(uint8_t) == sizeof(MicroSpinLock), "sanity check");
   // make sure TSAN handles this case too:
   // same lock but initialized via setting a value
   for (int i = 0; i < 10; i++) {
     val = 0;
-    std::lock_guard<MicroSpinLock> g(*reinterpret_cast<MicroSpinLock*>(&val));
+    std::lock_guard g(*reinterpret_cast<MicroSpinLock*>(&val));
   }
 
   {
@@ -457,14 +458,14 @@ TEST(SmallLocksk, MicroSpinLockThreadSanitizer) {
     a.init();
     b.init();
     {
-      std::lock_guard<MicroSpinLock> ga(a);
-      std::lock_guard<MicroSpinLock> gb(b);
+      std::lock_guard ga(a);
+      std::lock_guard gb(b);
     }
     {
-      std::lock_guard<MicroSpinLock> gb(b);
+      std::lock_guard gb(b);
       EXPECT_DEATH(
           [&]() {
-            std::lock_guard<MicroSpinLock> ga(a);
+            std::lock_guard ga(a);
             // If halt_on_error is turned off for TSAN, then death would
             // happen on exit, so give that a chance as well.
             std::_Exit(1);
@@ -477,18 +478,17 @@ TEST(SmallLocksk, MicroSpinLockThreadSanitizer) {
     uint8_t a = 0;
     uint8_t b = 0;
     {
-      std::lock_guard<MicroSpinLock> ga(*reinterpret_cast<MicroSpinLock*>(&a));
-      std::lock_guard<MicroSpinLock> gb(*reinterpret_cast<MicroSpinLock*>(&b));
+      std::lock_guard ga(*reinterpret_cast<MicroSpinLock*>(&a));
+      std::lock_guard gb(*reinterpret_cast<MicroSpinLock*>(&b));
     }
 
     a = 0;
     b = 0;
     {
-      std::lock_guard<MicroSpinLock> gb(*reinterpret_cast<MicroSpinLock*>(&b));
+      std::lock_guard gb(*reinterpret_cast<MicroSpinLock*>(&b));
       EXPECT_DEATH(
           [&]() {
-            std::lock_guard<MicroSpinLock> ga(
-                *reinterpret_cast<MicroSpinLock*>(&a));
+            std::lock_guard ga(*reinterpret_cast<MicroSpinLock*>(&a));
             // If halt_on_error is turned off for TSAN, then death would
             // happen on exit, so give that a chance as well.
             std::_Exit(1);
@@ -498,6 +498,8 @@ TEST(SmallLocksk, MicroSpinLockThreadSanitizer) {
   }
 }
 
+#endif
+
 TEST(SmallLocks, PicoSpinLockStressTestTryLockTwoThreads) {
   auto duration = std::chrono::seconds{FLAGS_stress_test_seconds};
   simpleStressTestTryLock<PicoSpinLock<std::uint16_t>>(duration, 2);
@@ -505,6 +507,6 @@ TEST(SmallLocks, PicoSpinLockStressTestTryLockTwoThreads) {
 
 TEST(SmallLocks, PicoSpinLockStressTestTryLockHardwareConcurrency) {
   auto duration = std::chrono::seconds{FLAGS_stress_test_seconds};
-  auto threads = std::thread::hardware_concurrency();
+  auto threads = folly::hardware_concurrency();
   simpleStressTestTryLock<PicoSpinLock<std::uint16_t>>(duration, threads);
 }

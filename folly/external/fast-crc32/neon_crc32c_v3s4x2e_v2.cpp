@@ -3,13 +3,20 @@
 /* MIT licensed */
 
 #include "folly/external/fast-crc32/neon_crc32c_v3s4x2e_v2.h"
-#include <folly/system/AuxVector.h> // @manual
+#include <folly/system/AuxVector.h>
 #include <folly/Portability.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
 #define CRC_EXPORT extern
+
+namespace folly::detail {
+[[maybe_unused]] static ElfHwCaps hwcaps() {
+  static ElfHwCaps caps;
+  return caps;
+}
+}
 
 #if !(FOLLY_AARCH64 && FOLLY_NEON && FOLLY_ARM_FEATURE_CRYPTO && FOLLY_ARM_FEATURE_CRC32)
 #include <stdlib.h>
@@ -36,21 +43,15 @@ CRC_EXPORT bool has_neon_crc32c_v3s4x2e_v2() {
 
 namespace folly::detail {
 CRC_AINLINE uint64x2_t clmul_lo_e(uint64x2_t a, uint64x2_t b, uint64x2_t c) {
-  uint64x2_t r;
-  __asm("pmull %0.1q, %2.1d, %3.1d\neor %0.16b, %0.16b, %1.16b\n" : "=w"(r), "+w"(c) : "w"(a), "w"(b));
-  return r;
+  return veorq_u64(vreinterpretq_u64_p128(vmull_p64(a[0], b[0])), c);
 }
 
 CRC_AINLINE uint64x2_t clmul_hi_e(uint64x2_t a, uint64x2_t b, uint64x2_t c) {
-  uint64x2_t r;
-  __asm("pmull2 %0.1q, %2.2d, %3.2d\neor %0.16b, %0.16b, %1.16b\n" : "=w"(r), "+w"(c) : "w"(a), "w"(b));
-  return r;
+  return veorq_u64(vreinterpretq_u64_p128(vmull_high_p64(vreinterpretq_p64_u64(a), vreinterpretq_p64_u64(b))), c);
 }
 
 CRC_AINLINE uint64x2_t clmul_scalar(uint32_t a, uint32_t b) {
-  uint64x2_t r;
-  __asm("pmull %0.1q, %1.1d, %2.1d\n" : "=w"(r) : "w"(vmovq_n_u64(a)), "w"(vmovq_n_u64(b)));
-  return r;
+  return vreinterpretq_u64_p128(vmull_p64(a, b));
 }
 
 static uint32_t xnmodp(uint64_t n) /* x^n mod P, in log(n) time */ {
@@ -78,7 +79,7 @@ CRC_AINLINE uint64x2_t crc_shift(uint32_t crc, size_t nbytes) {
 
 FOLLY_TARGET_ATTRIBUTE("+crc")
 CRC_EXPORT bool has_neon_crc32c_v3s4x2e_v2() {
-  static ElfHwCaps caps;
+  auto caps = hwcaps();
 
   return caps.aarch64_fp() && caps.aarch64_asimd() && caps.aarch64_pmull() &&
       caps.aarch64_crc32();

@@ -1454,8 +1454,8 @@ class RWCursor
   bool maybeShared_;
 };
 
-typedef RWCursor<CursorAccess::PRIVATE> RWPrivateCursor;
-typedef RWCursor<CursorAccess::UNSHARE> RWUnshareCursor;
+using RWPrivateCursor = RWCursor<CursorAccess::PRIVATE>;
+using RWUnshareCursor = RWCursor<CursorAccess::UNSHARE>;
 
 /**
  * Append to the end of a buffer chain, growing the chain (by allocating new
@@ -1680,6 +1680,17 @@ class QueueAppender : public Writable<QueueAppender> {
   }
 
   /**
+   * Ensures up to n contiguous bytes available, without surpassing maxGrowth_.
+   *
+   * @methodset Modifiers
+   *
+   * Cannot go above maxGrowth.
+   *
+   * May throw if there isn't enough room.
+   */
+  void ensureWithinMaxGrowth(size_t n) { ensure(std::min(n, maxGrowth_)); }
+
+  /**
    * Write an object to the cursor.
    *
    * @param n The number of bytes of value to write; defaults to sizeof(T)
@@ -1723,16 +1734,15 @@ class QueueAppender : public Writable<QueueAppender> {
    *
    * @methodset Writing
    */
-  void insert(std::unique_ptr<folly::IOBuf> buf) {
+  void insert(std::unique_ptr<folly::IOBuf> buf, bool pack = true) {
     if (buf) {
       queueCache_.queue()->append(
-          std::move(buf), /* pack */ true, /* allowTailReuse */ true);
+          std::move(buf), pack, /* allowTailReuse */ true);
     }
   }
 
-  void insert(const folly::IOBuf& buf) {
-    queueCache_.queue()->append(
-        buf, /* pack */ true, /* allowTailReuse */ true);
+  void insert(const folly::IOBuf& buf, bool pack = true) {
+    queueCache_.queue()->append(buf, pack, /* allowTailReuse */ true);
   }
 
   /**

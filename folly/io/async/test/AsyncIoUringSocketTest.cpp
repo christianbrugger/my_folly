@@ -31,6 +31,8 @@
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/IoUringBackend.h>
 #include <folly/io/async/IoUringEvent.h>
+#include <folly/io/async/test/AsyncSocketTest.h>
+#include <folly/io/async/test/AsyncSocketTest2.h>
 #include <folly/portability/GTest.h>
 #include <folly/system/Shell.h>
 #include <folly/test/SocketAddressTestHelper.h>
@@ -324,6 +326,9 @@ class AsyncIoUringSocketTest
       if (server) {
         server->setReadCB(nullptr);
       }
+      if (client && client->transport) {
+        client->transport->closeNow();
+      }
     }
   };
 
@@ -580,7 +585,6 @@ TEST_P(AsyncIoUringSocketTest, DetachEventBase) {
     }
     if (std::chrono::steady_clock::now() > start + std::chrono::seconds(1)) {
       FAIL();
-      break;
     }
   } while (true);
 
@@ -639,7 +643,7 @@ TEST_P(AsyncIoUringSocketTest, FastOpen) {
     EXPECT_EQ(
         "hello", conn.callback->waitFor(5).via(base.get()).getVia(base.get()));
     if (!had_fastopen) {
-      EXPECT_FALSE(conn.client->transport->getTFOSucceded());
+      EXPECT_FALSE(conn.client->transport->getTFOSucceeded());
     }
   }
   {
@@ -647,9 +651,73 @@ TEST_P(AsyncIoUringSocketTest, FastOpen) {
     EXPECT_EQ(
         "hello", conn.callback->waitFor(5).via(base.get()).getVia(base.get()));
     if (can_fastopen) {
-      EXPECT_TRUE(conn.client->transport->getTFOSucceded());
+      EXPECT_TRUE(conn.client->transport->getTFOSucceeded());
     }
   }
+}
+
+TEST_P(AsyncIoUringSocketTest, BindAddressNoPort) {
+  EventBase eventBase;
+  test::TestServer server(true);
+
+  // When setBindAddressNoPort is disabled, verifies that a port is assigned
+  // before the connect call
+  AsyncIoUringSocket::UniquePtr socket(new AsyncIoUringSocket(base.get()));
+  socket->setBindAddressNoPort(false);
+  SocketAddress bindAddr("127.0.0.1", 0);
+  test::TestPortAssignmentCallback callback;
+  socket->connect(
+      &callback,
+      server.getAddress(),
+      std::chrono::milliseconds(30),
+      emptySocketOptionMap,
+      bindAddr);
+  eventBase.loop();
+  EXPECT_NE(callback.assignedPort, 0);
+  socket->close();
+}
+
+TEST_P(AsyncIoUringSocketTest, ReadCallbackSetDuringConnect) {
+  MAYBE_SKIP();
+
+  struct ReadCB : public AsyncReader::ReadCallback {
+    void getReadBuffer(void** bufReturn, size_t* lenReturn) override {
+      *bufReturn = buff;
+      *lenReturn = sizeof(buff);
+    }
+
+    void readDataAvailable(size_t len) noexcept override {
+      prom.setValue(std::string{buff, len});
+    }
+
+    void readEOF() noexcept override {}
+    void readErr(const AsyncSocketException& ex) noexcept override {
+      prom.setException(ex);
+    }
+
+    bool isBufferMovable() noexcept override { return false; }
+
+    Promise<std::string> prom;
+    char buff[1024];
+  };
+
+  ReadCB readCB;
+  AsyncIoUringSocket::UniquePtr socket(
+      new AsyncIoUringSocket(base.get(), ioUringSocketOptions()));
+
+  socket->connect(this, serverAddress);
+  socket->setReadCB(&readCB);
+  auto fd =
+      fdPromise.getFuture().within(kTimeout).via(base.get()).getVia(base.get());
+  fdPromise = {};
+  auto server = AsyncSocket::newSocket(base.get(), fd);
+  server->write(&nullWriteCallback, "hello", 5);
+  auto result =
+      readCB.prom.getSemiFuture()
+          .within(kTimeout)
+          .via(base.get())
+          .getVia(base.get());
+  EXPECT_EQ("hello", result);
 }
 
 class AsyncIoUringSocketTestAll : public AsyncIoUringSocketTest {};
@@ -715,7 +783,7 @@ std::string randomString(size_t n) {
   std::random_device r;
   std::default_random_engine e1(r());
 
-  std::uniform_int_distribution<char> uniform_dist('A', 'Z');
+  std::uniform_int_distribution<int8_t> uniform_dist('A', 'Z');
 
   std::string ret;
   ret.reserve(n);
@@ -874,8 +942,8 @@ TEST_P(AsyncIoUringSocketTakeoverTest, PreRead) {
   AsyncSocket::UniquePtr sock(
       dynamic_cast<AsyncSocket*>(conn.server.release()));
   ASSERT_NE(sock, nullptr);
-  AsyncIoUringSocket::UniquePtr io_uring(
-      new AsyncIoUringSocket(AsyncSocket::UniquePtr(
+  AsyncIoUringSocket::UniquePtr io_uring(new AsyncIoUringSocket(
+      AsyncSocket::UniquePtr(
           new AsyncSocketWithPreRead(std::move(sock), "hello"))));
   io_uring->setReadCB(conn.callback.get());
   io_uring->write(&nullWriteCallback, "there", 5);
@@ -897,5 +965,50 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<TestParams>& info) {
       return info.param.testName();
     });
+
+TEST(AsyncIoUringSocketTest, RemoveNonBlockFlag) {
+  Promise<NetworkSocket> fdPromise;
+  test::TestAcceptCallback acceptCallback;
+  acceptCallback.setConnectionAcceptedFn(
+      [&fdPromise](NetworkSocket fd, const folly::SocketAddress& /*addr*/) {
+        fdPromise.setValue(fd);
+      });
+
+  auto options =
+      IoUringBackend::Options{}
+          .setUseRegisteredFds(64)
+          .setInitialProvidedBuffers(64, 8)
+          .setDeferTaskRun(true);
+  EventBase evb{EventBase::Options{}.setBackendFactory(
+      [&options]() -> std::unique_ptr<EventBaseBackendBase> {
+        return std::make_unique<IoUringBackend>(options);
+      })};
+
+  std::shared_ptr<AsyncServerSocket> serverSocket(
+      AsyncServerSocket::newSocket(&evb));
+  serverSocket->bind(0);
+  serverSocket->listen(1024);
+  folly::SocketAddress serverAddress;
+  serverSocket->getAddress(&serverAddress);
+  serverSocket->addAcceptCallback(&acceptCallback, &evb);
+  serverSocket->startAccepting();
+
+  AsyncSocket::UniquePtr clientSocket(AsyncSocket::newSocket(&evb));
+  clientSocket->connect(nullptr, serverAddress);
+
+  auto fd = fdPromise.getFuture().within(kTimeout).via(&evb).getVia(&evb);
+  AsyncSocket::UniquePtr acceptedSocket(AsyncSocket::newSocket(&evb, fd));
+
+  int flags = fcntl(fd.toFd(), F_GETFL, 0);
+  ASSERT_GE(flags, 0);
+  EXPECT_EQ(flags & O_NONBLOCK, O_NONBLOCK);
+
+  AsyncIoUringSocket::UniquePtr ioUringSocket(
+      new AsyncIoUringSocket(std::move(acceptedSocket)));
+
+  int newFlags = fcntl(fd.toFd(), F_GETFL, 0);
+  ASSERT_GE(newFlags, 0);
+  EXPECT_EQ(newFlags & O_NONBLOCK, 0);
+}
 
 } // namespace folly

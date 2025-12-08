@@ -111,9 +111,10 @@ IPAddressV4::IPAddressV4(const in_addr src) noexcept : addr_(src) {}
 IPAddressV4 IPAddressV4::fromBinary(ByteRange bytes) {
   auto maybeIp = tryFromBinary(bytes);
   if (maybeIp.hasError()) {
-    throw IPAddressFormatException(to<std::string>(
-        "Invalid IPv4 binary data: length must be 4 bytes, got ",
-        bytes.size()));
+    throw IPAddressFormatException(
+        to<std::string>(
+            "Invalid IPv4 binary data: length must be 4 bytes, got ",
+            bytes.size()));
   }
   return maybeIp.value();
 }
@@ -146,7 +147,7 @@ IPAddressV4 IPAddressV4::fromInverseArpaName(const std::string& arpaname) {
         fmt::format("input does not end with '.in-addr.arpa': '{}'", arpaname));
   }
   std::vector<StringPiece> pieces;
-  split(".", piece, pieces);
+  split('.', piece, pieces);
   if (pieces.size() != 4) {
     throw IPAddressFormatException(fmt::format("Invalid input. Got {}", piece));
   }
@@ -277,10 +278,11 @@ string IPAddressV4::toInverseArpaName() const {
 uint8_t IPAddressV4::getNthMSByte(size_t byteIndex) const {
   const auto highestIndex = byteCount() - 1;
   if (byteIndex > highestIndex) {
-    throw std::invalid_argument(fmt::format(
-        "Byte index must be <= {} for addresses of type: {}",
-        highestIndex,
-        detail::familyNameStr(AF_INET)));
+    throw std::invalid_argument(
+        fmt::format(
+            "Byte index must be <= {} for addresses of type: {}",
+            highestIndex,
+            detail::familyNameStr(AF_INET)));
   }
   return bytes()[byteIndex];
 }

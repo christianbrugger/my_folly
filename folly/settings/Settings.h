@@ -17,12 +17,13 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include <folly/CppAttributes.h>
 #include <folly/Function.h>
 #include <folly/Likely.h>
-#include <folly/Range.h>
-#include <folly/concurrency/SingletonRelaxedCounter.h>
+#include <folly/container/MapUtil.h>
 #include <folly/settings/Types.h>
 #include <folly/settings/detail/SettingsImpl.h>
 
@@ -44,13 +45,29 @@ class SettingWrapper {
   using CallbackHandle = typename SettingCore<T, Tag>::CallbackHandle;
 
   /**
-   * Returns the setting's current value.
+   * Returns the setting's current value. As an optimization, returns by value
+   * for small types, and by const& for larger types. The returned reference is
+   * only guaranteed to be valid until the next access by the current thread.
    *
-   * As an optimization, returns by value for small types, and by
-   * const& for larger types.  Note that the returned reference is not
-   * guaranteed to be long-lived and should not be saved anywhere. In
-   * particular, a set() call might invalidate a reference obtained
-   * here after some amount of time (on the order of minutes).
+   * UNSAFE:
+   *   auto& value = *FOLLY_SETTING(project, my_string);
+   *   *FOLLY_SETTING(project, my_string) // Access invalidates `value`
+   *   useValue(value); // heap-use-after-free
+   *
+   * SAFE:
+   *   auto& value = *FOLLY_SETTING(project, my_string);
+   *   FOLLY_SETTING(project, my_string).set("abc"); // `value` is still valid
+   *   useValue(value); // OK
+   *
+   * SAFE:
+   *   Thread1:
+   *     auto& value = *FOLLY_SETTING(project, my_string);
+   *     useValue(value); // OK
+   *   Thread2:
+   *     auto& value = *FOLLY_SETTING(project, my_string);
+   *     useValue(value); // OK
+   *   Thread3:
+   *    FOLLY_SETTING(project, my_string).set("abc");
    */
   std::conditional_t<IsSmallPOD<T>, T, const T&> operator*() const {
     AccessCounter::add(1);
@@ -62,10 +79,21 @@ class SettingWrapper {
   }
 
   /**
-   * Returns the setting's current value. Equivalent to dereference operator
-   * above.
+   * Returns the setting's current value as documented above by operator*().
    */
   std::conditional_t<IsSmallPOD<T>, T, const T&> value() const {
+    return operator*();
+  }
+  /**
+   * Same as value() but registers this setting as an observer dependency. If
+   * this setting is used to compute an observer, subsequent setting updates
+   * will trigger the recomputation of that observer.
+   */
+  std::conditional_t<IsSmallPOD<T>, T, const T&>
+  valueRegisterObserverDependency() {
+    if (FOLLY_UNLIKELY(observer_detail::ObserverManager::inManagerThread())) {
+      registerObserverDependency();
+    }
     return operator*();
   }
 
@@ -80,15 +108,20 @@ class SettingWrapper {
       const Snapshot& snapshot) const;
 
   /**
-   * Atomically updates the setting's current value.  Will invalidate
-   * any previous calls to operator*() after some amount of time (on
-   * the order of minutes).
+   * Returns an Observer<T> that's updated whenever this setting is updated.
+   */
+  const folly::observer::Observer<T>& observer() { return core_.observer(); }
+
+  /**
+   * Atomically updates the setting's current value. The next call to
+   * operator*() will invalidate all references returned by previous calls to
+   * operator*() on that thread.
    *
    * @param reason  Will be stored with the current value, useful for debugging.
    * @returns The SetResult indicating if the setting was successfully updated.
    * @throws std::runtime_error  If we can't convert t to string.
    */
-  SetResult set(const T& t, StringPiece reason = "api") {
+  SetResult set(const T& t, std::string_view reason = "api") {
     return core_.set(t, reason);
   }
 
@@ -117,7 +150,7 @@ class SettingWrapper {
   /**
    * Returns the setting's current update reason.
    */
-  StringPiece updateReason() const { return core_.getSlow().updateReason; }
+  std::string_view updateReason() const { return core_.getSlow().updateReason; }
 
   /**
    * Returns the number of times this setting has been accessed.
@@ -127,65 +160,112 @@ class SettingWrapper {
   /**
    * Returns the setting's update reason in the snapshot.
    */
-  StringPiece updateReason(const Snapshot& snapshot) const;
+  std::string_view updateReason(const Snapshot& snapshot) const;
+
+  /**
+   * Returns the setting's name
+   */
+  std::string_view name() const { return core_.meta().name; }
+
+  /**
+   * Returns the setting's project
+   */
+  std::string_view project() const { return core_.meta().project; }
+
+  /**
+   * Returns the setting's description
+   */
+  std::string_view description() const { return core_.meta().description; }
 
   explicit SettingWrapper(SettingCore<T, Tag>& core) : core_(core) {}
 
  private:
+  FOLLY_NOINLINE void registerObserverDependency() { observer().getSnapshot(); }
+
   SettingCore<T, Tag>& core_;
   friend class folly::settings::Snapshot;
 };
 
-/**
- * Optimization: fast-path on top of the Meyers singleton. Each
- * translation unit gets this code inlined, while the slow path
- * initialization code is not.  We check the global pointer which
- * should only be initialized after the Meyers singleton. It's ok for
- * multiple calls to attempt to update the global pointer, as they
- * would be serialized on the Meyer's singleton initialization lock
- * anyway.
- *
- * Both FOLLY_SETTING_DECLARE and FOLLY_SETTING_DEFINE will provide
- * a copy of this function and we work around ODR by using different
- * overload types.
- *
- * Requires a trailing semicolon.
- */
-#define FOLLY_DETAIL_SETTINGS_DEFINE_LOCAL_FUNC__(                             \
-    _project, _name, _Type, _overloadType)                                     \
-  struct FOLLY_SETTINGS_TAG__##_project##_##_name;                             \
-  extern ::std::atomic<::folly::settings::detail::SettingCore<                 \
-      _Type,                                                                   \
-      FOLLY_SETTINGS_TAG__##_project##_##_name>*>                              \
-      FOLLY_SETTINGS_CACHE__##_project##_##_name;                              \
-  extern ::std::atomic<uint64_t> FOLLY_SETTINGS_TRIVIAL__##_project##_##_name; \
-  ::folly::settings::detail::                                                  \
-      SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>&            \
-          FOLLY_SETTINGS_FUNC__##_project##_##_name();                         \
-  FOLLY_ALWAYS_INLINE auto FOLLY_SETTINGS_LOCAL_FUNC__##_project##_##_name(    \
-      _overloadType) {                                                         \
-    auto* folly_detail_settings_value =                                        \
-        FOLLY_SETTINGS_CACHE__##_project##_##_name.load(                       \
-            ::std::memory_order_acquire);                                      \
-    if (FOLLY_UNLIKELY(!folly_detail_settings_value)) {                        \
-      folly_detail_settings_value =                                            \
-          &FOLLY_SETTINGS_FUNC__##_project##_##_name();                        \
-      FOLLY_SETTINGS_CACHE__##_project##_##_name.store(                        \
-          folly_detail_settings_value, ::std::memory_order_release);           \
-    }                                                                          \
-    return ::folly::settings::detail::SettingWrapper<                          \
-        _Type,                                                                 \
-        &FOLLY_SETTINGS_TRIVIAL__##_project##_##_name,                         \
-        FOLLY_SETTINGS_TAG__##_project##_##_name>(                             \
-        *folly_detail_settings_value);                                         \
-  }                                                                            \
-  /* This is here just to force a semicolon */                                 \
-  ::folly::settings::detail::                                                  \
-      SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>&            \
-          FOLLY_SETTINGS_FUNC__##_project##_##_name()
-
+template <
+    typename T,
+    std::atomic<uint64_t>* TrivialPtr,
+    typename Tag,
+    std::atomic<SettingCore<T, Tag>*>& CachedCore,
+    SettingCore<T, Tag>& (*Func)()>
+struct Accessor {
+  /**
+   * Optimization: fast-path on top of the Meyers singleton. We check the global
+   * pointer which should only be initialized after the Meyers singleton. It's
+   * ok for multiple calls to attempt to update the global pointer, as they
+   * would be serialized on the Meyer's singleton initialization lock anyway.
+   */
+  FOLLY_ALWAYS_INLINE SettingWrapper<T, TrivialPtr, Tag> operator()() {
+    auto* core = CachedCore.load(std::memory_order_acquire);
+    if (FOLLY_UNLIKELY(!core)) {
+      core = &Func();
+      CachedCore.store(core, std::memory_order_release);
+    }
+    return SettingWrapper<T, TrivialPtr, Tag>(*core);
+  }
+};
 } // namespace detail
 
+#if defined(_MSC_VER)
+// MSVC does not support section attributes
+#define FOLLY_SETTINGS_DETAIL_SECTION_ATTRIBUTE /* nothing */
+#elif defined(__APPLE__)
+// Mach-O: section attribute needs segment,section
+#define FOLLY_SETTINGS_DETAIL_SECTION_ATTRIBUTE \
+  gnu::section("__DATA,.folly.settings")
+#else
+// ELF: section attribute just needs section name
+#define FOLLY_SETTINGS_DETAIL_SECTION_ATTRIBUTE \
+  gnu::section(".folly.settings.cache")
+#endif
+
+/**
+ * Registers a setting without defining an Accessor. This should rarely be used
+ * directly and most use cases will want FOLLY_SETTING_DEFINE instead.
+ */
+#define FOLLY_SETTING_REGISTER(                                               \
+    _project, _name, _Type, _def, _mut, _cli, _desc)                          \
+  struct FOLLY_SETTINGS_TAG__##_project##_##_name {};                         \
+  /* Fastpath optimization, see notes in FOLLY_SETTINGS_DEFINE_LOCAL_FUNC__.  \
+     Aggregate all off these together in a single section for better TLB      \
+     and cache locality. */                                                   \
+  [[FOLLY_SETTINGS_DETAIL_SECTION_ATTRIBUTE]] [[maybe_unused]] ::std::atomic< \
+      ::folly::settings::detail::                                             \
+          SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>*>      \
+      FOLLY_SETTINGS_CACHE__##_project##_##_name;                             \
+  /* Location for the small value cache (if _Type is small and trivial).      \
+     Intentionally located right after the pointer cache above to take        \
+     advantage of the prefetching */                                          \
+  [[FOLLY_SETTINGS_DETAIL_SECTION_ATTRIBUTE]] ::std::atomic<::std::uint64_t>  \
+      FOLLY_SETTINGS_TRIVIAL__##_project##_##_name;                           \
+  /* Meyers singleton to avoid SIOF */                                        \
+  FOLLY_NOINLINE ::folly::settings::detail::                                  \
+      SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>&           \
+      FOLLY_SETTINGS_FUNC__##_project##_##_name() {                           \
+    static ::folly::Indestructible<::folly::settings::detail::SettingCore<    \
+        _Type,                                                                \
+        FOLLY_SETTINGS_TAG__##_project##_##_name>>                            \
+        setting(                                                              \
+            ::folly::settings::SettingMetadata{                               \
+                #_project,                                                    \
+                #_name,                                                       \
+                #_Type,                                                       \
+                typeid(_Type),                                                \
+                #_def,                                                        \
+                _mut,                                                         \
+                _cli,                                                         \
+                _desc},                                                       \
+            ::folly::type_t<_Type>{_def},                                     \
+            FOLLY_SETTINGS_TRIVIAL__##_project##_##_name);                    \
+    return *setting;                                                          \
+  }                                                                           \
+  /* Ensure the setting is registered even if not used in program */          \
+  auto& FOLLY_SETTINGS_INIT__##_project##_##_name =                           \
+      FOLLY_SETTINGS_FUNC__##_project##_##_name()
 /**
  * Defines a setting.
  *
@@ -213,51 +293,36 @@ class SettingWrapper {
  * @param _desc  setting documentation
  */
 #define FOLLY_SETTING_DEFINE(_project, _name, _Type, _def, _mut, _cli, _desc) \
-  struct FOLLY_SETTINGS_TAG__##_project##_##_name {};                         \
-  /* Fastpath optimization, see notes in FOLLY_SETTINGS_DEFINE_LOCAL_FUNC__.  \
-     Aggregate all off these together in a single section for better TLB      \
-     and cache locality. */                                                   \
-  __attribute__((__section__(".folly.settings.cache"))) ::std::atomic<        \
-      ::folly::settings::detail::                                             \
-          SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>*>      \
-      FOLLY_SETTINGS_CACHE__##_project##_##_name;                             \
-  /* Location for the small value cache (if _Type is small and trivial).      \
-     Intentionally located right after the pointer cache above to take        \
-     advantage of the prefetching */                                          \
-  __attribute__((                                                             \
-      __section__(".folly.settings.cache"))) ::std::atomic<uint64_t>          \
-      FOLLY_SETTINGS_TRIVIAL__##_project##_##_name;                           \
-  /* Meyers singleton to avoid SIOF */                                        \
-  FOLLY_NOINLINE ::folly::settings::detail::                                  \
-      SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>&           \
-          FOLLY_SETTINGS_FUNC__##_project##_##_name() {                       \
-    static ::folly::Indestructible<::folly::settings::detail::SettingCore<    \
-        _Type,                                                                \
-        FOLLY_SETTINGS_TAG__##_project##_##_name>>                            \
-        setting(                                                              \
-            ::folly::settings::SettingMetadata{                               \
-                #_project,                                                    \
-                #_name,                                                       \
-                #_Type,                                                       \
-                typeid(_Type),                                                \
-                #_def,                                                        \
-                _mut,                                                         \
-                _cli,                                                         \
-                _desc},                                                       \
-            ::folly::type_t<_Type>{_def},                                     \
-            FOLLY_SETTINGS_TRIVIAL__##_project##_##_name);                    \
-    return *setting;                                                          \
-  }                                                                           \
-  /* Ensure the setting is registered even if not used in program */          \
-  auto& FOLLY_SETTINGS_INIT__##_project##_##_name =                           \
-      FOLLY_SETTINGS_FUNC__##_project##_##_name();                            \
-  FOLLY_DETAIL_SETTINGS_DEFINE_LOCAL_FUNC__(_project, _name, _Type, char)
+  FOLLY_SETTING_REGISTER(_project, _name, _Type, _def, _mut, _cli, _desc);    \
+  ::folly::settings::detail::Accessor<                                        \
+      _Type,                                                                  \
+      &FOLLY_SETTINGS_TRIVIAL__##_project##_##_name,                          \
+      FOLLY_SETTINGS_TAG__##_project##_##_name,                               \
+      FOLLY_SETTINGS_CACHE__##_project##_##_name,                             \
+      FOLLY_SETTINGS_FUNC__##_project##_##_name>                              \
+      FOLLY_SETTINGS_ACCESSOR__##_project##_##_name
 
 /**
  * Declares a setting that's defined elsewhere.
  */
-#define FOLLY_SETTING_DECLARE(_project, _name, _Type) \
-  FOLLY_DETAIL_SETTINGS_DEFINE_LOCAL_FUNC__(_project, _name, _Type, int)
+#define FOLLY_SETTING_DECLARE(_project, _name, _Type)               \
+  struct FOLLY_SETTINGS_TAG__##_project##_##_name;                  \
+  extern ::std::atomic<::folly::settings::detail::SettingCore<      \
+      _Type,                                                        \
+      FOLLY_SETTINGS_TAG__##_project##_##_name>*>                   \
+      FOLLY_SETTINGS_CACHE__##_project##_##_name;                   \
+  extern ::std::atomic<::std::uint64_t>                             \
+      FOLLY_SETTINGS_TRIVIAL__##_project##_##_name;                 \
+  ::folly::settings::detail::                                       \
+      SettingCore<_Type, FOLLY_SETTINGS_TAG__##_project##_##_name>& \
+      FOLLY_SETTINGS_FUNC__##_project##_##_name();                  \
+  extern ::folly::settings::detail::Accessor<                       \
+      _Type,                                                        \
+      &FOLLY_SETTINGS_TRIVIAL__##_project##_##_name,                \
+      FOLLY_SETTINGS_TAG__##_project##_##_name,                     \
+      FOLLY_SETTINGS_CACHE__##_project##_##_name,                   \
+      FOLLY_SETTINGS_FUNC__##_project##_##_name>                    \
+      FOLLY_SETTINGS_ACCESSOR__##_project##_##_name
 
 /**
  * Accesses a defined setting.
@@ -269,18 +334,29 @@ class SettingWrapper {
  *     the setting itself.
  */
 #define FOLLY_SETTING(_project, _name) \
-  FOLLY_SETTINGS_LOCAL_FUNC__##_project##_##_name(0)
+  FOLLY_SETTINGS_ACCESSOR__##_project##_##_name()
 
 /**
  * @return If the setting exists, returns the current settings metadata.
  *         Empty Optional otherwise.
  */
-Optional<SettingMetadata> getSettingsMeta(StringPiece settingName);
+Optional<SettingMetadata> getSettingsMeta(std::string_view settingName);
 
 /**
  * @return SettingMetadata for all registered settings in the process.
  */
 std::vector<SettingMetadata> getAllSettingsMeta();
+
+/**
+ * @return If the setting exists and has type T, returns the default value
+ * defined by FOLLY_SETTING_DEFINE.
+ */
+template <typename T>
+const T* FOLLY_NULLABLE getDefaultValue(const std::string& settingName) {
+  auto* eptr = get_default(*detail::settingsMap().rlock(), settingName);
+  auto* tptr = dynamic_cast<detail::TypedSettingCore<T>*>(eptr);
+  return !tptr ? nullptr : &tptr->defaultValue();
+}
 
 namespace detail {
 
@@ -304,7 +380,7 @@ class SnapshotSettingWrapper {
    * in this snapshot.
    * @returns The SetResult indicating if the setting was successfully updated.
    */
-  SetResult set(const T& t, StringPiece reason = "api") {
+  SetResult set(const T& t, std::string_view reason = "api") {
     return core_.set(t, reason, &snapshot_);
   }
 
@@ -379,9 +455,9 @@ class Snapshot final : public detail::SnapshotBase {
    * @throws std::runtime_error  If there's a conversion error.
    */
   SetResult setFromString(
-      StringPiece settingName,
-      StringPiece newValue,
-      StringPiece reason) override;
+      std::string_view settingName,
+      std::string_view newValue,
+      std::string_view reason) override;
 
   /**
    * Same as setFromString but will set frozen immutables in this snapshot.
@@ -389,15 +465,16 @@ class Snapshot final : public detail::SnapshotBase {
    * change dry-runs.
    */
   SetResult forceSetFromString(
-      StringPiece settingName,
-      StringPiece newValue,
-      StringPiece reason) override;
+      std::string_view settingName,
+      std::string_view newValue,
+      std::string_view reason) override;
 
   /**
    * @return If the setting exists, the current setting information.
    *         Empty Optional otherwise.
    */
-  Optional<SettingsInfo> getAsString(StringPiece settingName) const override;
+  Optional<SettingsInfo> getAsString(
+      std::string_view settingName) const override;
 
   /**
    * Reset the value of the setting identified by name to its default value.
@@ -405,14 +482,14 @@ class Snapshot final : public detail::SnapshotBase {
    *
    * @returns The SetResult indicating if the setting was successfully reset.
    */
-  SetResult resetToDefault(StringPiece settingName) override;
+  SetResult resetToDefault(std::string_view settingName) override;
 
   /**
    * Same as resetToDefault but will reset frozen immutables in this snapshot.
    * However, it will still not publish them. This is mainly useful for setting
    * change dry-runs.
    */
-  SetResult forceResetToDefault(StringPiece settingName) override;
+  SetResult forceResetToDefault(std::string_view settingName) override;
 
   /**
    * Iterates over all known settings and calls func(visitorInfo) for each.
@@ -441,7 +518,7 @@ SettingWrapper<T, TrivialPtr, Tag>::value(const Snapshot& snapshot) const {
 }
 
 template <class T, std::atomic<uint64_t>* TrivialPtr, typename Tag>
-StringPiece SettingWrapper<T, TrivialPtr, Tag>::updateReason(
+std::string_view SettingWrapper<T, TrivialPtr, Tag>::updateReason(
     const Snapshot& snapshot) const {
   return snapshot.get(core_).updateReason;
 }

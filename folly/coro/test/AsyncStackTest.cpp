@@ -20,7 +20,6 @@
 #include <folly/coro/Baton.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Collect.h>
-#include <folly/coro/Mutex.h>
 #include <folly/coro/Task.h>
 #include <folly/tracing/AsyncStack.h>
 
@@ -166,8 +165,9 @@ FOLLY_NOINLINE void normalFunction() {
   CHECK_LE(6, stack2.size());
 
   // All except the topmost stack-frame should be the same.
-  CHECK(std::equal(
-      stack1.begin() + 1, stack1.end(), stack2.begin() + 1, stack2.end()));
+  CHECK(
+      std::equal(
+          stack1.begin() + 1, stack1.end(), stack2.begin() + 1, stack2.end()));
 }
 
 folly::coro::Task<void> coro1() {

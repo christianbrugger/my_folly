@@ -26,6 +26,7 @@
 #include <folly/io/async/AsyncUDPSocket.h>
 #include <folly/io/async/EventHandler.h>
 #include <folly/io/async/IoUringBackend.h>
+#include <folly/io/async/IoUringProvidedBufferRing.h>
 #include <folly/io/async/test/AsyncSignalHandlerTestLib.h>
 #include <folly/io/async/test/EventBaseTestLib.h>
 #include <folly/portability/GTest.h>
@@ -188,8 +189,7 @@ class EventFD : public folly::EventHandler, public folly::EventReadCallback {
       : EventHandler(eventBase, folly::NetworkSocket::fromFd(fd)),
         total_(total),
         fd_(fd),
-        persist_(persist),
-        evb_(eventBase) {
+        persist_(persist) {
     if (persist_) {
       registerHandler(folly::EventHandler::READ | folly::EventHandler::PERSIST);
     } else {
@@ -226,7 +226,6 @@ class EventFD : public folly::EventHandler, public folly::EventReadCallback {
   uint64_t& total_;
   int fd_{-1};
   bool persist_;
-  folly::EventBase* evb_;
   std::unique_ptr<IoVec> ioVecPtr_;
 };
 
@@ -311,8 +310,9 @@ void testInvalidFd(size_t numTotal, size_t numValid, size_t numInvalid) {
 
   for (size_t i = 0; i < numTotal; i++) {
     bool valid = (i % (numValid + numInvalid)) < numValid;
-    eventsVec.emplace_back(std::make_unique<EventFD>(
-        valid, 1, total, false /*persist*/, evbPtr.get()));
+    eventsVec.emplace_back(
+        std::make_unique<EventFD>(
+            valid, 1, total, false /*persist*/, evbPtr.get()));
   }
 
   evbPtr->loop();
@@ -461,8 +461,9 @@ class EventRecvmsgMultishotCallback
     folly::EventRecvmsgMultishotCallback::ParsedRecvMsgMultishot p;
     ASSERT_GE(res, 0);
     EXPECT_EQ(res, io->coalesce().size());
-    ASSERT_TRUE(folly::EventRecvmsgMultishotCallback::parseRecvmsgMultishot(
-        io->coalesce(), msgHdr->data_, p));
+    ASSERT_TRUE(
+        folly::EventRecvmsgMultishotCallback::parseRecvmsgMultishot(
+            io->coalesce(), msgHdr->data_, p));
 
     EXPECT_EQ(p.payload.size(), static_cast<int>(numBytes_));
 
@@ -568,12 +569,12 @@ void testAsyncUDPRecvmsg(bool useRegisteredFds, bool multishot = false) {
       auto cb_m = std::make_unique<EventRecvmsgMultishotCallback>(
           data, clientSock->address(), kNumBytes, total, evbPtr.get());
       serverSock->setRecvmsgMultishotCallback(cb_m.get());
-      cbVec.push_back([c = std::move(cb_m)]() { return c->getAsyncNum(); });
+      cbVec.emplace_back([c = std::move(cb_m)]() { return c->getAsyncNum(); });
     } else {
       auto cb = std::make_unique<EventRecvmsgCallback>(
           data, clientSock->address(), kNumBytes, total, evbPtr.get());
       serverSock->setEventCallback(cb.get());
-      cbVec.push_back([c = std::move(cb)]() { return c->getAsyncNum(); });
+      cbVec.emplace_back([c = std::move(cb)]() { return c->getAsyncNum(); });
     }
     // bind
     serverSock->bind(folly::SocketAddress("::1", 0));
@@ -798,6 +799,134 @@ TEST(IoUringBackend, RenameSrcDoesntExist) {
 
   backendPtr->queueRename(
       oldPath.string().c_str(), newPath.string().c_str(), std::move(renameCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, Unlink) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto dirPath = folly::fs::temp_directory_path();
+  auto fileName = folly::fs::unique_path();
+  auto filePath = dirPath / fileName;
+
+  int fd = folly::fileops::open(
+      filePath.string().c_str(), O_CREAT | O_WRONLY | O_TRUNC);
+  CHECK_GE(fd, 0);
+  folly::fileops::close(fd);
+
+  SCOPE_EXIT {
+    ::unlink(filePath.string().c_str());
+  };
+
+  EXPECT_TRUE(folly::fs::exists(filePath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_GE(res, 0);
+    EXPECT_FALSE(folly::fs::exists(filePath));
+  };
+
+  backendPtr->queueUnlink(filePath.string().c_str(), std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, UnlinkDoesntExist) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto dirPath = folly::fs::temp_directory_path();
+  auto fileName = folly::fs::unique_path();
+  auto filePath = dirPath / fileName;
+
+  EXPECT_FALSE(folly::fs::exists(filePath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_LT(res, 0);
+    EXPECT_FALSE(folly::fs::exists(filePath));
+  };
+
+  backendPtr->queueUnlink(filePath.string().c_str(), std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, Unlinkat) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto dirPath = folly::fs::temp_directory_path();
+  auto fileName = folly::fs::unique_path();
+  auto filePath = dirPath / fileName;
+
+  int fd = folly::fileops::open(
+      filePath.string().c_str(), O_CREAT | O_WRONLY | O_TRUNC);
+  CHECK_GE(fd, 0);
+  folly::fileops::close(fd);
+
+  int dirfd = folly::fileops::open(dirPath.string().c_str(), O_DIRECTORY);
+  CHECK_GE(dirfd, 0);
+
+  SCOPE_EXIT {
+    folly::fileops::close(dirfd);
+    ::unlink(filePath.string().c_str());
+  };
+
+  EXPECT_TRUE(folly::fs::exists(filePath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_GE(res, 0);
+    EXPECT_FALSE(folly::fs::exists(filePath));
+  };
+
+  backendPtr->queueUnlinkat(
+      dirfd, fileName.string().c_str(), 0, std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, UnlinkatRemoveDir) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto parentPath = folly::fs::temp_directory_path();
+  auto dirName = folly::fs::unique_path();
+  auto dirPath = parentPath / dirName;
+
+  folly::fs::create_directory(dirPath);
+
+  SCOPE_EXIT {
+    folly::fs::remove(dirPath);
+  };
+
+  EXPECT_TRUE(folly::fs::exists(dirPath));
+  EXPECT_TRUE(folly::fs::is_directory(dirPath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_GE(res, 0);
+    EXPECT_FALSE(folly::fs::exists(dirPath));
+  };
+
+  // AT_REMOVEDIR flag allows removing directories
+  backendPtr->queueUnlinkat(
+      AT_FDCWD, dirPath.string().c_str(), AT_REMOVEDIR, std::move(unlinkCb));
 
   evbPtr->loopForever();
 }
@@ -1099,8 +1228,9 @@ TEST(IoUringBackend, FileReadWrite) {
   auto tempFile = folly::test::TempFileUtil::getTempFile(kFileSize);
 
   int fd = folly::fileops::open(tempFile.path().c_str(), O_DIRECT | O_RDWR);
-  if (fd == -1)
+  if (fd == -1) {
     fd = folly::fileops::open(tempFile.path().c_str(), O_RDWR);
+  }
   SKIP_IF(fd == -1) << "Tempfile can't be opened: " << folly::errnoStr(errno);
   SCOPE_EXIT {
     folly::fileops::close(fd);
@@ -1167,8 +1297,9 @@ TEST(IoUringBackend, FileReadvWritev) {
   auto tempFile = folly::test::TempFileUtil::getTempFile(kFileSize);
 
   int fd = folly::fileops::open(tempFile.path().c_str(), O_DIRECT | O_RDWR);
-  if (fd == -1)
+  if (fd == -1) {
     fd = folly::fileops::open(tempFile.path().c_str(), O_RDWR);
+  }
   SKIP_IF(fd == -1) << "Tempfile can't be opened: " << folly::errnoStr(errno);
   SCOPE_EXIT {
     folly::fileops::close(fd);
@@ -1202,13 +1333,11 @@ TEST(IoUringBackend, FileReadvWritev) {
     readIov.reserve(kNumIov);
     writeIov.reserve(kNumIov);
     for (size_t j = 0; j < kNumIov; j++) {
-      struct iovec riov {
-        readDataVecVec[i][j].data(), readDataVecVec[i][j].size()
-      };
+      struct iovec riov{
+          readDataVecVec[i][j].data(), readDataVecVec[i][j].size()};
       readIov.push_back(riov);
-      struct iovec wiov {
-        writeDataVecVec[i][j].data(), writeDataVecVec[i][j].size()
-      };
+      struct iovec wiov{
+          writeDataVecVec[i][j].data(), writeDataVecVec[i][j].size()};
       writeIov.push_back(wiov);
       len += riov.iov_len;
     }
@@ -1263,8 +1392,9 @@ TEST(IoUringBackend, FileReadMany) {
   auto tempFile = folly::test::TempFileUtil::getTempFile(kFileSize);
 
   int fd = folly::fileops::open(tempFile.path().c_str(), O_DIRECT | O_RDWR);
-  if (fd == -1)
+  if (fd == -1) {
     fd = folly::fileops::open(tempFile.path().c_str(), O_RDWR);
+  }
   SKIP_IF(fd == -1) << "Tempfile can't be opened: " << folly::errnoStr(errno);
   SCOPE_EXIT {
     folly::fileops::close(fd);
@@ -1325,8 +1455,9 @@ TEST(IoUringBackend, FileWriteMany) {
   auto tempFile = folly::test::TempFileUtil::getTempFile(kFileSize);
 
   int fd = folly::fileops::open(tempFile.path().c_str(), O_DIRECT | O_RDWR);
-  if (fd == -1)
+  if (fd == -1) {
     fd = folly::fileops::open(tempFile.path().c_str(), O_RDWR);
+  }
   SKIP_IF(fd == -1) << "Tempfile can't be opened: " << folly::errnoStr(errno);
   SCOPE_EXIT {
     folly::fileops::close(fd);
@@ -1503,7 +1634,7 @@ TEST(IoUringBackend, ProvidedBuffers) {
 
   auto* bufferProvider = backend->bufferProvider();
   ASSERT_NE(bufferProvider, nullptr);
-
+  EXPECT_EQ(bufferProvider, backend->bufferProvider());
   EXPECT_EQ(2, bufferProvider->count());
 
   struct Reader : folly::IoSqeBase {
@@ -1538,10 +1669,11 @@ TEST(IoUringBackend, ProvidedBuffers) {
   std::vector<std::unique_ptr<Reader>> readers;
   auto addReaders = [&](int n) {
     for (int i = 0; i < n; i++) {
-      readers.push_back(std::make_unique<Reader>(
-          fds[0], bufferProvider->gid(), [&](int r, uint32_t f) {
-            cqes.emplace_back(r, f);
-          }));
+      readers.push_back(
+          std::make_unique<Reader>(
+              fds[0], bufferProvider->gid(), [&](int r, uint32_t f) {
+                cqes.emplace_back(r, f);
+              }));
       backend->submit(*readers.back());
     }
   };
@@ -1560,8 +1692,10 @@ TEST(IoUringBackend, ProvidedBuffers) {
   EXPECT_EQ(-ENOBUFS, cqes[2].first);
   ASSERT_EQ(2, cqes[0].first);
   ASSERT_EQ(2, cqes[1].first);
-  EXPECT_EQ("12", toString(bufferProvider->getIoBuf(cqes[0].second >> 16, 2)));
-  EXPECT_EQ("34", toString(bufferProvider->getIoBuf(cqes[1].second >> 16, 2)));
+  EXPECT_EQ(
+      "12", toString(bufferProvider->getIoBuf(cqes[0].second >> 16, 2, false)));
+  EXPECT_EQ(
+      "34", toString(bufferProvider->getIoBuf(cqes[1].second >> 16, 2, false)));
 
   // now the buffers should be back
   readers.clear();
@@ -1570,7 +1704,38 @@ TEST(IoUringBackend, ProvidedBuffers) {
   backend->eb_event_base_loop(EVLOOP_ONCE);
   ASSERT_EQ(1, cqes.size());
   EXPECT_EQ(2, cqes[0].first);
-  EXPECT_EQ("56", toString(bufferProvider->getIoBuf(cqes[0].second >> 16, 2)));
+  EXPECT_EQ(
+      "56", toString(bufferProvider->getIoBuf(cqes[0].second >> 16, 2, false)));
+}
+
+TEST(IoUringBackend, ProvidedBufferRingsPow2) {
+  folly::IoUringBackend::Options options;
+  EXPECT_THROW(options.setProvidedBufRings(3), std::runtime_error);
+}
+
+TEST(IoUringBackend, ProvidedBufferRingMultiple) {
+  auto evbPtr = getEventBase();
+  std::unique_ptr<folly::IoUringBackend> backend;
+  try {
+    backend = std::make_unique<folly::IoUringBackend>(
+        folly::IoUringBackend::Options{}
+            .setInitialProvidedBuffers(2, 2)
+            .setProvidedBufRings(2));
+  } catch (folly::IoUringBackend::NotAvailable const&) {
+  }
+  SKIP_IF(!backend) << "Backend not available";
+
+  auto* bp1 = backend->bufferProvider();
+  ASSERT_NE(bp1, nullptr);
+
+  auto* bp2 = backend->bufferProvider();
+  ASSERT_NE(bp2, nullptr);
+
+  auto* bp3 = backend->bufferProvider();
+  ASSERT_NE(bp3, nullptr);
+
+  EXPECT_NE(bp1, bp2);
+  EXPECT_EQ(bp1, bp3);
 }
 
 TEST(IoUringBackend, ProvidedBufferRing) {
@@ -1590,11 +1755,10 @@ TEST(IoUringBackend, ProvidedBufferRing) {
     auto* bufferProvider = backend->bufferProvider();
     ASSERT_NE(bufferProvider, nullptr);
     for (int i = 0; i < 16; i++) {
-      bufferProvider->getIoBuf(i % kBuffs, 1);
+      bufferProvider->getIoBuf(i % kBuffs, 1, false);
     }
-    bufferProvider->unusedBuf(0);
     for (int i = 0; i < keep; i++) {
-      bufs.push_back(bufferProvider->getIoBuf(i % kBuffs, 1));
+      bufs.push_back(bufferProvider->getIoBuf(i % kBuffs, 1, false));
     }
   }
 }
@@ -1618,9 +1782,722 @@ TEST(IoUringBackend, BigProvidedBufferRing) {
   ASSERT_NE(bufferProvider, nullptr);
   for (int i = 0; i < kBuffs; i++) {
     // test that we can obtain all the possible buffers and return them
-    auto buff = bufferProvider->getIoBuf(i, kSize);
+    auto buff = bufferProvider->getIoBuf(i, kSize, false);
     memset(buff->writableData(), 0, buff->length());
   }
+}
+
+TEST(IoUringBackend, IncrementalBuffers) {
+  auto evbPtr = getEventBase();
+  std::unique_ptr<folly::IoUringBackend> backend;
+  try {
+    /* 2 buffers of size 32 bytes with incremental buffers enabled */
+    backend = std::make_unique<folly::IoUringBackend>(
+        folly::IoUringBackend::Options{}
+            .setInitialProvidedBuffers(32, 2) // 32 bytes per buffer, 2 buffers
+            .setEnableIncrementalBuffers(true));
+  } catch (folly::IoUringBackend::NotAvailable const&) {
+  }
+  SKIP_IF(!backend);
+
+  auto* bufferProvider = backend->bufferProvider();
+  ASSERT_NE(bufferProvider, nullptr);
+  EXPECT_EQ(2, bufferProvider->count());
+  EXPECT_EQ(32, bufferProvider->sizePerBuffer());
+
+  struct Reader : folly::IoSqeBase {
+    Reader(int fd, uint16_t bgid, std::function<void(int, uint32_t)> oncqe)
+        : fd_(fd), bgid_(bgid), oncqe_(oncqe) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      io_uring_prep_read(sqe, fd_, nullptr, 32 /* max read 32 per go */, 0);
+      sqe->flags |= IOSQE_BUFFER_SELECT;
+      sqe->buf_group = bgid_;
+    }
+
+    void callback(const io_uring_cqe* cqe) noexcept override {
+      oncqe_(cqe->res, cqe->flags);
+    }
+
+    void callbackCancelled(const io_uring_cqe*) noexcept override { FAIL(); }
+
+    int fd_;
+    uint16_t bgid_;
+    std::function<void(int, uint32_t)> oncqe_;
+  };
+
+  int fds[2];
+  ASSERT_EQ(0, folly::fileops::pipe(fds));
+  SCOPE_EXIT {
+    folly::fileops::close(fds[0]);
+    folly::fileops::close(fds[1]);
+  };
+
+  std::vector<std::pair<int, uint32_t>> cqes;
+  std::vector<std::unique_ptr<Reader>> readers;
+
+  auto addReaders = [&](int n) {
+    for (int i = 0; i < n; i++) {
+      readers.push_back(
+          std::make_unique<Reader>(
+              fds[0], bufferProvider->gid(), [&](int r, uint32_t f) {
+                cqes.emplace_back(r, f);
+              }));
+      backend->submit(*readers.back());
+    }
+  };
+
+  auto toString = [](const std::unique_ptr<folly::IOBuf>& x) -> std::string {
+    std::string ret;
+    x->appendTo(ret);
+    return ret;
+  };
+
+  auto generateTestData = [](size_t length, char startChar) -> std::string {
+    std::string data;
+    data.reserve(length);
+    for (size_t i = 0; i < length; i++) {
+      data.push_back(startChar + (i % 26));
+    }
+    return data;
+  };
+  addReaders(1);
+
+  std::string data1 = generateTestData(10, 'a'); // "abcdefghij"
+  ASSERT_EQ(10, folly::fileops::write(fds[1], data1.c_str(), data1.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(1, cqes.size());
+  EXPECT_EQ(10, cqes[0].first);
+  EXPECT_TRUE(cqes[0].second & IORING_CQE_F_BUFFER);
+
+  uint16_t bufferId1 = cqes[0].second >> 16;
+  bool hasMore1 = !!(cqes[0].second & IORING_CQE_F_BUF_MORE);
+  auto iob1 = bufferProvider->getIoBuf(bufferId1, cqes[0].first, hasMore1);
+  EXPECT_TRUE(hasMore1);
+  ASSERT_NE(iob1, nullptr);
+  EXPECT_EQ(data1, toString(iob1));
+
+  readers.clear();
+  addReaders(1);
+
+  std::string data2 = generateTestData(20, 'k'); // "klmnopqrstuvwxyz{|}~"
+  ASSERT_EQ(20, folly::fileops::write(fds[1], data2.c_str(), data2.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(2, cqes.size());
+  EXPECT_EQ(20, cqes[1].first);
+
+  uint16_t bufferId2 = cqes[1].second >> 16;
+  bool hasMore2 = !!(cqes[1].second & IORING_CQE_F_BUF_MORE);
+  auto iob2 = bufferProvider->getIoBuf(bufferId2, cqes[1].first, hasMore2);
+
+  EXPECT_EQ(bufferId1, bufferId2);
+  EXPECT_TRUE(hasMore2);
+  ASSERT_NE(iob2, nullptr);
+  EXPECT_EQ(data2, toString(iob2));
+
+  readers.clear();
+  addReaders(2);
+
+  std::string data3 = generateTestData(34, 'A');
+  ASSERT_EQ(34, folly::fileops::write(fds[1], data3.c_str(), data3.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+  ASSERT_EQ(4, cqes.size());
+
+  ASSERT_EQ(cqes[2].first, 2);
+  ASSERT_EQ(cqes[3].first, 32);
+
+  uint16_t bufferId3a = cqes[2].second >> 16;
+  bool hasMore3a = !!(cqes[2].second & IORING_CQE_F_BUF_MORE);
+  auto iob3a = bufferProvider->getIoBuf(bufferId3a, cqes[2].first, hasMore3a);
+
+  uint16_t bufferId3b = cqes[3].second >> 16;
+  bool hasMore3b = !!(cqes[3].second & IORING_CQE_F_BUF_MORE);
+  auto iob3b = bufferProvider->getIoBuf(bufferId3b, cqes[3].first, hasMore3b);
+
+  EXPECT_EQ(bufferId1, bufferId3a);
+  EXPECT_NE(bufferId3a, bufferId3b);
+  EXPECT_FALSE(hasMore3a);
+  EXPECT_FALSE(hasMore3b);
+
+  size_t len3a = cqes[2].first;
+  size_t len3b = cqes[3].first;
+  EXPECT_EQ("AB", toString(iob3a));
+  EXPECT_EQ(data3.substr(len3a, len3b), toString(iob3b));
+
+  readers.clear();
+  addReaders(1);
+
+  std::string data4 = generateTestData(10, 'Z');
+  ASSERT_EQ(10, folly::fileops::write(fds[1], data4.c_str(), data4.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(5, cqes.size());
+  EXPECT_EQ(-ENOBUFS, cqes[4].first);
+
+  iob1.reset();
+  iob2.reset();
+
+  readers.clear();
+  addReaders(1);
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(6, cqes.size());
+  EXPECT_EQ(-ENOBUFS, cqes[5].first);
+
+  iob3a.reset();
+
+  readers.clear();
+  addReaders(1);
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(7, cqes.size());
+  EXPECT_EQ(10, cqes[6].first);
+
+  uint16_t bufferId4 = cqes[6].second >> 16;
+  bool hasMore4 = !!(cqes[6].second & IORING_CQE_F_BUF_MORE);
+  auto iob4 = bufferProvider->getIoBuf(bufferId4, cqes[6].first, hasMore4);
+
+  EXPECT_EQ(bufferId1, bufferId4);
+  EXPECT_TRUE(hasMore4);
+  EXPECT_EQ(data4, toString(iob4));
+
+  iob3b.reset();
+  readers.clear();
+  addReaders(1);
+
+  std::string data5 = generateTestData(22, 'A');
+  ASSERT_EQ(22, folly::fileops::write(fds[1], data5.c_str(), data5.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(8, cqes.size());
+  EXPECT_EQ(22, cqes[7].first);
+
+  uint16_t bufferId5 = cqes[7].second >> 16;
+  bool hasMore5 = !!(cqes[7].second & IORING_CQE_F_BUF_MORE);
+  auto iob5 = bufferProvider->getIoBuf(bufferId5, cqes[7].first, hasMore5);
+
+  EXPECT_EQ(bufferId5, bufferId1);
+  EXPECT_FALSE(hasMore5);
+  ASSERT_NE(iob5, nullptr);
+  EXPECT_EQ(data5, toString(iob5));
+
+  readers.clear();
+  addReaders(1);
+  std::string data6 = generateTestData(32, 'a');
+  ASSERT_EQ(32, folly::fileops::write(fds[1], data6.c_str(), data6.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(9, cqes.size());
+  EXPECT_EQ(32, cqes[8].first);
+
+  uint16_t bufferId6 = cqes[8].second >> 16;
+  bool hasMore6 = !!(cqes[8].second & IORING_CQE_F_BUF_MORE);
+  auto iob6 = bufferProvider->getIoBuf(bufferId6, cqes[8].first, hasMore6);
+
+  EXPECT_NE(bufferId6, bufferId5);
+  EXPECT_FALSE(hasMore6);
+  ASSERT_NE(iob6, nullptr);
+  EXPECT_EQ(data6, toString(iob6));
+
+  readers.clear();
+  addReaders(1);
+
+  std::string data7 = generateTestData(10, 'Z');
+  ASSERT_EQ(10, folly::fileops::write(fds[1], data7.c_str(), data7.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(10, cqes.size());
+  EXPECT_EQ(-ENOBUFS, cqes[9].first);
+
+  iob6.reset();
+
+  readers.clear();
+  addReaders(1);
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(11, cqes.size());
+  EXPECT_EQ(10, cqes[10].first);
+
+  uint16_t bufferId7 = cqes[10].second >> 16;
+  bool hasMore7 = !!(cqes[10].second & IORING_CQE_F_BUF_MORE);
+  auto iob7 = bufferProvider->getIoBuf(bufferId7, cqes[10].first, hasMore7);
+
+  EXPECT_EQ(bufferId6, bufferId7);
+  EXPECT_TRUE(hasMore7);
+  EXPECT_EQ(data7, toString(iob7));
+
+  backend.reset();
+  EXPECT_EQ(data4, toString(iob4));
+  EXPECT_EQ(data5, toString(iob5));
+  EXPECT_EQ(data7, toString(iob7));
+
+  iob4.reset();
+  iob5.reset();
+  iob7.reset();
+}
+
+TEST(IoUringBackend, IncrementalBuffersEnobufTracking) {
+  auto evbPtr = getEventBase();
+  std::unique_ptr<folly::IoUringBackend> backend;
+  try {
+    /* 2 buffers of size 32 bytes with incremental buffers enabled */
+    backend = std::make_unique<folly::IoUringBackend>(
+        folly::IoUringBackend::Options{}
+            .setInitialProvidedBuffers(32, 2) // 32 bytes per buffer, 2 buffers
+            .setEnableIncrementalBuffers(true));
+  } catch (folly::IoUringBackend::NotAvailable const&) {
+  }
+  SKIP_IF(!backend);
+
+  auto* bufferProvider = backend->bufferProvider();
+  ASSERT_NE(bufferProvider, nullptr);
+  EXPECT_EQ(2, bufferProvider->count());
+  EXPECT_EQ(32, bufferProvider->sizePerBuffer());
+
+  struct Reader : folly::IoSqeBase {
+    Reader(int fd, uint16_t bgid, std::function<void(int, uint32_t)> oncqe)
+        : fd_(fd), bgid_(bgid), oncqe_(oncqe) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      io_uring_prep_read(sqe, fd_, nullptr, 32 /* max read 32 per go */, 0);
+      sqe->flags |= IOSQE_BUFFER_SELECT;
+      sqe->buf_group = bgid_;
+    }
+
+    void callback(const io_uring_cqe* cqe) noexcept override {
+      oncqe_(cqe->res, cqe->flags);
+    }
+
+    void callbackCancelled(const io_uring_cqe*) noexcept override { FAIL(); }
+
+    int fd_;
+    uint16_t bgid_;
+    std::function<void(int, uint32_t)> oncqe_;
+  };
+
+  int fds[2];
+  ASSERT_EQ(0, folly::fileops::pipe(fds));
+  SCOPE_EXIT {
+    folly::fileops::close(fds[0]);
+    folly::fileops::close(fds[1]);
+  };
+
+  std::vector<std::pair<int, uint32_t>> cqes;
+  std::vector<std::unique_ptr<Reader>> readers;
+
+  auto addReaders = [&](int n) {
+    for (int i = 0; i < n; i++) {
+      readers.push_back(
+          std::make_unique<Reader>(
+              fds[0], bufferProvider->gid(), [&](int r, uint32_t f) {
+                cqes.emplace_back(r, f);
+                if (r == -ENOBUFS) {
+                  // Notify the buffer provider so it can track internally
+                  bufferProvider->enobuf();
+                }
+              }));
+      backend->submit(*readers.back());
+    }
+  };
+
+  auto toString = [](const std::unique_ptr<folly::IOBuf>& x) -> std::string {
+    std::string ret;
+    x->appendTo(ret);
+    return ret;
+  };
+
+  auto generateTestData = [](size_t length, char startChar) -> std::string {
+    std::string data;
+    data.reserve(length);
+    for (size_t i = 0; i < length; i++) {
+      data.push_back(startChar + (i % 26));
+    }
+    return data;
+  };
+
+  addReaders(1);
+
+  std::string data1 = generateTestData(10, 'a');
+  ASSERT_EQ(10, folly::fileops::write(fds[1], data1.c_str(), data1.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(1, cqes.size());
+  EXPECT_EQ(10, cqes[0].first);
+
+  uint16_t bufferId1 = cqes[0].second >> 16;
+  bool hasMore1 = !!(cqes[0].second & IORING_CQE_F_BUF_MORE);
+  auto iob1 = bufferProvider->getIoBuf(bufferId1, cqes[0].first, hasMore1);
+  EXPECT_EQ(data1, toString(iob1));
+
+  readers.clear();
+  addReaders(1);
+
+  std::string data2 = generateTestData(20, 'k');
+  ASSERT_EQ(20, folly::fileops::write(fds[1], data2.c_str(), data2.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(2, cqes.size());
+  EXPECT_EQ(20, cqes[1].first);
+
+  uint16_t bufferId2 = cqes[1].second >> 16;
+  bool hasMore2 = !!(cqes[1].second & IORING_CQE_F_BUF_MORE);
+  auto iob2 = bufferProvider->getIoBuf(bufferId2, cqes[1].first, hasMore2);
+  EXPECT_EQ(data2, toString(iob2));
+
+  readers.clear();
+  addReaders(2);
+
+  std::string data3 = generateTestData(34, 'A');
+  ASSERT_EQ(34, folly::fileops::write(fds[1], data3.c_str(), data3.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+  ASSERT_EQ(4, cqes.size());
+
+  uint16_t bufferId3a = cqes[2].second >> 16;
+  bool hasMore3a = !!(cqes[2].second & IORING_CQE_F_BUF_MORE);
+  auto iob3a = bufferProvider->getIoBuf(bufferId3a, cqes[2].first, hasMore3a);
+
+  uint16_t bufferId3b = cqes[3].second >> 16;
+  bool hasMore3b = !!(cqes[3].second & IORING_CQE_F_BUF_MORE);
+  auto iob3b = bufferProvider->getIoBuf(bufferId3b, cqes[3].first, hasMore3b);
+
+  readers.clear();
+  addReaders(1);
+
+  std::string data4 = generateTestData(10, 'Z');
+  ASSERT_EQ(10, folly::fileops::write(fds[1], data4.c_str(), data4.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(5, cqes.size());
+  EXPECT_EQ(-ENOBUFS, cqes[4].first);
+
+  iob1.reset();
+  iob2.reset();
+
+  readers.clear();
+  addReaders(1);
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(6, cqes.size());
+  EXPECT_EQ(-ENOBUFS, cqes[5].first);
+
+  auto* providedBufferRing =
+      dynamic_cast<folly::IoUringProvidedBufferRing*>(bufferProvider);
+  ASSERT_NE(providedBufferRing, nullptr);
+  uint64_t resetCount = providedBufferRing->getAndResetEnobufCount();
+  EXPECT_EQ(2, resetCount) << "getAndResetEnobufCount should return 2";
+
+  iob3a.reset();
+
+  readers.clear();
+  addReaders(1);
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(7, cqes.size());
+  EXPECT_EQ(10, cqes[6].first);
+
+  uint16_t bufferId4 = cqes[6].second >> 16;
+  bool hasMore4 = !!(cqes[6].second & IORING_CQE_F_BUF_MORE);
+  auto iob4 = bufferProvider->getIoBuf(bufferId4, cqes[6].first, hasMore4);
+  EXPECT_EQ(data4, toString(iob4));
+
+  iob3b.reset();
+  readers.clear();
+  addReaders(1);
+
+  std::string data5 = generateTestData(22, 'B');
+  ASSERT_EQ(22, folly::fileops::write(fds[1], data5.c_str(), data5.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(8, cqes.size());
+  EXPECT_EQ(22, cqes[7].first);
+
+  uint16_t bufferId5 = cqes[7].second >> 16;
+  bool hasMore5 = !!(cqes[7].second & IORING_CQE_F_BUF_MORE);
+  auto iob5 = bufferProvider->getIoBuf(bufferId5, cqes[7].first, hasMore5);
+  EXPECT_EQ(data5, toString(iob5));
+
+  readers.clear();
+  addReaders(1);
+  std::string data6 = generateTestData(32, 'C');
+  ASSERT_EQ(32, folly::fileops::write(fds[1], data6.c_str(), data6.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(9, cqes.size());
+  EXPECT_EQ(32, cqes[8].first);
+
+  uint16_t bufferId6 = cqes[8].second >> 16;
+  bool hasMore6 = !!(cqes[8].second & IORING_CQE_F_BUF_MORE);
+  auto iob6 = bufferProvider->getIoBuf(bufferId6, cqes[8].first, hasMore6);
+  EXPECT_EQ(data6, toString(iob6));
+
+  readers.clear();
+  addReaders(1);
+
+  std::string data7 = generateTestData(10, 'X');
+  ASSERT_EQ(10, folly::fileops::write(fds[1], data7.c_str(), data7.size()));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  ASSERT_EQ(10, cqes.size());
+  EXPECT_EQ(-ENOBUFS, cqes[9].first);
+
+  uint64_t resetCount2 = providedBufferRing->getAndResetEnobufCount();
+  EXPECT_EQ(1, resetCount2)
+      << "getAndResetEnobufCount should return 1 after the 3rd ENOBUFS";
+}
+
+TEST(IoUringBackend, ReceiveBundleTest) {
+  constexpr size_t TEST_SIZE = 32 * 1024;
+  constexpr size_t MSG_SIZE = 1024;
+
+  auto evbPtr = getEventBase();
+  std::unique_ptr<folly::IoUringBackend> backend;
+  try {
+    backend = std::make_unique<folly::IoUringBackend>(
+        folly::IoUringBackend::Options{}.setInitialProvidedBuffers(
+            MSG_SIZE, 64));
+  } catch (folly::IoUringBackend::NotAvailable const&) {
+  }
+  SKIP_IF(!backend) << "Backend not available";
+
+  auto* bufferProvider = backend->bufferProvider();
+  ASSERT_NE(bufferProvider, nullptr);
+
+  std::string expected(TEST_SIZE, 'A');
+  for (size_t i = 0; i < TEST_SIZE; ++i) {
+    expected[i] = 'A' + (i % 26); // A-Z pattern
+  }
+
+  int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(server_fd, 0);
+
+  int opt = 1;
+  ASSERT_EQ(
+      0, setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)));
+
+  struct sockaddr_in server_addr{};
+  memset(&server_addr, 0, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = INADDR_ANY;
+  server_addr.sin_port = htons(0);
+
+  ASSERT_EQ(
+      0, bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)));
+  ASSERT_EQ(0, listen(server_fd, 1));
+
+  socklen_t addr_len = sizeof(server_addr);
+  ASSERT_EQ(
+      0, getsockname(server_fd, (struct sockaddr*)&server_addr, &addr_len));
+  int server_port = ntohs(server_addr.sin_port);
+
+  SCOPE_EXIT {
+    if (server_fd >= 0) {
+      close(server_fd);
+    }
+  };
+
+  int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(client_fd, 0);
+
+  struct sockaddr_in client_addr{};
+  memset(&client_addr, 0, sizeof(client_addr));
+  client_addr.sin_family = AF_INET;
+  client_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+  client_addr.sin_port = htons(server_port);
+
+  ASSERT_EQ(
+      0,
+      connect(client_fd, (struct sockaddr*)&client_addr, sizeof(client_addr)));
+
+  int accepted_fd = accept(server_fd, nullptr, nullptr);
+  ASSERT_GE(accepted_fd, 0);
+
+  SCOPE_EXIT {
+    if (client_fd >= 0) {
+      close(client_fd);
+    }
+
+    if (accepted_fd >= 0) {
+      close(accepted_fd);
+    }
+  };
+
+  std::string received;
+  bool gotBundle = false;
+  bool eofReceived = false;
+
+  struct SimpleReader : folly::IoSqeBase {
+    SimpleReader(
+        int fd,
+        uint16_t bgid,
+        folly::IoUringProvidedBufferRing* bufProvider,
+        std::string* received,
+        bool* gotBundle,
+        bool* eofReceived)
+        : fd_(fd),
+          bgid_(bgid),
+          bufProvider_(bufProvider),
+          received_(received),
+          gotBundle_(gotBundle),
+          eofReceived_(eofReceived) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      io_uring_prep_recv_multishot(sqe, fd_, nullptr, 0, 0);
+      sqe->ioprio |= IORING_RECVSEND_BUNDLE;
+      sqe->flags |= IOSQE_BUFFER_SELECT;
+      sqe->buf_group = bgid_;
+    }
+
+    void callback(const io_uring_cqe* cqe) noexcept override {
+      if (cqe->res == 0) {
+        *eofReceived_ = true;
+        LOG(INFO) << "EOF received";
+        return;
+      }
+
+      if (cqe->res > 1024) {
+        *gotBundle_ = true;
+      }
+
+      uint16_t bufId = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+      bool hasMore = cqe->flags & IORING_CQE_F_BUF_MORE;
+      auto buf = bufProvider_->getIoBuf(bufId, cqe->res, hasMore);
+
+      if (buf) {
+        buf->coalesce();
+        received_->append(
+            reinterpret_cast<const char*>(buf->data()), buf->length());
+      }
+    }
+
+    void callbackCancelled(const io_uring_cqe*) noexcept override {}
+
+   private:
+    int fd_;
+    uint16_t bgid_;
+    folly::IoUringProvidedBufferRing* bufProvider_;
+    std::string* received_;
+    bool* gotBundle_;
+    bool* eofReceived_;
+  };
+
+  auto reader = std::make_unique<SimpleReader>(
+      accepted_fd,
+      bufferProvider->gid(),
+      bufferProvider,
+      &received,
+      &gotBundle,
+      &eofReceived);
+  backend->submit(*reader);
+
+  ssize_t sent = send(client_fd, expected.data(), expected.size(), 0);
+  ASSERT_EQ(sent, expected.size()) << "Failed to send all data";
+
+  close(client_fd);
+  client_fd = -1;
+
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+
+  EXPECT_EQ(received.size(), expected.size()) << "Should receive all data";
+  EXPECT_EQ(received, expected) << "Data should match exactly";
+  EXPECT_TRUE(gotBundle) << "Should detect at least one bundle";
+  EXPECT_TRUE(eofReceived) << "Should receive EOF";
+}
+
+TEST(IoUringBackend, ProvidedBufferUtilization) {
+  auto evbPtr = getEventBase();
+  std::unique_ptr<folly::IoUringBackend> backend;
+  try {
+    backend = std::make_unique<folly::IoUringBackend>(
+        folly::IoUringBackend::Options{}.setInitialProvidedBuffers(100, 5));
+  } catch (folly::IoUringBackend::NotAvailable const&) {
+  }
+  SKIP_IF(!backend) << "Backend not available";
+
+  auto* bufferProvider = backend->bufferProvider();
+  ASSERT_NE(bufferProvider, nullptr);
+  EXPECT_EQ(bufferProvider, backend->bufferProvider());
+  EXPECT_EQ(5, bufferProvider->count());
+
+  struct Reader : folly::IoSqeBase {
+    Reader(int fd, uint16_t bgid, std::function<void(int, uint32_t)> oncqe)
+        : fd_(fd), bgid_(bgid), oncqe_(oncqe) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      io_uring_prep_read(sqe, fd_, nullptr, 100 /* max read 100 per go */, 0);
+      sqe->flags |= IOSQE_BUFFER_SELECT;
+      sqe->buf_group = bgid_;
+    }
+
+    void callback(const io_uring_cqe* cqe) noexcept override {
+      oncqe_(cqe->res, cqe->flags);
+    }
+
+    void callbackCancelled(const io_uring_cqe*) noexcept override { FAIL(); }
+
+    int fd_;
+    uint16_t bgid_;
+    std::function<void(int, uint32_t)> oncqe_;
+  };
+
+  int fds[2];
+  ASSERT_EQ(0, folly::fileops::pipe(fds));
+  SCOPE_EXIT {
+    folly::fileops::close(fds[0]);
+    folly::fileops::close(fds[1]);
+  };
+
+  std::vector<std::pair<int, uint32_t>> cqes;
+  std::vector<std::unique_ptr<Reader>> readers;
+  auto addReaders = [&](int n) {
+    for (int i = 0; i < n; i++) {
+      readers.push_back(
+          std::make_unique<Reader>(
+              fds[0], bufferProvider->gid(), [&](int r, uint32_t f) {
+                cqes.emplace_back(r, f);
+              }));
+      backend->submit(*readers.back());
+    }
+  };
+
+  addReaders(5);
+  ASSERT_EQ(
+      500, folly::fileops::write(fds[1], std::string(500, 'A').c_str(), 500));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+  ASSERT_EQ(5, cqes.size()) << "expect 5 completions";
+
+  ASSERT_EQ(100, cqes[0].first);
+  ASSERT_EQ(100, cqes[1].first);
+  auto iobuf0 = bufferProvider->getIoBuf(cqes[0].second >> 16, 100, false);
+  auto iobuf1 = bufferProvider->getIoBuf(cqes[1].second >> 16, 100, false);
+  auto iobuf2 = bufferProvider->getIoBuf(cqes[2].second >> 16, 100, false);
+  auto iobuf3 = bufferProvider->getIoBuf(cqes[3].second >> 16, 100, false);
+  auto iobuf4 = bufferProvider->getIoBuf(cqes[4].second >> 16, 100, false);
+
+  auto* providedBufferRing =
+      dynamic_cast<folly::IoUringProvidedBufferRing*>(bufferProvider);
+  ASSERT_NE(providedBufferRing, nullptr);
+
+  int utilization = providedBufferRing->getUtilPct();
+  EXPECT_EQ(100, utilization)
+      << "All 5 buffers in use, expected 100% utilization";
+
+  iobuf3.reset();
+  iobuf4.reset();
+
+  utilization = providedBufferRing->getUtilPct();
+  EXPECT_EQ(60, utilization)
+      << "3 out of 5 buffers in use, expected 60% utilization";
+
+  iobuf0.reset();
+  iobuf1.reset();
+  iobuf2.reset();
+
+  utilization = providedBufferRing->getUtilPct();
+  EXPECT_EQ(0, utilization) << "No buffers in use, expected 0% utilization";
+
+  readers.clear();
 }
 
 TEST(IoUringBackend, DeferTaskRun) {

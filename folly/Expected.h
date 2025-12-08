@@ -65,7 +65,7 @@ struct ExpectedHelper;
  * Expected objects in the error state.
  */
 template <class Error>
-class FOLLY_NODISCARD Unexpected final {
+class [[nodiscard]] Unexpected final {
   template <class E>
   friend class Unexpected;
   template <class V, class E>
@@ -193,7 +193,7 @@ template <class Value, class Error>
 class Expected;
 
 template <class Error, class Value>
-FOLLY_NODISCARD constexpr Expected<typename std::decay<Value>::type, Error>
+[[nodiscard]] constexpr Expected<typename std::decay<Value>::type, Error>
 makeExpected(Value&&);
 
 /**
@@ -512,6 +512,7 @@ struct ExpectedStorage<Value, Error, StorageType::eUnion>
         this->error().~Error();
         break;
       case Which::eEmpty:
+      default:
         break;
     }
     this->which_ = Which::eEmpty;
@@ -551,6 +552,8 @@ struct ExpectedStorage<Value, Error, StorageType::eUnion>
     if (isSelfAssign(&that)) {
       return;
     }
+    FOLLY_PUSH_WARNING
+    FOLLY_CLANG_DISABLE_WARNING("-Wcovered-switch-default")
     switch (that.which_) {
       case Which::eValue:
         this->assignValue(static_cast<Other&&>(that).value());
@@ -563,6 +566,7 @@ struct ExpectedStorage<Value, Error, StorageType::eUnion>
         this->clear();
         break;
     }
+    FOLLY_POP_WARNING
   }
 };
 
@@ -669,11 +673,10 @@ struct ExpectedHelper {
       class... Fns,
       class E = ExpectedErrorType<This>,
       class T = ExpectedHelper>
-  static auto then_(This&& ex, Fn&& fn, Fns&&... fns)
-      -> decltype(T::then_(
-          T::template return_<E>(
-              (std::declval<Fn>()(std::declval<This>().value()), unit)),
-          std::declval<Fns>()...)) {
+  static auto then_(This&& ex, Fn&& fn, Fns&&... fns) -> decltype(T::then_(
+      T::template return_<E>(
+          (std::declval<Fn>()(std::declval<This>().value()), unit)),
+      std::declval<Fns>()...)) {
     if (FOLLY_LIKELY(ex.which_ == expected_detail::Which::eValue)) {
       return T::then_(
           T::template return_<E>(
@@ -742,10 +745,11 @@ struct ExpectedHelper {
     // Note - this basically decays into then_ once the first type (No) is
     // called for the error.
     if (FOLLY_LIKELY(ex.which_ == expected_detail::Which::eValue)) {
-      return T::template return_<E>((T::then_(T::template return_<E>(
-          // Uses the comma operator defined above IFF the lambda
-          // returns non-void.
-          static_cast<decltype(ex)&&>(ex).value()))));
+      return T::template return_<E>((T::then_(
+          T::template return_<E>(
+              // Uses the comma operator defined above IFF the lambda
+              // returns non-void.
+              static_cast<decltype(ex)&&>(ex).value()))));
     }
     return T::then_(
         T::template return_<E>(
@@ -1262,9 +1266,9 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
    * then
    */
   template <class... Fns FOLLY_REQUIRES_TRAILING(sizeof...(Fns) >= 1)>
-  auto then(Fns&&... fns)
-      const& -> decltype(expected_detail::ExpectedHelper::then_(
-                 std::declval<const Base&>(), std::declval<Fns>()...)) {
+  auto
+  then(Fns&&... fns) const& -> decltype(expected_detail::ExpectedHelper::then_(
+      std::declval<const Base&>(), std::declval<Fns>()...)) {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
@@ -1273,9 +1277,8 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
   }
 
   template <class... Fns FOLLY_REQUIRES_TRAILING(sizeof...(Fns) >= 1)>
-  auto
-  then(Fns&&... fns) & -> decltype(expected_detail::ExpectedHelper::then_(
-                           std::declval<Base&>(), std::declval<Fns>()...)) {
+  auto then(Fns&&... fns) & -> decltype(expected_detail::ExpectedHelper::then_(
+      std::declval<Base&>(), std::declval<Fns>()...)) {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
@@ -1284,9 +1287,8 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
   }
 
   template <class... Fns FOLLY_REQUIRES_TRAILING(sizeof...(Fns) >= 1)>
-  auto
-  then(Fns&&... fns) && -> decltype(expected_detail::ExpectedHelper::then_(
-                            std::declval<Base&&>(), std::declval<Fns>()...)) {
+  auto then(Fns&&... fns) && -> decltype(expected_detail::ExpectedHelper::then_(
+      std::declval<Base&&>(), std::declval<Fns>()...)) {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
@@ -1301,7 +1303,7 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
   template <class... Fns FOLLY_REQUIRES_TRAILING(sizeof...(Fns) >= 1)>
   auto orElse(Fns&&... fns)
       const& -> decltype(expected_detail::ExpectedHelper::orElse_(
-                 std::declval<const Base&>(), std::declval<Fns>()...)) {
+          std::declval<const Base&>(), std::declval<Fns>()...)) {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
@@ -1312,7 +1314,7 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
   template <class... Fns FOLLY_REQUIRES_TRAILING(sizeof...(Fns) >= 1)>
   auto
   orElse(Fns&&... fns) & -> decltype(expected_detail::ExpectedHelper::orElse_(
-                             std::declval<Base&>(), std::declval<Fns>()...)) {
+      std::declval<Base&>(), std::declval<Fns>()...)) {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
@@ -1323,7 +1325,7 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
   template <class... Fns FOLLY_REQUIRES_TRAILING(sizeof...(Fns) >= 1)>
   auto
   orElse(Fns&&... fns) && -> decltype(expected_detail::ExpectedHelper::orElse_(
-                              std::declval<Base&&>(), std::declval<Fns>()...)) {
+      std::declval<Base&&>(), std::declval<Fns>()...)) {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
@@ -1341,34 +1343,34 @@ class Expected final : expected_detail::ExpectedStorage<Value, Error> {
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
-    return Ret(expected_detail::ExpectedHelper::thenOrThrow_(
-        base(), static_cast<Yes&&>(yes), static_cast<No&&>(no)));
+    return Ret(
+        expected_detail::ExpectedHelper::thenOrThrow_(
+            base(), static_cast<Yes&&>(yes), static_cast<No&&>(no)));
   }
 
   template <class Yes, class No = MakeBadExpectedAccess>
-  auto thenOrThrow(
-      Yes&& yes,
-      No&& no =
-          No{}) & -> decltype(std::declval<Yes>()(std::declval<Value&>())) {
+  auto thenOrThrow(Yes&& yes, No&& no = No{}) & -> decltype(std::declval<Yes>()(
+      std::declval<Value&>())) {
     using Ret = decltype(std::declval<Yes>()(std::declval<Value&>()));
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
-    return Ret(expected_detail::ExpectedHelper::thenOrThrow_(
-        base(), static_cast<Yes&&>(yes), static_cast<No&&>(no)));
+    return Ret(
+        expected_detail::ExpectedHelper::thenOrThrow_(
+            base(), static_cast<Yes&&>(yes), static_cast<No&&>(no)));
   }
 
   template <class Yes, class No = MakeBadExpectedAccess>
-  auto thenOrThrow(
-      Yes&& yes,
-      No&& no =
-          No{}) && -> decltype(std::declval<Yes>()(std::declval<Value&&>())) {
+  auto
+  thenOrThrow(Yes&& yes, No&& no = No{}) && -> decltype(std::declval<Yes>()(
+      std::declval<Value&&>())) {
     using Ret = decltype(std::declval<Yes>()(std::declval<Value&&>()));
     if (this->uninitializedByException()) {
       throw_exception<BadExpectedAccess<void>>();
     }
-    return Ret(expected_detail::ExpectedHelper::thenOrThrow_(
-        std::move(base()), static_cast<Yes&&>(yes), static_cast<No&&>(no)));
+    return Ret(
+        expected_detail::ExpectedHelper::thenOrThrow_(
+            std::move(base()), static_cast<Yes&&>(yes), static_cast<No&&>(no)));
   }
 
   /**
@@ -1548,13 +1550,13 @@ Value* get_pointer(Expected<Value, Error>& ex) noexcept {
  * }
  */
 template <class Error, class Value>
-FOLLY_NODISCARD constexpr Expected<typename std::decay<Value>::type, Error>
+[[nodiscard]] constexpr Expected<typename std::decay<Value>::type, Error>
 makeExpected(Value&& val) {
   return Expected<typename std::decay<Value>::type, Error>{
       std::in_place, static_cast<Value&&>(val)};
 }
 
-// Suppress comparability of Optional<T> with T, despite implicit conversion.
+// Suppress comparability of Expected<T> with T, despite implicit conversion.
 template <class Value, class Error>
 bool operator==(const Expected<Value, Error>&, const Value& other) = delete;
 template <class Value, class Error>

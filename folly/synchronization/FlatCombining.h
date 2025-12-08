@@ -239,6 +239,11 @@ class FlatCombining {
     }
   }
 
+  FlatCombining(const FlatCombining&) = delete;
+  FlatCombining& operator=(const FlatCombining&) = delete;
+  FlatCombining(FlatCombining&&) = delete;
+  FlatCombining& operator=(FlatCombining&&) = delete;
+
   // Wait for all pending operations to complete. Useful primarily
   // when there are asynchronous operations without a dedicated
   // combiner.
@@ -276,7 +281,7 @@ class FlatCombining {
   // Execute an operation without combining
   template <typename OpFunc>
   void requestNoFC(OpFunc& opFn) {
-    std::lock_guard<Mutex> guard(m_);
+    std::lock_guard guard(m_);
     opFn();
   }
 
@@ -408,7 +413,7 @@ class FlatCombining {
       Rec* rec,
       bool syncop,
       const bool custom) {
-    std::unique_lock<Mutex> l(this->m_, std::defer_lock);
+    std::unique_lock l(this->m_, std::defer_lock);
     if (l.try_lock()) {
       // No contention
       ++uncombined_;
@@ -529,7 +534,7 @@ class FlatCombining {
         uint64_t count;
         ++sessions_;
         {
-          std::lock_guard<Mutex> guard(m_);
+          std::lock_guard guard(m_);
           count = combiningSession();
           combined_ += count;
         }
@@ -556,7 +561,7 @@ class FlatCombining {
     int count = 0;
     while (!rec.isDone()) {
       if (count == 0) {
-        std::unique_lock<Mutex> l(m_, std::defer_lock);
+        std::unique_lock l(m_, std::defer_lock);
         if (l.try_lock()) {
           setPending();
           tryCombining();

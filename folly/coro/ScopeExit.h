@@ -141,8 +141,9 @@ class ScopeExitTaskPromiseBase {
 
   template <typename Awaitable>
   auto await_transform(Awaitable&& awaitable) {
-    return folly::coro::co_withAsyncStack(folly::coro::co_viaIfAsync(
-        executor_.get_alias(), static_cast<Awaitable&&>(awaitable)));
+    return folly::coro::co_withAsyncStack(
+        folly::coro::co_viaIfAsync(
+            executor_.get_alias(), static_cast<Awaitable&&>(awaitable)));
   }
 
   folly::AsyncStackFrame& getAsyncFrame() noexcept {
@@ -348,7 +349,7 @@ class co_scope_exit_fn {
 ///
 ///   // Do some complicated, potentially throwing work using the AsyncScope
 ///   auto ex = co_await co_current_executor;
-///   asyncScope->add(someTask(std::move(inputs)).scheduleOn(ex));
+///   asyncScope->add(co_withExecutor(ex, someTask(std::move(inputs))));
 /// }
 ///
 /// The body of the coroutine passed to co_scope_exit will be executed when the

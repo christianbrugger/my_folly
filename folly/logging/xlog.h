@@ -130,15 +130,15 @@ static_assert(
  *
  * Note that this is threadsafe.
  */
-#define XLOG_EVERY_MS(level, ms, ...)                                  \
-  XLOG_IF(                                                             \
-      level,                                                           \
-      [__folly_detail_xlog_ms = ms] {                                  \
-        static ::folly::logging::IntervalRateLimiter                   \
-            folly_detail_xlog_limiter(                                 \
-                1, std::chrono::milliseconds(__folly_detail_xlog_ms)); \
-        return folly_detail_xlog_limiter.check();                      \
-      }(),                                                             \
+#define XLOG_EVERY_MS(level, ms, ...)                                 \
+  XLOG_IF(                                                            \
+      level,                                                          \
+      [_folly_detail_xlog_ms = ms] {                                  \
+        static ::folly::logging::IntervalRateLimiter                  \
+            folly_detail_xlog_limiter(                                \
+                1, std::chrono::milliseconds(_folly_detail_xlog_ms)); \
+        return folly_detail_xlog_limiter.check();                     \
+      }(),                                                            \
       ##__VA_ARGS__)
 
 /**
@@ -147,16 +147,16 @@ static_assert(
  *
  * Note that this is threadsafe.
  */
-#define XLOG_EVERY_MS_IF(level, cond, ms, ...)                               \
-  XLOG_IF(                                                                   \
-      level,                                                                 \
-      (cond) &&                                                              \
-          [__folly_detail_xlog_ms = ms] {                                    \
-            static ::folly::logging::IntervalRateLimiter                     \
-                folly_detail_xlog_limiter(                                   \
-                    1, ::std::chrono::milliseconds(__folly_detail_xlog_ms)); \
-            return folly_detail_xlog_limiter.check();                        \
-          }(),                                                               \
+#define XLOG_EVERY_MS_IF(level, cond, ms, ...)                              \
+  XLOG_IF(                                                                  \
+      level,                                                                \
+      (cond) &&                                                             \
+          [_folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                    \
+                folly_detail_xlog_limiter(                                  \
+                    1, ::std::chrono::milliseconds(_folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                       \
+          }(),                                                              \
       ##__VA_ARGS__)
 
 /**
@@ -165,16 +165,16 @@ static_assert(
  *
  * Note that this is threadsafe.
  */
-#define XLOG_EVERY_MS_OR(level, cond, ms, ...)                               \
-  XLOG_IF(                                                                   \
-      level,                                                                 \
-      (cond) ||                                                              \
-          [__folly_detail_xlog_ms = ms] {                                    \
-            static ::folly::logging::IntervalRateLimiter                     \
-                folly_detail_xlog_limiter(                                   \
-                    1, ::std::chrono::milliseconds(__folly_detail_xlog_ms)); \
-            return folly_detail_xlog_limiter.check();                        \
-          }(),                                                               \
+#define XLOG_EVERY_MS_OR(level, cond, ms, ...)                              \
+  XLOG_IF(                                                                  \
+      level,                                                                \
+      (cond) ||                                                             \
+          [_folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                    \
+                folly_detail_xlog_limiter(                                  \
+                    1, ::std::chrono::milliseconds(_folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                       \
+          }(),                                                              \
       ##__VA_ARGS__)
 
 /**
@@ -183,17 +183,17 @@ static_assert(
  *
  * Note that this is threadsafe.
  */
-#define XLOGF_EVERY_MS_IF(level, cond, ms, fmt, ...)                         \
-  XLOGF_IF(                                                                  \
-      level,                                                                 \
-      (cond) &&                                                              \
-          [__folly_detail_xlog_ms = ms] {                                    \
-            static ::folly::logging::IntervalRateLimiter                     \
-                folly_detail_xlog_limiter(                                   \
-                    1, ::std::chrono::milliseconds(__folly_detail_xlog_ms)); \
-            return folly_detail_xlog_limiter.check();                        \
-          }(),                                                               \
-      fmt,                                                                   \
+#define XLOGF_EVERY_MS_IF(level, cond, ms, fmt, ...)                        \
+  XLOGF_IF(                                                                 \
+      level,                                                                \
+      (cond) &&                                                             \
+          [_folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                    \
+                folly_detail_xlog_limiter(                                  \
+                    1, ::std::chrono::milliseconds(_folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                       \
+          }(),                                                              \
+      fmt,                                                                  \
       ##__VA_ARGS__)
 
 /**
@@ -204,6 +204,25 @@ static_assert(
  */
 #define XLOGF_EVERY_MS(level, ms, fmt, ...) \
   XLOGF_EVERY_MS_IF(level, true, ms, fmt, ##__VA_ARGS__)
+
+/**
+ * Similar to XLOGF(...) except log a message if the specified condition
+ * predicate evaluates to true or every @param ms milliseconds
+ *
+ * Note that this is threadsafe.
+ */
+#define XLOGF_EVERY_MS_OR(level, cond, ms, fmt, ...)                        \
+  XLOGF_IF(                                                                 \
+      level,                                                                \
+      (cond) ||                                                             \
+          [_folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                    \
+                folly_detail_xlog_limiter(                                  \
+                    1, ::std::chrono::milliseconds(_folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                       \
+          }(),                                                              \
+      fmt,                                                                  \
+      ##__VA_ARGS__)
 
 namespace folly {
 namespace detail {
@@ -223,8 +242,8 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNImpl(size_t n) {
  * Similar to XLOG(...) except only log a message every @param n
  * invocations, approximately.
  *
- * The internal counter is process-global and threadsafe but, to
- * to avoid the performance degradation of atomic-rmw operations,
+ * The internal counter is process-global and threadsafe, but to
+ * avoid the performance degradation of atomic-rmw operations,
  * increments are non-atomic. Some increments may be missed under
  * contention, leading to possible over-logging or under-logging
  * effects.
@@ -242,11 +261,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNImpl(size_t n) {
  * Similar to XLOGF(...) except only log a message every @param n
  * invocations, approximately.
  *
- * The internal counter is process-global and threadsafe but, to
- * to avoid the performance degradation of atomic-rmw operations,
- * increments are non-atomic. Some increments may be missed under
- * contention, leading to possible over-logging or under-logging
- * effects.
+ * See concurrency discussion for XLOG_EVERY_N which applies here as well.
  */
 #define XLOGF_EVERY_N(level, n, fmt, ...)                                 \
   XLOGF_IF(                                                               \
@@ -263,11 +278,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNImpl(size_t n) {
  * invocations, approximately, and if the specified condition predicate
  * evaluates to true.
  *
- * The internal counter is process-global and threadsafe but, to
- * to avoid the performance degradation of atomic-rmw operations,
- * increments are non-atomic. Some increments may be missed under
- * contention, leading to possible over-logging or under-logging
- * effects.
+ * See concurrency discussion for XLOG_EVERY_N which applies here as well.
  */
 #define XLOG_EVERY_N_IF(level, cond, n, ...)                                  \
   XLOG_IF(                                                                    \
@@ -283,11 +294,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNImpl(size_t n) {
  * Similar to XLOG(...) except it logs a message if the condition predicate
  * evalutes to true or approximately every @param n invocations
  *
- * The internal counter is process-global and threadsafe but, to
- * to avoid the performance degradation of atomic-rmw operations,
- * increments are non-atomic. Some increments may be missed under
- * contention, leading to possible over-logging or under-logging
- * effects.
+ * See concurrency discussion for XLOG_EVERY_N which applies here as well.
  */
 #define XLOG_EVERY_N_OR(level, cond, n, ...)                                  \
   XLOG_IF(                                                                    \
@@ -304,16 +311,29 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNImpl(size_t n) {
  * invocations, approximately, and if the specified condition predicate
  * evaluates to true.
  *
- * The internal counter is process-global and threadsafe but, to
- * to avoid the performance degradation of atomic-rmw operations,
- * increments are non-atomic. Some increments may be missed under
- * contention, leading to possible over-logging or under-logging
- * effects.
+ * See concurrency discussion for XLOG_EVERY_N which applies here as well.
  */
 #define XLOGF_EVERY_N_IF(level, cond, n, fmt, ...)                            \
   XLOGF_IF(                                                                   \
       level,                                                                  \
       (cond) &&                                                               \
+          [&] {                                                               \
+            struct folly_detail_xlog_tag {};                                  \
+            return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
+          }(),                                                                \
+      fmt,                                                                    \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOGF(...) except it logs a message if the condition predicate
+ * evalutes to true or approximately every @param n invocations
+ *
+ * See concurrency discussion for XLOG_EVERY_N which applies here as well.
+ */
+#define XLOGF_EVERY_N_OR(level, cond, n, fmt, ...)                            \
+  XLOGF_IF(                                                                   \
+      level,                                                                  \
+      (cond) ||                                                               \
           [&] {                                                               \
             struct folly_detail_xlog_tag {};                                  \
             return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
@@ -439,6 +459,22 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogFirstNExactImpl(std::size_t n) {
       ##__VA_ARGS__)
 
 /**
+ * Similar to XLOGF(...) except only log a message the first n times, exactly.
+ *
+ * The internal counter is process-global and threadsafe and exchanges are
+ * atomic.
+ */
+#define XLOGF_FIRST_N(level, n, fmt, ...)                                      \
+  XLOGF_IF(                                                                    \
+      level,                                                                   \
+      [&] {                                                                    \
+        struct folly_detail_xlog_tag {};                                       \
+        return ::folly::detail::xlogFirstNExactImpl<folly_detail_xlog_tag>(n); \
+      }(),                                                                     \
+      fmt,                                                                     \
+      ##__VA_ARGS__)
+
+/**
  * FOLLY_XLOG_STRIP_PREFIXES can be defined to a string containing a
  * colon-separated list of directory prefixes to strip off from the filename
  * before using it to compute the log category name.
@@ -508,6 +544,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogFirstNExactImpl(std::size_t n) {
  *   skipped with just a single check of the LogLevel.
  */
 #define XLOG_ACTUAL_IMPL(level, cond, always_fatal, type, ...)              \
+  /* NOLINTNEXTLINE(readability-simplify-boolean-expr) */                   \
   (!XLOG_IS_ON_IMPL(level) || !(cond))                                      \
       ? ::folly::logDisabledHelper(::std::bool_constant<always_fatal>{})    \
       : ::folly::LogStreamVoidify<::folly::isLogLevelFatal(level)>{} &      \
@@ -575,6 +612,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogFirstNExactImpl(std::size_t n) {
  */
 #define XLOG_IS_ON_IMPL_HELPER(level)                           \
   ([] {                                                         \
+    /* NOLINTNEXTLINE(misc-const-correctness) */                \
     static ::folly::XlogLevelInfo<XLOG_IS_IN_HEADER_FILE>       \
         folly_detail_xlog_level;                                \
     constexpr auto* folly_detail_xlog_filename = XLOG_FILENAME; \

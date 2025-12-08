@@ -28,6 +28,7 @@
 #include <folly/lang/Keep.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
+#include <folly/system/HardwareConcurrency.h>
 #include <folly/test/DeterministicSchedule.h>
 #include <folly/test/TestUtils.h>
 
@@ -268,7 +269,7 @@ void basicNThreads(int numThreads, int iterations = kStressFactor) {
   auto&& function = [&](auto id) {
     return [&, id] {
       for (auto j = 0; j < iterations; ++j) {
-        auto lck = std::unique_lock<std::decay_t<decltype(mutex)>>{mutex};
+        auto lck = std::unique_lock{mutex};
         EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
         std::this_thread::yield();
         result.push_back(id);
@@ -301,7 +302,7 @@ void lockWithTryAndTimedNThreads(
 
   auto&& lockUnlockFunction = [&]() {
     while (!stop.load()) {
-      auto lck = std::unique_lock<std::decay_t<decltype(mutex)>>{mutex};
+      auto lck = std::unique_lock{mutex};
       EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
       std::this_thread::yield();
       EXPECT_EQ(barrier.fetch_sub(1, std::memory_order_relaxed), 1);
@@ -310,8 +311,7 @@ void lockWithTryAndTimedNThreads(
 
   auto tryLockFunction = [&]() {
     while (!stop.load()) {
-      using Mutex = std::decay_t<decltype(mutex)>;
-      auto lck = std::unique_lock<Mutex>{mutex, std::defer_lock};
+      auto lck = std::unique_lock{mutex, std::defer_lock};
       if (lck.try_lock()) {
         EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
         std::this_thread::yield();
@@ -322,8 +322,7 @@ void lockWithTryAndTimedNThreads(
 
   auto timedLockFunction = [&]() {
     while (!stop.load()) {
-      using Mutex = std::decay_t<decltype(mutex)>;
-      auto lck = std::unique_lock<Mutex>{mutex, std::defer_lock};
+      auto lck = std::unique_lock{mutex, std::defer_lock};
       if (lck.try_lock_for(kForever)) {
         EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
         std::this_thread::yield();
@@ -403,7 +402,7 @@ void combineWithLockNThreads(int numThreads, std::chrono::seconds duration) {
 
   auto&& lockUnlockFunction = [&]() {
     while (!stop.load()) {
-      auto lck = std::unique_lock<std::decay_t<decltype(mutex)>>{mutex};
+      auto lck = std::unique_lock{mutex};
       EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
       std::this_thread::yield();
       EXPECT_EQ(barrier.fetch_sub(1, std::memory_order_relaxed), 1);
@@ -458,7 +457,7 @@ void combineWithTryLockNThreads(int numThreads, std::chrono::seconds duration) {
 
   auto&& lockUnlockFunction = [&]() {
     while (!stop.load()) {
-      auto lck = std::unique_lock<std::decay_t<decltype(mutex)>>{mutex};
+      auto lck = std::unique_lock{mutex};
       EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
       std::this_thread::yield();
       EXPECT_EQ(barrier.fetch_sub(1, std::memory_order_relaxed), 1);
@@ -491,8 +490,7 @@ void combineWithTryLockNThreads(int numThreads, std::chrono::seconds duration) {
 
   auto tryLockFunction = [&]() {
     while (!stop.load()) {
-      using Mutex = std::decay_t<decltype(mutex)>;
-      auto lck = std::unique_lock<Mutex>{mutex, std::defer_lock};
+      auto lck = std::unique_lock{mutex, std::defer_lock};
       if (lck.try_lock()) {
         EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
         std::this_thread::yield();
@@ -529,7 +527,7 @@ void combineWithLockTryAndTimedNThreads(
 
   auto&& lockUnlockFunction = [&]() {
     while (!stop.load()) {
-      auto lck = std::unique_lock<std::decay_t<decltype(mutex)>>{mutex};
+      auto lck = std::unique_lock{mutex};
       EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
       std::this_thread::yield();
       EXPECT_EQ(barrier.fetch_sub(1, std::memory_order_relaxed), 1);
@@ -576,8 +574,7 @@ void combineWithLockTryAndTimedNThreads(
 
   auto tryLockFunction = [&]() {
     while (!stop.load()) {
-      using Mutex = std::decay_t<decltype(mutex)>;
-      auto lck = std::unique_lock<Mutex>{mutex, std::defer_lock};
+      auto lck = std::unique_lock{mutex, std::defer_lock};
       if (lck.try_lock()) {
         EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
         std::this_thread::yield();
@@ -588,8 +585,7 @@ void combineWithLockTryAndTimedNThreads(
 
   auto timedLockFunction = [&]() {
     while (!stop.load()) {
-      using Mutex = std::decay_t<decltype(mutex)>;
-      auto lck = std::unique_lock<Mutex>{mutex, std::defer_lock};
+      auto lck = std::unique_lock{mutex, std::defer_lock};
       if (lck.try_lock_for(kForever)) {
         EXPECT_EQ(barrier.fetch_add(1, std::memory_order_relaxed), 0);
         std::this_thread::yield();
@@ -818,7 +814,7 @@ TEST(DistributedMutex, StressHundredThreads) {
   basicNThreads(100);
 }
 TEST(DistributedMutex, StressHardwareConcurrencyThreads) {
-  basicNThreads(std::thread::hardware_concurrency());
+  basicNThreads(folly::hardware_concurrency());
 }
 
 TEST(DistributedMutex, StressThreeThreadsLockTryAndTimed) {
@@ -841,8 +837,7 @@ TEST(DistributedMutex, StressSixtyFourThreadsLockTryAndTimed) {
 }
 TEST(DistributedMutex, StressHwConcThreadsLockTryAndTimed) {
   lockWithTryAndTimedNThreads(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, StressTwoThreadsCombine) {
@@ -880,8 +875,7 @@ TEST(DistributedMutex, StressHundredThreadsCombine) {
 }
 TEST(DistributedMutex, StressHardwareConcurrencyThreadsCombine) {
   combineNThreads(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, StressTwoThreadsCombineAndLock) {
@@ -904,8 +898,7 @@ TEST(DistributedMutex, StressSixtyFourThreadsCombineAndLock) {
 }
 TEST(DistributedMutex, StressHardwareConcurrencyThreadsCombineAndLock) {
   combineWithLockNThreads(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, StressThreeThreadsCombineTryLockAndLock) {
@@ -928,8 +921,7 @@ TEST(DistributedMutex, StressSixtyFourThreadsCombineTryLockAndLock) {
 }
 TEST(DistributedMutex, StressHardwareConcurrencyThreadsCombineTryLockAndLock) {
   combineWithTryLockNThreads(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, StressThreeThreadsCombineTryLockLockAndTimed) {
@@ -958,8 +950,7 @@ TEST(DistributedMutex, StressSixtyFourThreadsCombineTryLockLockAndTimed) {
 }
 TEST(DistributedMutex, StressHwConcurrencyThreadsCombineTryLockLockAndTimed) {
   combineWithLockTryAndTimedNThreads(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, StressTryLock) {
@@ -1100,8 +1091,7 @@ TEST(DistributedMutex, DeterministicStressSixtyFourThreadsLockTryAndTimed) {
 }
 TEST(DistributedMutex, DeterministicStressHwConcThreadsLockTryAndTimed) {
   lockWithTryAndTimedNThreadsDeterministic(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, CombineDeterministicStressTwoThreads) {
@@ -1124,8 +1114,7 @@ TEST(DistributedMutex, CombineDeterministicStressSixtyFourThreads) {
 }
 TEST(DistributedMutex, CombineDeterministicStressHardwareConcurrencyThreads) {
   combineNThreadsDeterministic(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, CombineAndLockDeterministicStressTwoThreads) {
@@ -1154,8 +1143,7 @@ TEST(DistributedMutex, CombineAndLockDeterministicStressSixtyFourThreads) {
 }
 TEST(DistributedMutex, CombineAndLockDeterministicStressHWConcurrencyThreads) {
   combineAndLockNThreadsDeterministic(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, CombineTryLockAndLockDeterministicStressThreeThreads) {
@@ -1184,8 +1172,7 @@ TEST(DistributedMutex, CombineTryLockAndLockDeterministicStressSixtyThreads) {
 }
 TEST(DistributedMutex, CombineTryLockAndLockDeterministicStressHWConcThreads) {
   combineTryLockAndLockNThreadsDeterministic(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, CombineTryLockAndTimedDeterministicStressThreeThreads) {
@@ -1214,8 +1201,7 @@ TEST(DistributedMutex, CombineTryLockAndTimedDeterministicStressSixtyThreads) {
 }
 TEST(DistributedMutex, CombineTryLockAndTimedDeterministicStressHWConcThreads) {
   combineWithTryLockAndTimedNThreadsDeterministic(
-      std::thread::hardware_concurrency(),
-      std::chrono::seconds{kStressTestSeconds});
+      folly::hardware_concurrency(), std::chrono::seconds{kStressTestSeconds});
 }
 
 TEST(DistributedMutex, TimedLockTimeout) {
@@ -1832,6 +1818,8 @@ TEST(DistributedMutex, TestExceptionPropagationUncontended) {
   thread.join();
 }
 
+#if !defined(FOLLY_SANITIZE_THREAD) || !FOLLY_SANITIZE_THREAD
+
 namespace {
 template <template <typename> class Atom = std::atomic>
 void concurrentExceptionPropagationStress(
@@ -1851,7 +1839,6 @@ void concurrentExceptionPropagationStress(
   //
   // So we are disabling it for now until some point in the future where TSAN
   // stops reporting this as a false-positive.
-  SKIP_IF(folly::kIsSanitizeThread);
 
   TestConstruction::reset();
   auto&& mutex = detail::distributed_mutex::DistributedMutex<Atom>{};
@@ -1963,6 +1950,8 @@ TEST(DistributedMutex, TestExceptionPropagationDeterministicSixtyFourThreads) {
   concurrentExceptionPropagationDeterministic(
       64, std::chrono::seconds{kStressTestSeconds});
 }
+
+#endif // !FOLLY_SANITIZE_THREAD
 
 namespace {
 std::array<std::uint64_t, 8> makeMonotonicArray(int start) {

@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <deque>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -539,7 +540,7 @@ class WaitExecutor final : public folly::Executor {
   }
 
   struct Queue {
-    std::vector<Func> funcs;
+    std::deque<Func> funcs;
     bool detached{false};
   };
 
@@ -609,9 +610,16 @@ SemiFuture<T> makeSemiFuture(exception_wrapper ew) {
 }
 
 template <class T, class E>
-typename std::
-    enable_if<std::is_base_of<std::exception, E>::value, SemiFuture<T>>::type
-    makeSemiFuture(E const& e) {
+std::enable_if_t<std::is_base_of_v<std::exception, decay_t<E>>, SemiFuture<T>>
+makeSemiFuture(E&& e) {
+  return makeSemiFuture(Try<T>(make_exception_wrapper<E>(std::forward<E>(e))));
+}
+
+// DEPRECATED const-ref overload for users who EXPLICITLY specify BOTH template
+// parameters
+template <class T, class E>
+std::enable_if_t<std::is_base_of_v<std::exception, E>, SemiFuture<T>>
+makeSemiFuture(const folly::type_identity_t<E>& e) {
   return makeSemiFuture(Try<T>(make_exception_wrapper<E>(e)));
 }
 
@@ -822,7 +830,7 @@ template <class ExceptionType, class F>
 SemiFuture<T> SemiFuture<T>::deferError(tag_t<ExceptionType>, F&& func) && {
   return std::move(*this).defer(
       [func_2 = static_cast<F&&>(func)](Try<T>&& t) mutable {
-        if (auto e = t.template tryGetExceptionObject<ExceptionType>()) {
+        if (const auto* e = t.template tryGetExceptionObject<ExceptionType>()) {
           return makeSemiFutureWith([&]() mutable {
             return static_cast<F&&>(func_2)(*e);
           });
@@ -1118,9 +1126,9 @@ Future<T>::thenErrorImpl(
       [state = futures::detail::makeCoreCallbackState(
            std::move(p), static_cast<F&&>(func)),
        allowInline](Executor::KeepAlive<>&& ka, Try<T>&& t) mutable {
-        if (auto ex = t.template tryGetExceptionObject<
-                      std::remove_reference_t<ExceptionType>>()) {
-          auto tf2 = state.tryInvoke(std::move(*ex));
+        if (const auto* ex = t.template tryGetExceptionObject<
+                             std::remove_reference_t<ExceptionType>>()) {
+          auto tf2 = state.tryInvoke(*ex);
           if (tf2.hasException()) {
             state.setException(std::move(ka), std::move(tf2.exception()));
           } else {
@@ -1169,11 +1177,10 @@ Future<T>::thenErrorImpl(
       [state = futures::detail::makeCoreCallbackState(
            std::move(p), static_cast<F&&>(func))](
           Executor::KeepAlive<>&& ka, Try<T>&& t) mutable {
-        if (auto ex = t.template tryGetExceptionObject<
-                      std::remove_reference_t<ExceptionType>>()) {
+        if (const auto* ex = t.template tryGetExceptionObject<
+                             std::remove_reference_t<ExceptionType>>()) {
           state.setTry(
-              std::move(ka),
-              makeTryWith([&] { return state.invoke(std::move(*ex)); }));
+              std::move(ka), makeTryWith([&] { return state.invoke(*ex); }));
         } else {
           state.setTry(std::move(ka), std::move(t));
         }
@@ -1370,9 +1377,16 @@ Future<T> makeFuture(exception_wrapper ew) {
 }
 
 template <class T, class E>
-typename std::enable_if<std::is_base_of<std::exception, E>::value, Future<T>>::
-    type
-    makeFuture(E const& e) {
+std::enable_if_t<std::is_base_of_v<std::exception, decay_t<E>>, Future<T>>
+makeFuture(E&& e) {
+  return makeFuture(Try<T>(make_exception_wrapper<E>(std::forward<E>(e))));
+}
+
+// DEPRECATED const-ref overload for users who EXPLICITLY specify BOTH template
+// parameters
+template <class T, class E>
+std::enable_if_t<std::is_base_of_v<std::exception, E>, Future<T>> makeFuture(
+    const folly::type_identity_t<E>& e) {
   return makeFuture(Try<T>(make_exception_wrapper<E>(e)));
 }
 
@@ -1395,8 +1409,7 @@ namespace detail {
 
 template <typename V, typename... Fs, std::size_t... Is>
 FOLLY_ERASE void foreach_(std::index_sequence<Is...>, V&& v, Fs&&... fs) {
-  using _ = int[];
-  void(_{0, (void(v(index_constant<Is>{}, static_cast<Fs&&>(fs))), 0)...});
+  ((void(v(index_constant<Is>{}, static_cast<Fs&&>(fs)))), ...);
 }
 template <typename V, typename... Fs>
 FOLLY_ERASE void foreach(V&& v, Fs&&... fs) {
@@ -2183,8 +2196,9 @@ SemiFuture<T> SemiFuture<T>::within(
       tk->after(dur).defer(futures::detail::WithinAfterFutureCallback{ctx});
 
   // Properly propagate interrupt values through futures chained after within()
-  ctx->promise.setInterruptHandler(futures::detail::WithinInterruptHandler{
-      to_weak_ptr_aliasing(ctx, ctx->thisFuture.core_)});
+  ctx->promise.setInterruptHandler(
+      futures::detail::WithinInterruptHandler{
+          to_weak_ptr_aliasing(ctx, ctx->thisFuture.core_)});
 
   // Construct the future to return, create a fresh DeferredExecutor and
   // nest the other two inside it, in case they already carry nested executors.
@@ -2269,9 +2283,9 @@ void waitImpl(FutureType& f, HighResDuration dur) {
   Promise<T> promise;
   auto ret = convertFuture(promise.getSemiFuture(), f);
   auto baton = std::make_shared<FutureBatonType>();
-  f.setCallback_([baton, promise = std::move(promise)](
+  f.setCallback_([baton, promise_2 = std::move(promise)](
                      Executor::KeepAlive<>&&, Try<T>&& t) mutable {
-    promise.setTry(std::move(t));
+    promise_2.setTry(std::move(t));
     baton->post();
   });
   f = std::move(ret);
@@ -2566,9 +2580,10 @@ typename std::
   if (predicate()) {
     auto future = thunk();
     return std::move(future).deferExValue(
-        [predicate = static_cast<P&&>(predicate),
-         thunk = static_cast<F&&>(thunk)](auto&& ex, auto&&) mutable {
-          return whileDo(static_cast<P&&>(predicate), static_cast<F&&>(thunk))
+        [predicate_2 = static_cast<P&&>(predicate),
+         thunk_2 = static_cast<F&&>(thunk)](auto&& ex, auto&&) mutable {
+          return whileDo(
+                     static_cast<P&&>(predicate_2), static_cast<F&&>(thunk_2))
               .via(std::move(ex));
         });
   }
@@ -2581,9 +2596,10 @@ whileDo(P&& predicate, F&& thunk) {
   if (predicate()) {
     auto future = thunk();
     return std::move(future).thenValue(
-        [predicate = static_cast<P&&>(predicate),
-         thunk = static_cast<F&&>(thunk)](auto&&) mutable {
-          return whileDo(static_cast<P&&>(predicate), static_cast<F&&>(thunk));
+        [predicate_2 = static_cast<P&&>(predicate),
+         thunk_2 = static_cast<F&&>(thunk)](auto&&) mutable {
+          return whileDo(
+              static_cast<P&&>(predicate_2), static_cast<F&&>(thunk_2));
         });
   }
   return makeFuture();
@@ -2644,11 +2660,12 @@ std::vector<Future<Result>> mapTry(
 template <typename F, class Ensure>
 auto ensure(F&& f, Ensure&& ensure) {
   return makeSemiFuture()
-      .deferValue([f = static_cast<F&&>(f)](auto) mutable { return f(); })
-      .defer([ensure = static_cast<Ensure&&>(ensure)](auto resultTry) mutable {
-        ensure();
-        return std::move(resultTry).value();
-      });
+      .deferValue([f_2 = static_cast<F&&>(f)](auto) mutable { return f_2(); })
+      .defer(
+          [ensure_2 = static_cast<Ensure&&>(ensure)](auto resultTry) mutable {
+            ensure_2();
+            return std::move(resultTry).value();
+          });
 }
 
 template <class T>
@@ -2664,11 +2681,12 @@ void detachOnGlobalCPUExecutor(folly::SemiFuture<T>&& fut) {
 template <class T>
 void maybeDetachOnGlobalExecutorAfter(
     HighResDuration dur, folly::SemiFuture<T>&& fut) {
-  sleep(dur).toUnsafeFuture().thenValue([fut = std::move(fut)](auto&&) mutable {
-    if (auto ptr = folly::detail::tryGetImmutableCPUPtr()) {
-      detachOn(folly::getKeepAliveToken(ptr.get()), std::move(fut));
-    }
-  });
+  sleep(dur).toUnsafeFuture().thenValue(
+      [fut_2 = std::move(fut)](auto&&) mutable {
+        if (auto ptr = folly::detail::tryGetImmutableCPUPtr()) {
+          detachOn(folly::getKeepAliveToken(ptr.get()), std::move(fut_2));
+        }
+      });
 }
 
 template <class T>

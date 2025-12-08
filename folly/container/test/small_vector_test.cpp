@@ -35,6 +35,8 @@
 #include <folly/portability/GTest.h>
 #include <folly/sorted_vector_types.h>
 
+FOLLY_GNU_DISABLE_WARNING("-Wself-move")
+
 using folly::small_vector;
 
 using folly::small_vector_policy::policy_in_situ_only;
@@ -121,15 +123,6 @@ static_assert(
 namespace {
 
 template <typename Key, typename Value, size_t N>
-using small_sorted_vector_map = folly::sorted_vector_map<
-    Key,
-    Value,
-    std::less<Key>,
-    std::allocator<std::pair<Key, Value>>,
-    void,
-    folly::small_vector<std::pair<Key, Value>, N>>;
-
-template <typename Key, typename Value, size_t N>
 using noheap_sorted_vector_map = folly::sorted_vector_map<
     Key,
     Value,
@@ -137,14 +130,6 @@ using noheap_sorted_vector_map = folly::sorted_vector_map<
     std::allocator<std::pair<Key, Value>>,
     void,
     folly::small_vector<std::pair<Key, Value>, N, policy_in_situ_only<true>>>;
-
-template <typename T, size_t N>
-using small_sorted_vector_set = folly::sorted_vector_set<
-    T,
-    std::less<T>,
-    std::allocator<T>,
-    void,
-    folly::small_vector<T, N>>;
 
 template <typename T, size_t N>
 using noheap_sorted_vector_set = folly::sorted_vector_set<
@@ -627,16 +612,32 @@ void testGrowShrinkGrow() {
   auto cap = vec.capacity();
   vec.resize(4);
   vec.shrink_to_fit();
-  if (N > 4)
+  if (N > 4) {
     EXPECT_EQ(vec.capacity(), N); // in situ size
-  else
+  } else {
     EXPECT_LT(vec.capacity(), cap); // on heap
+  }
 }
 
 TEST(smallVector, GrowShrinkGrow) {
   testGrowShrinkGrow<7>();
 
   testGrowShrinkGrow<0>();
+}
+
+TEST(smallVector, ShrinkToFitMoveOnly) {
+  folly::small_vector<std::unique_ptr<int>> vec;
+  vec.reserve(100);
+  for (int i = 0; i < 3; ++i) {
+    vec.push_back(std::make_unique<int>(i));
+  }
+  vec.shrink_to_fit();
+  EXPECT_LT(vec.capacity(), 100);
+  ASSERT_EQ(vec.size(), 3);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_NE(vec[i], nullptr);
+    EXPECT_EQ(*vec[i], i);
+  }
 }
 
 TEST(smallVector, Iteration) {
@@ -730,8 +731,8 @@ TEST(smallVector, MoveConstructor) {
 }
 
 TEST(smallVector, NoHeap) {
-  typedef folly::small_vector<std::string, 10, policy_in_situ_only<true>>
-      Vector;
+  using Vector =
+      folly::small_vector<std::string, 10, policy_in_situ_only<true>>;
 
   Vector v;
   static_assert(v.max_size() == 10, "max_size is incorrect");
@@ -799,7 +800,7 @@ TEST(smallVector, AllHeap) {
 }
 template <int N>
 void testBasic() {
-  typedef folly::small_vector<int, N, policy_size_type<uint32_t>> Vector;
+  using Vector = folly::small_vector<int, N, policy_size_type<uint32_t>>;
 
   Vector a;
 
@@ -1248,7 +1249,7 @@ TEST(smallVector, CLVPushBackEfficiency) {
 }
 
 TEST(smallVector, StorageForSortedVectorMap) {
-  small_sorted_vector_map<int32_t, int32_t, 2> test;
+  folly::small_sorted_vector_map<int32_t, int32_t, 2> test;
   test.insert(std::make_pair(10, 10));
   EXPECT_EQ(test.size(), 1);
   test.insert(std::make_pair(10, 10));
@@ -1272,7 +1273,7 @@ TEST(smallVector, NoHeapStorageForSortedVectorMap) {
 }
 
 TEST(smallVector, StorageForSortedVectorSet) {
-  small_sorted_vector_set<int32_t, 2> test;
+  folly::small_sorted_vector_set<int32_t, 2> test;
   test.insert(10);
   EXPECT_EQ(test.size(), 1);
   test.insert(10);
@@ -1568,4 +1569,74 @@ TEST(smallVector, rangeConstructorInputIteratorThrows) {
 
   EXPECT_THROW(SV1(first, last), std::runtime_error);
   EXPECT_THROW(SV3(first, last), std::runtime_error);
+}
+
+TEST(smallVector, comparisons) {
+  folly::small_vector<int, 3> vec1 = {1, 2, 3, 4, 5};
+  folly::small_vector<int, 3> vec2 = {1, 2, 3, 4, 5};
+  EXPECT_EQ(vec1, vec2);
+  EXPECT_FALSE(vec1 < vec2);
+  EXPECT_TRUE(vec1 <= vec2);
+  EXPECT_FALSE(vec1 > vec2);
+  EXPECT_TRUE(vec1 >= vec2);
+
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_lib_three_way_comparison)
+  EXPECT_EQ(vec1 <=> vec2, std::strong_ordering::equal);
+#endif
+  vec1.pop_back();
+  EXPECT_NE(vec1, vec2);
+  EXPECT_TRUE(vec1 < vec2);
+  EXPECT_TRUE(vec1 <= vec2);
+  EXPECT_FALSE(vec1 > vec2);
+  EXPECT_FALSE(vec1 >= vec2);
+
+#if FOLLY_CPLUSPLUS >= 202002L && defined(__cpp_lib_three_way_comparison)
+  EXPECT_EQ(vec1 <=> vec2, std::strong_ordering::less);
+  EXPECT_EQ(vec2 <=> vec1, std::strong_ordering::greater);
+#endif
+}
+
+struct NontrivialImmovable {
+  NontrivialImmovable() {}
+  NontrivialImmovable(const NontrivialImmovable&) = default;
+  NontrivialImmovable(NontrivialImmovable&&) = delete;
+  ~NontrivialImmovable() = default;
+
+  // Make it non trivial to copy
+  NontrivialImmovable& operator=(const NontrivialImmovable&) { return *this; }
+};
+
+static_assert(!std::is_trivially_copyable_v<NontrivialImmovable>);
+
+struct TrivialImmovable {
+  TrivialImmovable() {}
+  TrivialImmovable(const TrivialImmovable&) = default;
+  TrivialImmovable(TrivialImmovable&&) = delete;
+};
+
+static_assert(std::is_trivially_copyable_v<TrivialImmovable>);
+
+struct TrivialNonCopyableNorMovable {
+  TrivialNonCopyableNorMovable() {}
+  TrivialNonCopyableNorMovable(const TrivialNonCopyableNorMovable&) = delete;
+  TrivialNonCopyableNorMovable(TrivialNonCopyableNorMovable&&) = delete;
+};
+
+static_assert(std::is_trivially_copyable_v<TrivialNonCopyableNorMovable>);
+
+TEST(smallVector, ImmovableTypes) {
+  // Immovable types can be used to create small_vectors as long as no use to
+  // resizing operations is present. We need to make sure that creation of the
+  // small_vector with the sized constructor works whether or not they are
+  // trivially copyable.
+  {
+    folly::small_vector<NontrivialImmovable> sv{10};
+  }
+  {
+    folly::small_vector<TrivialImmovable> sv{10};
+  }
+  {
+    folly::small_vector<TrivialNonCopyableNorMovable> sv{10};
+  }
+  SUCCEED();
 }

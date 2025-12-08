@@ -28,12 +28,13 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/range/concepts.hpp>
 
-#include <folly/CppAttributes.h>
 #include <folly/Memory.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
+
+#include <folly/container/span.h>
 
 #if __has_include(<range/v3/range/concepts.hpp>)
 #include <range/v3/range/concepts.hpp>
@@ -44,13 +45,23 @@ CPP_assert(ranges::range<folly::StringPiece>);
 CPP_assert(ranges::view_<folly::StringPiece>);
 #endif
 
+#if defined(__cpp_lib_ranges)
+#include <ranges>
+#endif
+
 using namespace folly;
 using namespace std;
 
-static_assert(folly::detail::range_is_char_type_v_<char*>, "");
-static_assert(folly::detail::range_is_byte_type_v_<unsigned char*>, "");
+static_assert(folly::detail::range_is_char_type_v_<char*>);
+static_assert(folly::detail::range_is_byte_type_v_<unsigned char*>);
 
 static_assert(std::is_same_v<char, typename Range<char*>::value_type>);
+
+static_assert(std::is_convertible_v<folly::Range<int*>, folly::span<int>>);
+#if defined(__cpp_lib_ranges)
+static_assert(std::ranges::borrowed_range<folly::Range<int*>>);
+static_assert(std::ranges::borrowed_range<folly::Range<const int*>>);
+#endif
 
 BOOST_CONCEPT_ASSERT((boost::RandomAccessRangeConcept<StringPiece>));
 
@@ -1002,7 +1013,7 @@ TYPED_TEST(NeedleFinderTest, DelimDuplicates) {
 
 TYPED_TEST(NeedleFinderTest, Empty) {
   string a = "abc";
-  string b = "";
+  string b;
   EXPECT_EQ(string::npos, this->find_first_byte_of(a, b));
   EXPECT_EQ(string::npos, this->find_first_byte_of(b, a));
   EXPECT_EQ(string::npos, this->find_first_byte_of(b, b));
@@ -1452,8 +1463,8 @@ TEST(ReplaceAll, BadArg) {
 
 TEST(Range, Constructors) {
   vector<int> c = {1, 2, 3};
-  typedef Range<vector<int>::iterator> RangeType;
-  typedef Range<vector<int>::const_iterator> ConstRangeType;
+  using RangeType = Range<vector<int>::iterator>;
+  using ConstRangeType = Range<vector<int>::const_iterator>;
   RangeType cr(c.begin(), c.end());
   auto subpiece1 = ConstRangeType(cr, 1, 5);
   auto subpiece2 = ConstRangeType(cr, 1);
@@ -1500,14 +1511,14 @@ TEST(Range, ArrayConstructors) {
 
 TEST(Range, ConstexprAccessors) {
   constexpr StringPiece piece = range("hello");
-  static_assert(piece.size() == 6u, "");
-  static_assert(piece.end() - piece.begin() == 6u, "");
-  static_assert(piece.data() == piece.begin(), "");
-  static_assert(piece.start() == piece.begin(), "");
-  static_assert(piece.cbegin() == piece.begin(), "");
-  static_assert(piece.cend() == piece.end(), "");
-  static_assert(*piece.begin() == 'h', "");
-  static_assert(*(piece.end() - 1) == '\0', "");
+  static_assert(piece.size() == 6u);
+  static_assert(piece.end() - piece.begin() == 6u);
+  static_assert(piece.data() == piece.begin());
+  static_assert(piece.start() == piece.begin());
+  static_assert(piece.cbegin() == piece.begin());
+  static_assert(piece.cend() == piece.end());
+  static_assert(*piece.begin() == 'h');
+  static_assert(*(piece.end() - 1) == '\0');
 }
 
 TEST(Range, LiteralSuffix) {
@@ -1686,6 +1697,32 @@ TEST(Range, InitializerList) {
   check(crange(ilist));
 }
 
+TEST(Range, NoexceptSwap) {
+  StringPiece a;
+  StringPiece b;
+  static_assert(noexcept(a.swap(b)));
+  static_assert(noexcept(swap(a, b)));
+
+  SUCCEED();
+}
+
+struct ThrowingSwapIter
+    : public std::iterator<std::input_iterator_tag, int, int, const int*, int> {
+};
+
+// @lint-ignore CLANGTIDY facebook-hte-MissingSwapNoExceptDeclaration
+void swap(ThrowingSwapIter& a, ThrowingSwapIter& b);
+
+TEST(Range, ThrowingSwap) {
+  Range<ThrowingSwapIter> x;
+  Range<ThrowingSwapIter> y;
+
+  static_assert(!noexcept(x.swap(y)));
+  static_assert(!noexcept(swap(x, y)));
+
+  SUCCEED();
+}
+
 namespace {
 std::size_t stringViewSize(std::string_view s) {
   return s.size();
@@ -1747,6 +1784,12 @@ TEST(StringPiece, StringViewConversion) {
 
 TEST(StringPiece, Format) {
   EXPECT_EQ("  foo", fmt::format("{:>5}", folly::StringPiece("foo")));
+}
+
+TEST(StringPiece, FormatInFormatString) {
+  EXPECT_EQ(
+      "  foo",
+      fmt::format(folly::StringPiece("{:>5}"), folly::StringPiece("foo")));
 }
 
 namespace {

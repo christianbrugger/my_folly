@@ -126,10 +126,11 @@ void MuxIOThreadPoolExecutor::add(
 
 void MuxIOThreadPoolExecutor::validateNumThreads(size_t numThreads) {
   if (numThreads == 0 || numThreads > numEventBases_) {
-    throw std::invalid_argument(fmt::format(
-        "Unsupported number of threads: {} (with {} EventBases)",
-        numThreads,
-        numEventBases_));
+    throw std::invalid_argument(
+        fmt::format(
+            "Unsupported number of threads: {} (with {} EventBases)",
+            numThreads,
+            numEventBases_));
   }
 }
 
@@ -184,7 +185,7 @@ void MuxIOThreadPoolExecutor::threadRun(ThreadPtr thread) {
     o->threadStopped(thread.get());
   }
   threadList_.remove(thread);
-  stoppedThreads_.add(thread);
+  stoppedThreads_.add(std::move(thread));
 }
 
 MuxIOThreadPoolExecutor::EvbState& MuxIOThreadPoolExecutor::pickEvbState() {
@@ -256,7 +257,7 @@ void MuxIOThreadPoolExecutor::join() {
   }
 
   {
-    std::shared_lock<folly::SharedMutex> lock{threadListLock_};
+    std::shared_lock lock{threadListLock_};
     for (const auto& o : observers_) {
       maybeUnregisterEventBases(o.get());
     }

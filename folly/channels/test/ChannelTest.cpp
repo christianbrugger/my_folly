@@ -159,7 +159,9 @@ TEST_P(ChannelFixture, Close_NoException_AfterSubscribeAndWrite) {
 TEST_P(ChannelFixture, Close_DueToDestruction_BeforeSubscribe) {
   auto [receiver, sender] = Channel<int>::create();
 
-  { auto toDestroy = std::move(sender); }
+  {
+    auto toDestroy = std::move(sender);
+  }
 
   EXPECT_CALL(onNext_, onClosed());
 
@@ -176,7 +178,9 @@ TEST_P(ChannelFixture, Close_DueToDestruction_AfterSubscribeAndWrite) {
   startConsuming(std::move(receiver));
 
   sender.write(1);
-  { auto toDestroy = std::move(sender); }
+  {
+    auto toDestroy = std::move(sender);
+  }
 
   executor_.drain();
 }
@@ -232,14 +236,16 @@ TEST(Channel, CancelNextWithoutClose) {
   EXPECT_EQ(folly::coro::blockingWait(receiver.next()).value(), 1);
 
   auto nextTask =
-      folly::coro::co_withCancellation(
-          cancelSource.getToken(),
-          folly::coro::co_invoke(
-              [&receiver_2 =
-                   receiver]() -> folly::coro::Task<std::optional<int>> {
-                co_return co_await receiver_2.next(false /* closeOnCancel */);
-              }))
-          .scheduleOn(&executor)
+      co_withExecutor(
+          &executor,
+          folly::coro::co_withCancellation(
+              cancelSource.getToken(),
+              folly::coro::co_invoke(
+                  [&receiver_2 =
+                       receiver]() -> folly::coro::Task<std::optional<int>> {
+                    co_return co_await receiver_2.next(
+                        false /* closeOnCancel */);
+                  })))
           .start();
   executor.drain();
 
@@ -274,12 +280,15 @@ class ChannelFixtureStress
       public WithParamInterface<ConsumptionMode> {
  protected:
   ChannelFixtureStress()
-      : producer_(std::make_unique<StressTestProducer<int>>(
-            [value = 0]() mutable { return value++; })),
-        consumer_(std::make_unique<StressTestConsumer<int>>(
-            GetParam(), [lastReceived = -1](int value) mutable {
-              EXPECT_EQ(value, ++lastReceived);
-            })) {}
+      : producer_(
+            std::make_unique<StressTestProducer<int>>([value = 0]() mutable {
+              return value++;
+            })),
+        consumer_(
+            std::make_unique<StressTestConsumer<int>>(
+                GetParam(), [lastReceived = -1](int value) mutable {
+                  EXPECT_EQ(value, ++lastReceived);
+                })) {}
 
   static constexpr std::chrono::milliseconds kTestTimeout =
       std::chrono::milliseconds{5000};
