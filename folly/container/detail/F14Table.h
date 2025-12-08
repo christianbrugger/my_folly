@@ -161,18 +161,11 @@ struct StdNodeReplica {
   V value;
 };
 
-#else
+#elif defined(__GLIBCXX__)
 
-template <typename H>
-struct StdIsFastHash : std::true_type {};
-template <>
-struct StdIsFastHash<std::hash<long double>> : std::false_type {};
-template <typename... Args>
-struct StdIsFastHash<std::hash<std::basic_string<Args...>>> : std::false_type {
-};
-template <typename... Args>
-struct StdIsFastHash<std::hash<std::basic_string_view<Args...>>>
-    : std::false_type {};
+template <typename K, typename H>
+constexpr bool kStdNodeContainsHash =
+    !std::__is_fast_hash<H>::value || !is_nothrow_invocable_v<H, K const&>;
 
 // mimic internal node of unordered containers in STL to estimate the size
 template <typename K, typename V, typename H, typename Enable = void>
@@ -181,15 +174,18 @@ struct StdNodeReplica {
   V value;
 };
 template <typename K, typename V, typename H>
-struct StdNodeReplica<
-    K,
-    V,
-    H,
-    std::enable_if_t<
-        !StdIsFastHash<H>::value || !is_nothrow_invocable_v<H, K>>> {
+struct StdNodeReplica<K, V, H, std::enable_if_t<kStdNodeContainsHash<K, H>>> {
   void* next;
   V value;
   std::size_t hash;
+};
+
+#else
+
+template <typename K, typename V, typename H>
+struct StdNodeReplica {
+  void* next;
+  V value;
 };
 
 #endif
@@ -1772,6 +1768,20 @@ class F14Table : public Policy {
 
   template <typename K>
   FOLLY_ALWAYS_INLINE ItemIter find(K const& key) const {
+    const auto sz = size();
+    if (sz == 0) {
+      return ItemIter{};
+    }
+    // There is no easy way to obtain a begin iterator with the current policy
+    // design.
+    // As a result, F14Vector* containers (kEnableItemIteration == false) do
+    // not benefit from this optimization yet.
+    if constexpr (kEnableItemIteration) {
+      if (sz == 1) {
+        ItemIter beg = begin();
+        return this->keyMatchesItem(key, beg.citem()) ? beg : ItemIter{};
+      }
+    }
     auto hp = computeHash(key);
     return findImpl(hp, key, Prefetch::ENABLED);
   }
@@ -1856,6 +1866,12 @@ class F14Table : public Policy {
     }
   }
 
+  [[FOLLY_ATTR_GNU_COLD]] FOLLY_NOINLINE static void eraseBlankCold(
+      F14Table* self, ItemIter iter, HashPair hp) {
+    self->eraseBlank(iter, hp);
+    rethrow_current_exception();
+  }
+
   void adjustSizeAndBeginBeforeErase(ItemIter iter) {
     sizeAndChunkShiftAndPackedBegin_.decrementSize();
     if constexpr (kEnableItemIteration) {
@@ -1872,15 +1888,15 @@ class F14Table : public Policy {
 
   template <typename... Args>
   void insertAtBlank(ItemIter pos, HashPair hp, Args&&... args) {
+    auto dst = pos.itemAddr();
     catch_exception(
         [&] {
-          auto dst = pos.itemAddr();
           this->constructValueAtItem(*this, dst, std::forward<Args>(args)...);
         },
-        [this, pos, hp]() {
-          eraseBlank(pos, hp);
-          rethrow_current_exception();
-        });
+        &eraseBlankCold,
+        this,
+        pos,
+        hp);
     adjustSizeAndBeginAfterInsert(pos);
   }
 
@@ -2104,6 +2120,13 @@ class F14Table : public Policy {
     success = true;
   }
 
+  [[FOLLY_ATTR_GNU_COLD]] FOLLY_NOINLINE static void buildFromF14TableCatchCold(
+      F14Table* self) {
+    self->reset();
+    F14LinkCheck<getF14IntrinsicsMode()>::check();
+    rethrow_current_exception();
+  }
+
   template <typename T>
   FOLLY_NOINLINE void buildFromF14Table(T&& src) {
     FOLLY_SAFE_DCHECK(bucket_count() == 0, "");
@@ -2125,18 +2148,15 @@ class F14Table : public Policy {
     rehashImpl(0, 1, 0, ccas.first, ccas.second);
 
     catch_exception(
-        [&]() {
+        [&] {
           if (chunkShift() == src.chunkShift()) {
             directBuildFrom(std::forward<T>(src));
           } else {
             rehashBuildFrom(std::forward<T>(src));
           }
         },
-        [this]() {
-          reset();
-          F14LinkCheck<getF14IntrinsicsMode()>::check();
-          rethrow_current_exception();
-        });
+        &F14Table::buildFromF14TableCatchCold,
+        this);
   }
 
   void maybeRehash(std::size_t desiredCapacity, bool attemptExact) {
@@ -2633,9 +2653,7 @@ class F14Table : public Policy {
       reset();
       catch_exception<std::bad_alloc const&>(
           [this, bc]() { reserveImpl(bc); },
-          [](auto&&) {
-            // ASAN mode only, keep going
-          });
+          &folly::detail::thunk::noop<std::bad_alloc const&>);
     } else {
       clearImpl<false>();
     }

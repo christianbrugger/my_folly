@@ -38,7 +38,7 @@ static constexpr ssize_t kDefaultMlockChunkSize = !folly::kMscVer
     // Linux implementations of unmap/mlock/munlock take a kernel
     // semaphore and block other threads from doing other memory
     // operations. Split the operations in chunks.
-    ? (1 << 20) // 1MB
+    ? (2 << 20) // 2MiB - match x86 PMD size for THP compatibility.
     // MSVC doesn't have this problem, and calling munmap many times
     // with the same address is a bad idea with the windows implementation.
     : (-1);
@@ -306,9 +306,14 @@ bool MemoryMapping::mlock(LockMode mode, LockFlags flags) {
   size_t amountSucceeded = 0;
   locked_ = memOpInChunks(
       [flags](void* addr, size_t len) -> int {
+        if (flags.tryCollapseToTHP && len >= kDefaultMlockChunkSize) {
+          if (madvise(addr, len, MADV_POPULATE_READ) == 0) {
+            madvise(addr, len, MADV_COLLAPSE);
+          }
+        }
         // If no flags are set, mlock2() behaves exactly the same as
         // mlock(). Prefer the portable variant.
-        return flags == LockFlags{}
+        return !flags.lockOnFault
             ? ::mlock(addr, len)
             : mlock2wrapper(addr, len, flags);
       },
@@ -464,9 +469,4 @@ void mmapFileCopy(const char* src, const char* dest, mode_t mode) {
       srcMap.range().data(),
       srcMap.range().size());
 }
-
-bool MemoryMapping::LockFlags::operator==(const LockFlags& other) const {
-  return lockOnFault == other.lockOnFault;
-}
-
 } // namespace folly

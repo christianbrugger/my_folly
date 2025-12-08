@@ -39,6 +39,7 @@
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/EventBaseBackendBase.h>
 #include <folly/io/async/IoUringBase.h>
+#include <folly/io/async/IoUringProvidedBufferRing.h>
 #include <folly/io/async/IoUringZeroCopyBufferPool.h>
 #include <folly/io/async/Liburing.h>
 #include <folly/portability/Asm.h>
@@ -259,6 +260,12 @@ class IoUringBackend : public EventBaseBackendBase {
       return *this;
     }
 
+    Options& setUseHugePages(bool v) {
+      useHugePages = v;
+
+      return *this;
+    }
+
     ssize_t sqeSize{-1};
 
     size_t capacity{256};
@@ -303,6 +310,7 @@ class IoUringBackend : public EventBaseBackendBase {
 
     // Incremental Buffers
     bool enableIncrementalBuffers{false};
+    bool useHugePages{false};
   };
 
   explicit IoUringBackend(Options options);
@@ -342,7 +350,6 @@ class IoUringBackend : public EventBaseBackendBase {
   // returns true if the current Linux kernel version
   // supports the io_uring backend
   static bool isAvailable();
-  bool kernelHasNonBlockWriteFixes() const;
   static bool kernelSupportsRecvmsgMultishot();
   static bool kernelSupportsDeferTaskrun();
   static bool kernelSupportsSendZC();
@@ -420,6 +427,11 @@ class IoUringBackend : public EventBaseBackendBase {
   void queueRename(
       const char* oldPath, const char* newPath, FileOpCallback&& cb);
 
+  void queueUnlinkat(
+      int dirfd, const char* path, int flags, FileOpCallback&& cb);
+
+  void queueUnlink(const char* path, FileOpCallback&& cb);
+
   void queueFallocate(
       int fd, int mode, off_t offset, off_t len, FileOpCallback&& cb);
 
@@ -444,7 +456,7 @@ class IoUringBackend : public EventBaseBackendBase {
   void cancel(IoSqeBase* sqe);
 
   // built in buffer provider
-  IoUringBufferProviderBase* bufferProvider() {
+  IoUringProvidedBufferRing* bufferProvider() {
     return bufferProviders_
         [bufferProviderIdx_++ & (bufferProviders_.size() - 1)]
             .get();
@@ -706,7 +718,7 @@ class IoUringBackend : public EventBaseBackendBase {
             ret = true;
             std::unique_ptr<IOBuf> buf;
             if (flags & IORING_CQE_F_BUFFER) {
-              if (IoUringBufferProviderBase* bp = backend->bufferProvider()) {
+              if (IoUringProvidedBufferRing* bp = backend->bufferProvider()) {
                 auto hasMore = (flags & IORING_CQE_F_BUF_MORE) != 0;
                 uint16_t bufId = flags >> IORING_CQE_BUFFER_SHIFT;
                 VLOG(5) << "bufId=" << bufId << " bp=" << (void*)bp
@@ -831,7 +843,7 @@ class IoUringBackend : public EventBaseBackendBase {
         struct io_uring_sqe* sqe, int fd, struct msghdr* msg) noexcept {
       CHECK(sqe);
       ::io_uring_prep_recvmsg_multishot(sqe, fd, msg, MSG_TRUNC);
-      if (IoUringBufferProviderBase* bp = backend_->bufferProvider()) {
+      if (IoUringProvidedBufferRing* bp = backend_->bufferProvider()) {
         sqe->buf_group = bp->gid();
         sqe->flags |= IOSQE_BUFFER_SELECT;
       }
@@ -1048,6 +1060,26 @@ class IoUringBackend : public EventBaseBackendBase {
     int flags_;
   };
 
+  struct FUnlinkIoSqe : public FileOpIoSqe {
+    FUnlinkIoSqe(
+        IoUringBackend* backend,
+        int dirfd,
+        const char* path,
+        int flags,
+        FileOpCallback&& cb)
+        : FileOpIoSqe(backend, dirfd, std::move(cb)),
+          path_(path),
+          flags_(flags) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      ::io_uring_prep_unlinkat(sqe, fd_, path_, flags_);
+      ::io_uring_sqe_set_data(sqe, this);
+    }
+
+    const char* path_;
+    int flags_;
+  };
+
   struct FAllocateIoSqe : public FileOpIoSqe {
     FAllocateIoSqe(
         IoUringBackend* backend,
@@ -1185,7 +1217,7 @@ class IoUringBackend : public EventBaseBackendBase {
   // submit
   IoSqeBaseList submitList_;
   uint16_t bufferProviderGidNext_{0};
-  std::vector<IoUringBufferProviderBase::UniquePtr> bufferProviders_;
+  std::vector<IoUringProvidedBufferRing::UniquePtr> bufferProviders_;
   uint64_t bufferProviderIdx_{0};
   IoUringZeroCopyBufferPool::UniquePtr zcBufferPool_;
 

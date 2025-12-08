@@ -17,7 +17,7 @@
 #include <folly/hash/Checksum.h>
 
 #include <algorithm>
-#include <stdexcept>
+#include <stdexcept> // IWYU pragma: keep
 
 #include <boost/crc.hpp>
 
@@ -289,6 +289,29 @@ uint32_t crc32c_combine(uint32_t crc1, uint32_t crc2, size_t crc2len) {
   } else {
     return detail::crc32c_combine_sw(crc1, crc2, crc2len - len);
   }
+}
+
+uint32_t crc32c_combine_seed(
+    uint32_t crc1, uint32_t crc2, size_t crc2len, uint32_t startingChecksum) {
+  if (startingChecksum == 0U) {
+    return crc32c_combine(crc1, crc2, crc2len);
+  }
+
+  crc1 ^= startingChecksum;
+  crc2 ^= startingChecksum;
+
+  // Append up to 32 bits of zeroes in the normal way
+  uint8_t data[4] = {0, 0, 0, 0};
+  auto len = crc2len & 3;
+  if (len) {
+    crc1 = crc32c(data, len, crc1);
+  }
+
+  auto result = detail::crc32c_hw_supported()
+      ? detail::crc32c_combine_hw(crc1, crc2, crc2len - len)
+      : detail::crc32c_combine_sw(crc1, crc2, crc2len - len);
+  result ^= startingChecksum;
+  return result;
 }
 
 } // namespace folly

@@ -134,6 +134,7 @@ BENCH_BOTH(16, 32, true, HOT)
 BENCH_BOTH(32, 256, true, HOT)
 BENCH_BOTH(256, 1024, true, HOT)
 BENCH_BOTH(1024, 8192, true, HOT)
+BENCH_BOTH(8192, 32768, true, HOT)
 
 BENCHMARK_DRAW_LINE();
 BENCH_BOTH(0, 7, false, COLD)
@@ -150,6 +151,7 @@ BENCH_BOTH(16, 32, false, COLD)
 BENCH_BOTH(32, 256, false, COLD)
 BENCH_BOTH(256, 1024, false, COLD)
 BENCH_BOTH(1024, 8192, false, COLD)
+BENCH_BOTH(8192, 32768, false, COLD)
 
 static inline void* ptr_bytewise_arith(void* p, ptrdiff_t diff) noexcept {
   auto addr = reinterpret_cast<uint8_t*>(p);
@@ -306,7 +308,7 @@ void neon_memops(
         folly::doNotOptimizeAway(value = vld1q_u64(ptr));
         ptr = reinterpret_cast<uint64_t*>(vgetq_lane_u64(value, 0));
         write_ptr = reinterpret_cast<uint32_t*>(ptr);
-        vst1q_lane_u32(write_ptr, value, 0);
+        vst1q_lane_u32(write_ptr, vreinterpretq_u32_u64(value), 0);
       }
     }
   }

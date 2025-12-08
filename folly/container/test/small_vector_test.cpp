@@ -123,15 +123,6 @@ static_assert(
 namespace {
 
 template <typename Key, typename Value, size_t N>
-using small_sorted_vector_map = folly::sorted_vector_map<
-    Key,
-    Value,
-    std::less<Key>,
-    std::allocator<std::pair<Key, Value>>,
-    void,
-    folly::small_vector<std::pair<Key, Value>, N>>;
-
-template <typename Key, typename Value, size_t N>
 using noheap_sorted_vector_map = folly::sorted_vector_map<
     Key,
     Value,
@@ -139,14 +130,6 @@ using noheap_sorted_vector_map = folly::sorted_vector_map<
     std::allocator<std::pair<Key, Value>>,
     void,
     folly::small_vector<std::pair<Key, Value>, N, policy_in_situ_only<true>>>;
-
-template <typename T, size_t N>
-using small_sorted_vector_set = folly::sorted_vector_set<
-    T,
-    std::less<T>,
-    std::allocator<T>,
-    void,
-    folly::small_vector<T, N>>;
 
 template <typename T, size_t N>
 using noheap_sorted_vector_set = folly::sorted_vector_set<
@@ -640,6 +623,21 @@ TEST(smallVector, GrowShrinkGrow) {
   testGrowShrinkGrow<7>();
 
   testGrowShrinkGrow<0>();
+}
+
+TEST(smallVector, ShrinkToFitMoveOnly) {
+  folly::small_vector<std::unique_ptr<int>> vec;
+  vec.reserve(100);
+  for (int i = 0; i < 3; ++i) {
+    vec.push_back(std::make_unique<int>(i));
+  }
+  vec.shrink_to_fit();
+  EXPECT_LT(vec.capacity(), 100);
+  ASSERT_EQ(vec.size(), 3);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_NE(vec[i], nullptr);
+    EXPECT_EQ(*vec[i], i);
+  }
 }
 
 TEST(smallVector, Iteration) {
@@ -1251,7 +1249,7 @@ TEST(smallVector, CLVPushBackEfficiency) {
 }
 
 TEST(smallVector, StorageForSortedVectorMap) {
-  small_sorted_vector_map<int32_t, int32_t, 2> test;
+  folly::small_sorted_vector_map<int32_t, int32_t, 2> test;
   test.insert(std::make_pair(10, 10));
   EXPECT_EQ(test.size(), 1);
   test.insert(std::make_pair(10, 10));
@@ -1275,7 +1273,7 @@ TEST(smallVector, NoHeapStorageForSortedVectorMap) {
 }
 
 TEST(smallVector, StorageForSortedVectorSet) {
-  small_sorted_vector_set<int32_t, 2> test;
+  folly::small_sorted_vector_set<int32_t, 2> test;
   test.insert(10);
   EXPECT_EQ(test.size(), 1);
   test.insert(10);

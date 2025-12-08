@@ -145,10 +145,8 @@ class BucketedTimeSeries {
   void clear();
 
   /*
-   * Get the latest time that has ever been passed to update() or addValue().
-   *
-   * If no data has ever been added to this timeseries, 0 will be returned.
-   */
+   * See latestTime()
+   **/
   TimePoint getLatestTime() const { return latestTime_; }
 
   /*
@@ -198,14 +196,16 @@ class BucketedTimeSeries {
   }
 
   /*
-   * Returns time of first update() since clear()/constructor.
-   * Note that the returned value is only meaningful when empty() is false.
+   * Returns the oldest time observed either by adding value or calling
+   * update() since clear()/constructor. Note that the returned value is only
+   * meaningful when empty() is false.
    */
   TimePoint firstTime() const { return firstTime_; }
 
   /*
-   * Returns time of last update().
-   * Note that the returned value is only meaningful when empty() is false.
+   * Returns the latest time observed either by adding value or calling
+   * update() since clear()/constructor. Note that the returned value is only
+   * meaningful when empty() is false.
    */
   TimePoint latestTime() const { return latestTime_; }
 
@@ -373,6 +373,17 @@ class BucketedTimeSeries {
   }
 
   /*
+   * Return the total (sum and count) of the tracked buckets that overlap
+   * with [getEarliestTrackableTimeBy(now), now]. `now` must be greater than or
+   * equal to `latestTime_`. If isAllTime() is true, the overall total will be
+   * returned.
+   *
+   * The user does NOT need to call `update(now)` separately. This is for
+   * providing a way for reading the timeseries without mutating it.
+   */
+  Bucket totalBy(TimePoint now) const;
+
+  /*
    * Invoke a function for each bucket.
    *
    * The function will take as arguments the bucket index,
@@ -438,7 +449,13 @@ class BucketedTimeSeries {
   }
   size_t update(Duration now) { return update(TimePoint(now)); }
 
- private:
+  /*
+   * For a non-all-time timeseries, return the earliest time that _could be_
+   * tracked by the timeseries with the provided latest time. It can return a
+   * time point that is earlier than firstTime_.
+   */
+  TimePoint getEarliestTrackableTimeBy(TimePoint latestTime) const;
+
   template <typename ReturnType = double, typename Interval = Duration>
   ReturnType rateHelper(ReturnType numerator, Duration elapsedTime) const {
     DCHECK(isAllTime() || (Interval{1} <= duration_))
@@ -447,7 +464,7 @@ class BucketedTimeSeries {
         numerator, elapsedTime);
   }
 
-  TimePoint getEarliestTimeNonEmpty() const;
+ private:
   size_t updateBuckets(TimePoint now);
 
   template <typename ReturnType>

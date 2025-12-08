@@ -20,6 +20,7 @@
 #include <folly/io/async/AsyncIoUringSocket.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/IoUringEventBaseLocal.h>
+#include <folly/io/async/IoUringProvidedBufferRing.h>
 #include <folly/memory/Malloc.h>
 #include <folly/portability/SysUio.h>
 
@@ -1179,6 +1180,9 @@ void AsyncIoUringSocket::detachEventBase() {
   readSqe_ = ReadSqe::UniquePtr(new ReadSqe(this));
   readSqe_->setReadCallback(oldReadCallback, false);
   readSqe_->setEventBase(nullptr);
+  SocketAddress remoteAddr;
+  getPeerAddress(&remoteAddr);
+  readSqe_->setUseZeroCopyRx(!remoteAddr.isLoopbackAddress());
 
   unregisterFd();
   if (!drc) {
@@ -1836,15 +1840,10 @@ void AsyncIoUringSocket::registerFd() {
 void AsyncIoUringSocket::setFd(NetworkSocket ns) {
   fd_ = ns;
   try {
-    if (!backend_->kernelHasNonBlockWriteFixes()) {
-      // If the kernel doesnt have the fixes we have to disable the nonblock
-      // flag It will still be NONBLOCK as long as it goes through io_uring, but
-      // if we leave the flag then IO_URING will spin on some ops.
-      int flags =
-          ensureSocketReturnCode(fcntl(ns.toFd(), F_GETFL, 0), "get flags");
-      flags = flags & ~O_NONBLOCK;
-      ensureSocketReturnCode(fcntl(ns.toFd(), F_SETFL, flags), "set flags");
-    }
+    int flags =
+        ensureSocketReturnCode(fcntl(ns.toFd(), F_GETFL, 0), "get flags");
+    flags = flags & ~O_NONBLOCK;
+    ensureSocketReturnCode(fcntl(ns.toFd(), F_SETFL, flags), "set flags");
     registerFd();
   } catch (std::exception const& e) {
     LOG(ERROR) << "unable to setFd " << ns.toFd() << " : " << e.what();

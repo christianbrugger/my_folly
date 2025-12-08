@@ -185,6 +185,7 @@ REMOVE_MATCHES_FROM_LISTS(files hfiles
     "^${FOLLY_DIR_REGEX_ESCAPED}/(.*/)?tool/"
     "^${FOLLY_DIR_REGEX_ESCAPED}/facebook/"
     "^${FOLLY_DIR_REGEX_ESCAPED}/rust/"
+    "^${FOLLY_DIR_REGEX_ESCAPED}/ext/buck2/"
     "Benchmark.cpp$"
     "Test.cpp$"
 )
@@ -926,6 +927,7 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST hash_spooky_hash_v1_test SOURCES SpookyHashV1Test.cpp
       TEST hash_spooky_hash_v2_test SOURCES SpookyHashV2Test.cpp
       TEST hash_traits_test SOURCES traits_test.cpp
+      TEST hash_unique_hash_key_test SOURCES UniqueHashKeyTest.cpp
 
     DIRECTORY io/test/
       TEST io_fs_util_test SOURCES FsUtilTest.cpp
@@ -1280,7 +1282,10 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
     add_library(singleton_thread_local_overload
       SHARED ${FOLLY_DIR}/test/SingletonThreadLocalTestOverload.cpp)
     apply_folly_compile_options_to_target(singleton_thread_local_overload)
-    set_target_properties(singleton_thread_local_overload PROPERTIES PREFIX "")
+    set_target_properties(singleton_thread_local_overload PROPERTIES
+      PREFIX ""
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/folly/test
+    )
     target_link_libraries(singleton_thread_local_overload PRIVATE folly)
     folly_define_tests(
       DIRECTORY test/

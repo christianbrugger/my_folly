@@ -1017,8 +1017,8 @@ TEST_F(SharedMutexTest, StressTest) {
   coro::SharedMutex mutex;
   int value1 = 0;
   int value2 = 0;
-  std::atomic<bool> reachedTarget{false};
-  std::atomic<size_t> earlyExists{0};
+  folly::relaxed_atomic<bool> reachedTarget{false};
+  folly::relaxed_atomic<size_t> earlyExists{0};
   constexpr int target = 100'000;
 
   auto incrementIfEven = [&]() -> coro::Task<void> {
@@ -1057,7 +1057,7 @@ TEST_F(SharedMutexTest, StressTest) {
   };
   auto read = [&]() -> coro::Task<int> {
     auto rLock = co_await mutex.co_scoped_lock_shared();
-    EXPECT_EQ(value1, value1);
+    EXPECT_EQ(value1, value2);
     co_return value1;
   };
   auto check = [&]() -> coro::Task<void> {
@@ -1065,7 +1065,7 @@ TEST_F(SharedMutexTest, StressTest) {
     if (value1 >= target) {
       reachedTarget = true;
     }
-    EXPECT_EQ(value1, value1);
+    EXPECT_EQ(value1, value2);
   };
 
   CPUThreadPoolExecutor executor{
@@ -1073,7 +1073,7 @@ TEST_F(SharedMutexTest, StressTest) {
 
   size_t writeTaskCnt = 0;
   folly::coro::AsyncScope scope;
-  while (!reachedTarget.load()) {
+  while (!reachedTarget) {
     writeTaskCnt += 2;
     scope.add(co_withExecutor(&executor, check()));
     scope.add(co_withExecutor(&executor, incrementIfOdd()));

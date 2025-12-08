@@ -333,7 +333,7 @@ IoUringProvidedBufferRing::UniquePtr makeProvidedBufferRing(Args&&... args) {
 #else
 
 template <class... Args>
-IoUringBufferProviderBase::UniquePtr makeProvidedBufferRing(Args&&...) {
+IoUringProvidedBufferRing::UniquePtr makeProvidedBufferRing(Args&&...) {
   throw IoUringBackend::NotAvailable(
       "Provided buffer rings not compiled into this binary");
 }
@@ -1100,26 +1100,14 @@ void IoUringBackend::initSubmissionLinked() {
   }
 
   if (options_.initialProvidedBuffersCount) {
-    auto get_shift = [](int x) -> int {
-      int shift = findLastSet(x) - 1;
-      if (x != (1 << shift)) {
-        shift++;
-      }
-      return shift;
-    };
-
-    int sizeShift =
-        std::max<int>(get_shift(options_.initialProvidedBuffersEachSize), 5);
-    int ringShift =
-        std::max<int>(get_shift(options_.initialProvidedBuffersCount), 1);
-
     try {
       IoUringProvidedBufferRing::Options options = {
           .gid = nextBufferProviderGid(),
-          .count = options_.initialProvidedBuffersCount,
-          .bufferShift = sizeShift,
-          .ringSizeShift = ringShift,
-          .useHugePages = false,
+          .bufferCount =
+              static_cast<uint32_t>(options_.initialProvidedBuffersCount),
+          .bufferSize =
+              static_cast<uint32_t>(options_.initialProvidedBuffersEachSize),
+          .useHugePages = options_.useHugePages,
           .useIncrementalBuffers = options_.enableIncrementalBuffers,
       };
       for (size_t i = 0; i < options_.providedBufRings; i++) {
@@ -1874,6 +1862,18 @@ void IoUringBackend::queueRename(
   submitImmediateIoSqe(*ioSqe);
 }
 
+void IoUringBackend::queueUnlinkat(
+    int dirfd, const char* path, int flags, FileOpCallback&& cb) {
+  auto* ioSqe = new FUnlinkIoSqe(this, dirfd, path, flags, std::move(cb));
+  ioSqe->backendCb_ = processFileOpCB;
+
+  submitImmediateIoSqe(*ioSqe);
+}
+
+void IoUringBackend::queueUnlink(const char* path, FileOpCallback&& cb) {
+  queueUnlinkat(AT_FDCWD, path, 0, std::move(cb));
+}
+
 void IoUringBackend::queueFallocate(
     int fd, int mode, off_t offset, off_t len, FileOpCallback&& cb) {
   auto* ioSqe = new FAllocateIoSqe(this, fd, mode, offset, len, std::move(cb));
@@ -1946,24 +1946,12 @@ void IoUringBackend::processRecvZc(
   ioSqe->offset_ += cqe->res;
 }
 
-bool IoUringBackend::kernelHasNonBlockWriteFixes() const {
-#if FOLLY_IO_URING_UP_TO_DATE
-  // this was fixed in 5.18, which introduced linked file
-  // fixed in "io_uring: only wake when the correct events are set"
-  return params_.features & IORING_FEAT_LINKED_FILE;
-#else
-  // this indicates that sockets have to manually remove O_NONBLOCK
-  // which is a bit slower but shouldnt cause any functional changes
-  return false;
-#endif
-}
-
 namespace {
 
 static bool doKernelSupportsRecvmsgMultishot() {
   try {
     struct S : IoSqeBase {
-      explicit S(IoUringBufferProviderBase* bp) : bp_(bp) {
+      explicit S(IoUringProvidedBufferRing* bp) : bp_(bp) {
         fd = fileops::open("/dev/null", O_RDONLY);
         memset(&msg, 0, sizeof(msg));
       }
@@ -1987,7 +1975,7 @@ static bool doKernelSupportsRecvmsgMultishot() {
         delete this;
       }
 
-      IoUringBufferProviderBase* bp_;
+      IoUringProvidedBufferRing* bp_;
       bool supported = false;
       struct msghdr msg;
       int fd = -1;

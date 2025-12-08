@@ -1085,6 +1085,17 @@ FOLLY_ASSUME_FBVECTOR_COMPATIBLE_1(std::shared_ptr)
 
 namespace folly {
 
+/// is_non_bool_integral_v
+///
+/// A common need.
+template <typename Int>
+inline constexpr bool is_non_bool_integral_v =
+    !std::is_same_v<bool, std::remove_cv_t<Int>> && std::is_integral_v<Int>;
+
+template <typename Int>
+struct is_non_bool_integral //
+    : std::bool_constant<is_non_bool_integral_v<Int>> {};
+
 //  Some compilers have signed __int128 and unsigned __int128 types, and some
 //  libraries with some compilers have traits for those types. It's a mess.
 //  Import things into folly and then fill in whatever is missing.
@@ -1488,14 +1499,15 @@ using value_list_concat_t =
 namespace detail {
 
 template <typename V, typename... T>
-constexpr std::size_t type_pack_find_() {
-  bool eq[] = {std::is_same_v<V, T>..., true};
-  for (size_t i = 0; i < sizeof...(T); ++i) {
-    if (eq[i]) {
-      return i;
-    }
+constexpr bool type_pack_find_a_[sizeof...(T) + 1] = {
+    std::is_same_v<V, T>..., true};
+
+constexpr std::size_t type_pack_find_(bool const* eq) {
+  size_t i = 0;
+  while (!eq[i]) {
+    ++i;
   }
-  return sizeof...(T);
+  return i;
 }
 
 template <typename>
@@ -1503,7 +1515,8 @@ struct type_list_find_;
 template <template <typename...> class List, typename... T>
 struct type_list_find_<List<T...>> {
   template <typename V>
-  static inline constexpr std::size_t apply = type_pack_find_<V, T...>();
+  static inline constexpr std::size_t apply =
+      type_pack_find_(type_pack_find_a_<V, T...>);
 };
 
 } // namespace detail
@@ -1514,7 +1527,7 @@ struct type_list_find_<List<T...>> {
 /// type, or the size of the pack if there is no such element.
 template <typename V, typename... T>
 inline constexpr std::size_t type_pack_find_v =
-    detail::type_pack_find_<V, T...>();
+    detail::type_pack_find_(detail::type_pack_find_a_<V, T...>);
 
 /// type_pack_find_t
 ///

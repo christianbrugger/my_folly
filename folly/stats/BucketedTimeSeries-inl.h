@@ -119,9 +119,10 @@ bool BucketedTimeSeries<VT, CT>::addValueAggregated(
     // Current time.
     bucketIdx = getBucketIdx(now);
   } else {
+    firstTime_ = std::min(firstTime_, now);
     // An earlier time in the past.  We need to check if this time still falls
     // within our window.
-    if (now < getEarliestTimeNonEmpty()) {
+    if (now < getEarliestTrackableTimeBy(latestTime_)) {
       return false;
     }
     bucketIdx = getBucketIdx(now);
@@ -137,6 +138,8 @@ size_t BucketedTimeSeries<VT, CT>::update(TimePoint now) {
   if (empty()) {
     // This is the first data point.
     firstTime_ = now;
+  } else {
+    firstTime_ = std::min(firstTime_, now);
   }
 
   // For all-time data, all we need to do is update latestTime_
@@ -228,7 +231,7 @@ typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTime() const {
   }
 
   // Compute the earliest time we can track
-  TimePoint earliestTime = getEarliestTimeNonEmpty();
+  TimePoint earliestTime = getEarliestTrackableTimeBy(latestTime_);
 
   // We're never tracking data before firstTime_
   earliestTime = std::max(earliestTime, firstTime_);
@@ -237,13 +240,14 @@ typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTime() const {
 }
 
 template <typename VT, typename CT>
-typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTimeNonEmpty()
-    const {
+typename CT::time_point BucketedTimeSeries<VT, CT>::getEarliestTrackableTimeBy(
+    TimePoint latestTime) const {
+  DCHECK(!isAllTime());
   size_t currentBucket;
   TimePoint currentBucketStart;
   TimePoint nextBucketStart;
   getBucketInfo(
-      latestTime_, &currentBucket, &currentBucketStart, &nextBucketStart);
+      latestTime, &currentBucket, &currentBucketStart, &nextBucketStart);
 
   // Subtract 1 duration from the start of the next bucket to find the
   // earliest possible data point we could be tracking.
@@ -331,6 +335,50 @@ ReturnType BucketedTimeSeries<VT, CT>::avg(
   }
 
   return detail::avgHelper<ReturnType>(total, sample_count);
+}
+
+template <typename VT, typename CT>
+typename BucketedTimeSeries<VT, CT>::Bucket BucketedTimeSeries<VT, CT>::totalBy(
+    TimePoint now) const {
+  DCHECK(now >= latestTime_);
+  if (count() == 0) {
+    // fast-path when there is no samples in the timeseries at all
+    return Bucket{};
+  }
+
+  // Can't be empty if the count is non-zero.
+  DCHECK(!empty());
+
+  if (isAllTime() || now == latestTime_) {
+    return total_;
+  }
+
+  size_t currentBucket;
+  TimePoint currentBucketStart;
+  TimePoint nextBucketStart;
+  getBucketInfo(
+      latestTime_, &currentBucket, &currentBucketStart, &nextBucketStart);
+
+  if (now < nextBucketStart) {
+    // `now` falls in the latest bucket
+    return total_;
+  } else if (now >= currentBucketStart + duration_) {
+    // We do not need to go through the buckets when all of them have expired.
+    return Bucket{};
+  } else {
+    // There is a partial overlap. Subtract tail bucket values from the total.
+    Bucket ret = total_;
+    size_t newBucket = getBucketIdx(now);
+    size_t idx = currentBucket;
+    while (idx != newBucket) {
+      ++idx;
+      if (idx >= buckets_.size()) {
+        idx = 0;
+      }
+      ret -= buckets_[idx];
+    }
+    return ret;
+  }
 }
 
 /*

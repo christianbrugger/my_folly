@@ -803,6 +803,134 @@ TEST(IoUringBackend, RenameSrcDoesntExist) {
   evbPtr->loopForever();
 }
 
+TEST(IoUringBackend, Unlink) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto dirPath = folly::fs::temp_directory_path();
+  auto fileName = folly::fs::unique_path();
+  auto filePath = dirPath / fileName;
+
+  int fd = folly::fileops::open(
+      filePath.string().c_str(), O_CREAT | O_WRONLY | O_TRUNC);
+  CHECK_GE(fd, 0);
+  folly::fileops::close(fd);
+
+  SCOPE_EXIT {
+    ::unlink(filePath.string().c_str());
+  };
+
+  EXPECT_TRUE(folly::fs::exists(filePath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_GE(res, 0);
+    EXPECT_FALSE(folly::fs::exists(filePath));
+  };
+
+  backendPtr->queueUnlink(filePath.string().c_str(), std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, UnlinkDoesntExist) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto dirPath = folly::fs::temp_directory_path();
+  auto fileName = folly::fs::unique_path();
+  auto filePath = dirPath / fileName;
+
+  EXPECT_FALSE(folly::fs::exists(filePath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_LT(res, 0);
+    EXPECT_FALSE(folly::fs::exists(filePath));
+  };
+
+  backendPtr->queueUnlink(filePath.string().c_str(), std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, Unlinkat) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto dirPath = folly::fs::temp_directory_path();
+  auto fileName = folly::fs::unique_path();
+  auto filePath = dirPath / fileName;
+
+  int fd = folly::fileops::open(
+      filePath.string().c_str(), O_CREAT | O_WRONLY | O_TRUNC);
+  CHECK_GE(fd, 0);
+  folly::fileops::close(fd);
+
+  int dirfd = folly::fileops::open(dirPath.string().c_str(), O_DIRECTORY);
+  CHECK_GE(dirfd, 0);
+
+  SCOPE_EXIT {
+    folly::fileops::close(dirfd);
+    ::unlink(filePath.string().c_str());
+  };
+
+  EXPECT_TRUE(folly::fs::exists(filePath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_GE(res, 0);
+    EXPECT_FALSE(folly::fs::exists(filePath));
+  };
+
+  backendPtr->queueUnlinkat(
+      dirfd, fileName.string().c_str(), 0, std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
+TEST(IoUringBackend, UnlinkatRemoveDir) {
+  auto evbPtr = getEventBase();
+  SKIP_IF(!evbPtr) << "Backend not available";
+
+  auto* backendPtr = dynamic_cast<folly::IoUringBackend*>(evbPtr->getBackend());
+  CHECK(!!backendPtr);
+
+  auto parentPath = folly::fs::temp_directory_path();
+  auto dirName = folly::fs::unique_path();
+  auto dirPath = parentPath / dirName;
+
+  folly::fs::create_directory(dirPath);
+
+  SCOPE_EXIT {
+    folly::fs::remove(dirPath);
+  };
+
+  EXPECT_TRUE(folly::fs::exists(dirPath));
+  EXPECT_TRUE(folly::fs::is_directory(dirPath));
+
+  folly::IoUringBackend::FileOpCallback unlinkCb = [&](int res) {
+    evbPtr->terminateLoopSoon();
+    CHECK_GE(res, 0);
+    EXPECT_FALSE(folly::fs::exists(dirPath));
+  };
+
+  // AT_REMOVEDIR flag allows removing directories
+  backendPtr->queueUnlinkat(
+      AT_FDCWD, dirPath.string().c_str(), AT_REMOVEDIR, std::move(unlinkCb));
+
+  evbPtr->loopForever();
+}
+
 TEST(IoUringBackend, Statx) {
   auto evbPtr = getEventBase();
   SKIP_IF(!evbPtr) << "Backend not available";
@@ -2203,7 +2331,7 @@ TEST(IoUringBackend, ReceiveBundleTest) {
     SimpleReader(
         int fd,
         uint16_t bgid,
-        folly::IoUringBufferProviderBase* bufProvider,
+        folly::IoUringProvidedBufferRing* bufProvider,
         std::string* received,
         bool* gotBundle,
         bool* eofReceived)
@@ -2248,7 +2376,7 @@ TEST(IoUringBackend, ReceiveBundleTest) {
    private:
     int fd_;
     uint16_t bgid_;
-    folly::IoUringBufferProviderBase* bufProvider_;
+    folly::IoUringProvidedBufferRing* bufProvider_;
     std::string* received_;
     bool* gotBundle_;
     bool* eofReceived_;
@@ -2275,6 +2403,101 @@ TEST(IoUringBackend, ReceiveBundleTest) {
   EXPECT_EQ(received, expected) << "Data should match exactly";
   EXPECT_TRUE(gotBundle) << "Should detect at least one bundle";
   EXPECT_TRUE(eofReceived) << "Should receive EOF";
+}
+
+TEST(IoUringBackend, ProvidedBufferUtilization) {
+  auto evbPtr = getEventBase();
+  std::unique_ptr<folly::IoUringBackend> backend;
+  try {
+    backend = std::make_unique<folly::IoUringBackend>(
+        folly::IoUringBackend::Options{}.setInitialProvidedBuffers(100, 5));
+  } catch (folly::IoUringBackend::NotAvailable const&) {
+  }
+  SKIP_IF(!backend) << "Backend not available";
+
+  auto* bufferProvider = backend->bufferProvider();
+  ASSERT_NE(bufferProvider, nullptr);
+  EXPECT_EQ(bufferProvider, backend->bufferProvider());
+  EXPECT_EQ(5, bufferProvider->count());
+
+  struct Reader : folly::IoSqeBase {
+    Reader(int fd, uint16_t bgid, std::function<void(int, uint32_t)> oncqe)
+        : fd_(fd), bgid_(bgid), oncqe_(oncqe) {}
+
+    void processSubmit(struct io_uring_sqe* sqe) noexcept override {
+      io_uring_prep_read(sqe, fd_, nullptr, 100 /* max read 100 per go */, 0);
+      sqe->flags |= IOSQE_BUFFER_SELECT;
+      sqe->buf_group = bgid_;
+    }
+
+    void callback(const io_uring_cqe* cqe) noexcept override {
+      oncqe_(cqe->res, cqe->flags);
+    }
+
+    void callbackCancelled(const io_uring_cqe*) noexcept override { FAIL(); }
+
+    int fd_;
+    uint16_t bgid_;
+    std::function<void(int, uint32_t)> oncqe_;
+  };
+
+  int fds[2];
+  ASSERT_EQ(0, folly::fileops::pipe(fds));
+  SCOPE_EXIT {
+    folly::fileops::close(fds[0]);
+    folly::fileops::close(fds[1]);
+  };
+
+  std::vector<std::pair<int, uint32_t>> cqes;
+  std::vector<std::unique_ptr<Reader>> readers;
+  auto addReaders = [&](int n) {
+    for (int i = 0; i < n; i++) {
+      readers.push_back(
+          std::make_unique<Reader>(
+              fds[0], bufferProvider->gid(), [&](int r, uint32_t f) {
+                cqes.emplace_back(r, f);
+              }));
+      backend->submit(*readers.back());
+    }
+  };
+
+  addReaders(5);
+  ASSERT_EQ(
+      500, folly::fileops::write(fds[1], std::string(500, 'A').c_str(), 500));
+  backend->eb_event_base_loop(EVLOOP_ONCE);
+  ASSERT_EQ(5, cqes.size()) << "expect 5 completions";
+
+  ASSERT_EQ(100, cqes[0].first);
+  ASSERT_EQ(100, cqes[1].first);
+  auto iobuf0 = bufferProvider->getIoBuf(cqes[0].second >> 16, 100, false);
+  auto iobuf1 = bufferProvider->getIoBuf(cqes[1].second >> 16, 100, false);
+  auto iobuf2 = bufferProvider->getIoBuf(cqes[2].second >> 16, 100, false);
+  auto iobuf3 = bufferProvider->getIoBuf(cqes[3].second >> 16, 100, false);
+  auto iobuf4 = bufferProvider->getIoBuf(cqes[4].second >> 16, 100, false);
+
+  auto* providedBufferRing =
+      dynamic_cast<folly::IoUringProvidedBufferRing*>(bufferProvider);
+  ASSERT_NE(providedBufferRing, nullptr);
+
+  int utilization = providedBufferRing->getUtilPct();
+  EXPECT_EQ(100, utilization)
+      << "All 5 buffers in use, expected 100% utilization";
+
+  iobuf3.reset();
+  iobuf4.reset();
+
+  utilization = providedBufferRing->getUtilPct();
+  EXPECT_EQ(60, utilization)
+      << "3 out of 5 buffers in use, expected 60% utilization";
+
+  iobuf0.reset();
+  iobuf1.reset();
+  iobuf2.reset();
+
+  utilization = providedBufferRing->getUtilPct();
+  EXPECT_EQ(0, utilization) << "No buffers in use, expected 0% utilization";
+
+  readers.clear();
 }
 
 TEST(IoUringBackend, DeferTaskRun) {

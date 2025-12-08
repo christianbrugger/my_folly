@@ -145,7 +145,7 @@ inline constexpr unsigned int findFirstSet(T const v) {
 /// Return the 1-based index of the most significant bit which is set.
 /// For x > 0, findLastSet(x) == 1 + floor(log2(x)).
 template <typename T>
-inline constexpr unsigned int findLastSet(T const v) {
+FOLLY_ALWAYS_INLINE constexpr unsigned int findLastSet(T const v) {
   using U0 = unsigned int;
   using U1 = unsigned long int;
   using U2 = unsigned long long int;
@@ -201,7 +201,7 @@ inline constexpr unsigned int popcount(T const v) {
 }
 
 template <class T>
-inline constexpr T nextPowTwo(T const v) {
+FOLLY_ALWAYS_INLINE constexpr T nextPowTwo(T const v) {
   static_assert(std::is_unsigned<T>::value, "signed type");
   return v ? (T(1) << findLastSet(v - 1)) : T(1);
 }
@@ -241,7 +241,7 @@ template <class T>
 struct n_least_significant_bits_fn {
   static_assert(detail::supported_in_bits_operations_v<T>);
 
-  FOLLY_NODISCARD constexpr T operator()(std::uint32_t n) const {
+  [[nodiscard]] constexpr T operator()(std::uint32_t n) const {
     if (!folly::is_constant_evaluated_or(true)) {
       compiler_may_unsafely_assume(n <= sizeof(T) * 8);
 
@@ -272,7 +272,7 @@ template <class T>
 struct n_most_significant_bits_fn {
   static_assert(detail::supported_in_bits_operations_v<T>);
 
-  FOLLY_NODISCARD constexpr T operator()(std::uint32_t n) const {
+  [[nodiscard]] constexpr T operator()(std::uint32_t n) const {
     if (!folly::is_constant_evaluated_or(true)) {
       compiler_may_unsafely_assume(n <= sizeof(T) * 8);
 
@@ -303,7 +303,7 @@ inline constexpr n_most_significant_bits_fn<T> n_most_significant_bits;
 /// Clears n least significant (right) bits. Other bits stay the same.
 struct clear_n_least_significant_bits_fn {
   template <typename T>
-  FOLLY_NODISCARD constexpr T operator()(T x, std::uint32_t n) const {
+  [[nodiscard]] constexpr T operator()(T x, std::uint32_t n) const {
     static_assert(detail::supported_in_bits_operations_v<T>);
 
     // alternative is to do two shifts but that has
@@ -321,7 +321,7 @@ inline constexpr clear_n_least_significant_bits_fn
 /// Sets n least significant (right) bits. Other bits stay the same.
 struct set_n_least_significant_bits_fn {
   template <typename T>
-  FOLLY_NODISCARD constexpr T operator()(T x, std::uint32_t n) const {
+  [[nodiscard]] constexpr T operator()(T x, std::uint32_t n) const {
     static_assert(detail::supported_in_bits_operations_v<T>);
 
     // alternative is to do two shifts but that has
@@ -338,7 +338,7 @@ inline constexpr set_n_least_significant_bits_fn set_n_least_significant_bits;
 /// Clears n most significant (left) bits. Other bits stay the same.
 struct clear_n_most_significant_bits_fn {
   template <typename T>
-  FOLLY_NODISCARD constexpr T operator()(T x, std::uint32_t n) const {
+  [[nodiscard]] constexpr T operator()(T x, std::uint32_t n) const {
     static_assert(detail::supported_in_bits_operations_v<T>);
 
     if (!folly::is_constant_evaluated_or(true)) {
@@ -366,7 +366,7 @@ inline constexpr clear_n_most_significant_bits_fn clear_n_most_significant_bits;
 /// Sets n most significant (left) bits. Other bits stay the same.
 struct set_n_most_significant_bits_fn {
   template <typename T>
-  FOLLY_NODISCARD constexpr T operator()(T x, std::uint32_t n) const {
+  [[nodiscard]] constexpr T operator()(T x, std::uint32_t n) const {
     static_assert(detail::supported_in_bits_operations_v<T>);
     return x | n_most_significant_bits<T>(n);
   }
@@ -485,7 +485,7 @@ class Endian {
 ///
 struct get_bit_at_fn {
   template <typename Uint>
-  FOLLY_NODISCARD constexpr bool operator()(
+  [[nodiscard]] constexpr bool operator()(
       const Uint* ptr, std::size_t idx) const noexcept {
     static_assert(std::is_unsigned_v<std::remove_cv_t<Uint>>);
     static_assert(!std::is_same_v<std::remove_cv_t<Uint>, bool>);
