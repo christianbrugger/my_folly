@@ -121,7 +121,7 @@ static constexpr uint64_t __gxx_dependent_exception_class =
 struct __cxa_exception {
   std::type_info* exceptionType;
   void(_GLIBCXX_CDTOR_CALLABI* exceptionDestructor)(void*);
-  std::unexpected_handler unexpectedHandler;
+  // std::unexpected_handler unexpectedHandle;
   std::terminate_handler terminateHandler;
   __cxa_exception* nextException;
   int handlerCount;
@@ -162,8 +162,8 @@ namespace std {
 #define FOLLY_DETAIL_EXN_FUNC_VIS _LIBCPP_EXPORTED_FROM_ABI
 #endif
 
-typedef void (*unexpected_handler)();
-FOLLY_DETAIL_EXN_FUNC_VIS unexpected_handler get_unexpected() _NOEXCEPT;
+// typedef void (*unexpected_handler)();
+// FOLLY_DETAIL_EXN_FUNC_VIS unexpected_handler get_unexpected() _NOEXCEPT;
 
 } // namespace std
 
@@ -178,7 +178,7 @@ struct __folly_cxa_exception_sans_reserve {
 #endif
   std::type_info* exceptionType;
   dtor_ret_t (*exceptionDestructor)(void*);
-  void (*unexpectedHandler)();
+  // void (*unexpectedHandler)();
   std::terminate_handler terminateHandler;
   __folly_cxa_exception_sans_reserve* nextException;
   int handlerCount;
@@ -208,7 +208,7 @@ struct __folly_cxa_exception_with_reserve {
 #endif
   std::type_info* exceptionType;
   dtor_ret_t (*exceptionDestructor)(void*);
-  void (*unexpectedHandler)();
+  // void (*unexpectedHandler)();
   std::terminate_handler terminateHandler;
   __folly_cxa_exception_with_reserve* nextException;
   int handlerCount;
@@ -795,11 +795,11 @@ std::exception_ptr make_exception_ptr_with_(
   });
 #else
   cxxabi_with_cxa_exception(object, [&](auto exception) {
-#if defined(__FreeBSD__)
-    exception->unexpectedHandler = nullptr;
-#else
-    exception->unexpectedHandler = std::get_unexpected();
-#endif
+    // #if defined(__FreeBSD__)
+    //     exception->unexpectedHandler = nullptr;
+    // #else
+    //     exception->unexpectedHandler = std::get_unexpected();
+    // #endif
     exception->terminateHandler = std::get_terminate();
     exception->exceptionType = type;
     exception->exceptionDestructor = arg.dtor;
